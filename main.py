@@ -264,10 +264,14 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         dlg = SettingsDialog(self.config, self.repo_path, self)
-        if dlg.exec():
-            self.publish_tab.config = self.config
-            self.release_tab.config = self.config
-            self.status_bar.showMessage("Settings saved successfully.", 3000)
+        btn = self.top_bar.btn_settings
+        btn_pos = btn.mapToGlobal(btn.rect().bottomRight())
+        dlg.move(max(10, btn_pos.x() - dlg.width()), btn_pos.y() + 4)
+        dlg.exec()
+        self.publish_tab.config = self.config
+        self.release_tab.config = self.config
+        self.publish_tab.diff_viewer.config = self.config
+        self.status_bar.showMessage("Preferences updated.", 2000)
 
     def _choose_repo(self):
         selected = QFileDialog.getExistingDirectory(self, "Select Git Repository", self.repo_path)

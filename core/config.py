@@ -1,6 +1,6 @@
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from typing import Optional
 
 
@@ -12,6 +12,7 @@ class AppConfig:
     default_base_branch: str = "main"
     default_auto_merge: bool = True
     default_wait_ci: bool = False
+    wrap_diff: bool = True
 
     def resolve_publish_script(self, current_repo: Optional[str] = None) -> str:
         repo = current_repo or self.repo_path
@@ -33,12 +34,18 @@ class ConfigManager:
     @classmethod
     def load(cls) -> AppConfig:
         if not os.path.exists(cls.CONFIG_FILE):
-            return AppConfig()
+            cfg = AppConfig()
+            cls.save(cfg)
+            return cfg
         try:
             with open(cls.CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return AppConfig(**data)
-        except Exception:
+            # Only pass keys that belong to AppConfig
+            valid_keys = {f.name for f in fields(AppConfig)}
+            filtered = {k: v for k, v in data.items() if k in valid_keys}
+            return AppConfig(**filtered)
+        except Exception as e:
+            print(f"Error loading config: {e}")
             return AppConfig()
 
     @classmethod

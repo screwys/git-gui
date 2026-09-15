@@ -1,6 +1,7 @@
+import os
 import re
 from typing import List, Dict, Optional
-from PyQt6.QtCore import Qt, QRect, QSize
+from PyQt6.QtCore import Qt, QRect, QSize, pyqtSignal
 from PyQt6.QtGui import (
     QPainter,
     QColor,
@@ -9,6 +10,8 @@ from PyQt6.QtGui import (
     QTextCursor,
     QSyntaxHighlighter,
     QTextCharFormat,
+    QKeySequence,
+    QShortcut,
 )
 from PyQt6.QtWidgets import (
     QWidget,
@@ -19,7 +22,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QLabel,
     QCheckBox,
+    QFrame,
+    QMessageBox,
 )
+from core.config import AppConfig, ConfigManager
 
 
 class LineNumberArea(QWidget):
@@ -37,6 +43,8 @@ class LineNumberArea(QWidget):
 class DiffSyntaxHighlighter(QSyntaxHighlighter):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.is_diff_mode = True
+
         self.chunk_fmt = QTextCharFormat()
         self.chunk_fmt.setForeground(QColor("#79c0ff"))
         self.chunk_fmt.setFontWeight(QFont.Weight.Bold)
@@ -51,7 +59,7 @@ class DiffSyntaxHighlighter(QSyntaxHighlighter):
         self.del_fmt.setForeground(QColor("#e6edf3"))
 
     def highlightBlock(self, text: str):
-        if not text:
+        if not self.is_diff_mode or not text:
             return
         if text.startswith("@@"):
             self.setFormat(0, len(text), self.chunk_fmt)
@@ -67,6 +75,7 @@ class DiffCodeEditor(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.line_meta: List[Dict] = []
+        self.is_diff_mode = True
         self.line_number_area = LineNumberArea(self)
         self.highlighter = DiffSyntaxHighlighter(self.document())
 
@@ -76,8 +85,9 @@ class DiffCodeEditor(QPlainTextEdit):
         font = QFont("monospace", 10)
         font.setStyleHint(QFont.StyleHint.Monospace)
         self.setFont(font)
-        self.setReadOnly(True)
-        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        # Allow editing by default as requested
+        self.setReadOnly(False)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
 
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -88,8 +98,8 @@ class DiffCodeEditor(QPlainTextEdit):
         self.update_line_number_area_width(0)
 
     def line_number_area_width(self) -> int:
-        digits = 4
-        space = 16 + self.fontMetrics().horizontalAdvance("9") * digits
+        digits = max(3, len(str(max(1, self.blockCount()))))
+        space = 14 + self.fontMetrics().horizontalAdvance("9") * digits
         return max(space, 42)
 
     def update_line_number_area_width(self, _):
@@ -110,11 +120,18 @@ class DiffCodeEditor(QPlainTextEdit):
             QRect(cr.left(), cr.top(), self.line_number_area_width(), cr.height())
         )
 
-    def set_diff_content(self, diff_text: str):
-        self.setPlainText(diff_text)
-        self._parse_and_highlight()
+    def set_content(self, text: str, is_diff: bool = True):
+        self.is_diff_mode = is_diff
+        self.highlighter.is_diff_mode = is_diff
+        self.setPlainText(text)
+        if is_diff:
+            self._parse_and_highlight_diff()
+        else:
+            self.setExtraSelections([])
+            self.line_meta = []
+            self.line_number_area.update()
 
-    def _parse_and_highlight(self):
+    def _parse_and_highlight_diff(self):
         lines = self.toPlainText().splitlines()
         self.line_meta = []
 
@@ -122,12 +139,11 @@ class DiffCodeEditor(QPlainTextEdit):
         new_no = 0
         extra_selections = []
 
-        color_add_bg = QColor(19, 46, 27, 210)     # Muted dark green background #132e1b
-        color_del_bg = QColor(61, 23, 25, 210)     # Muted dark red background #3d1719
-        color_chunk_bg = QColor(14, 29, 46, 160)   # Muted dark cyan/blue for @@
+        color_add_bg = QColor(19, 46, 27, 210)     # Muted dark green background
+        color_del_bg = QColor(61, 23, 25, 210)     # Muted dark red background
+        color_chunk_bg = QColor(14, 29, 46, 160)   # Muted dark cyan for @@
 
         block = self.document().firstBlock()
-        block_idx = 0
 
         for line in lines:
             meta = {"type": "hdr", "num": None}
@@ -165,7 +181,6 @@ class DiffCodeEditor(QPlainTextEdit):
 
             self.line_meta.append(meta)
             block = block.next()
-            block_idx += 1
 
         self.setExtraSelections(extra_selections)
         self.line_number_area.update()
@@ -174,7 +189,6 @@ class DiffCodeEditor(QPlainTextEdit):
         painter = QPainter(self.line_number_area)
         painter.fillRect(event.rect(), QColor("#080a0f"))
 
-        # Vertical divider border
         divider_x = self.line_number_area.width() - 1
         painter.setPen(QColor("#21262d"))
         painter.drawLine(divider_x, event.rect().top(), divider_x, event.rect().bottom())
@@ -192,25 +206,34 @@ class DiffCodeEditor(QPlainTextEdit):
 
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
-                meta = self.line_meta[block_number] if block_number < len(self.line_meta) else None
-                if meta and meta["num"] is not None:
-                    line_str = str(meta["num"])
-                    if meta["type"] == "del":
-                        painter.setPen(QColor("#f85149"))  # red line number
-                    elif meta["type"] == "add":
-                        painter.setPen(QColor("#3fb950"))  # green line number
-                    else:
-                        painter.setPen(QColor("#6e7681"))  # gray line number
+                if self.is_diff_mode:
+                    meta = self.line_meta[block_number] if block_number < len(self.line_meta) else None
+                    if meta and meta["num"] is not None:
+                        line_str = str(meta["num"])
+                        if meta["type"] == "del":
+                            painter.setPen(QColor("#f85149"))
+                        elif meta["type"] == "add":
+                            painter.setPen(QColor("#3fb950"))
+                        else:
+                            painter.setPen(QColor("#6e7681"))
 
+                        painter.drawText(
+                            0, top, gutter_width, self.fontMetrics().height(),
+                            Qt.AlignmentFlag.AlignRight, line_str
+                        )
+                    elif meta and meta["type"] == "chunk":
+                        painter.setPen(QColor("#388bfd"))
+                        painter.drawText(
+                            0, top, gutter_width, self.fontMetrics().height(),
+                            Qt.AlignmentFlag.AlignRight, "@@"
+                        )
+                else:
+                    # Regular file line numbering (1, 2, 3...)
+                    line_str = str(block_number + 1)
+                    painter.setPen(QColor("#6e7681"))
                     painter.drawText(
                         0, top, gutter_width, self.fontMetrics().height(),
                         Qt.AlignmentFlag.AlignRight, line_str
-                    )
-                elif meta and meta["type"] == "chunk":
-                    painter.setPen(QColor("#388bfd"))
-                    painter.drawText(
-                        0, top, gutter_width, self.fontMetrics().height(),
-                        Qt.AlignmentFlag.AlignRight, "@@"
                     )
 
             block = block.next()
@@ -220,8 +243,16 @@ class DiffCodeEditor(QPlainTextEdit):
 
 
 class DiffViewer(QWidget):
-    def __init__(self, parent=None):
+    file_saved = pyqtSignal(str)
+
+    def __init__(self, config: Optional[AppConfig] = None, repo_path: str = "", parent=None):
         super().__init__(parent)
+        self.config = config or AppConfig()
+        self.repo_path = repo_path
+        self.current_rel_path: Optional[str] = None
+        self.current_diff_text = ""
+        self.view_mode = "diff"  # "diff" or "file"
+        self._is_dirty = False
         self._init_ui()
 
     def _init_ui(self):
@@ -229,17 +260,10 @@ class DiffViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # Header bar matching image 2: breadcrumb and +add -del
+        # Header bar
         header = QHBoxLayout()
         header.setContentsMargins(4, 2, 4, 2)
         header.setSpacing(8)
-
-        self.file_icon = QLabel("📄")
-        self.file_icon.setStyleSheet("color: #7d8590; font-size: 11px;")
-        # Keep icon subtle without emoji feel
-        self.file_icon.setText("")
-        self.file_icon.setFixedWidth(4)
-        header.addWidget(self.file_icon)
 
         self.title_label = QLabel("No changes selected")
         self.title_label.setStyleSheet("color: #e6edf3; font-weight: 600; font-size: 12px; font-family: monospace;")
@@ -249,11 +273,44 @@ class DiffViewer(QWidget):
         self.stats_label.setStyleSheet("font-size: 11px; font-family: monospace;")
         header.addWidget(self.stats_label)
 
+        self.dirty_badge = QLabel("")
+        self.dirty_badge.setStyleSheet("color: #d29922; font-size: 11px; font-weight: bold;")
+        header.addWidget(self.dirty_badge)
+
         header.addStretch()
 
+        # Mode toggles: [Diff] [Edit File]
+        self.btn_diff_mode = QPushButton("Diff")
+        self.btn_diff_mode.setFixedHeight(22)
+        self.btn_diff_mode.setCheckable(True)
+        self.btn_diff_mode.setChecked(True)
+        self.btn_diff_mode.setStyleSheet("font-size: 11px; padding: 1px 8px;")
+        self.btn_diff_mode.clicked.connect(self._switch_to_diff_mode)
+        header.addWidget(self.btn_diff_mode)
+
+        self.btn_file_mode = QPushButton("Edit File")
+        self.btn_file_mode.setFixedHeight(22)
+        self.btn_file_mode.setCheckable(True)
+        self.btn_file_mode.setChecked(False)
+        self.btn_file_mode.setStyleSheet("font-size: 11px; padding: 1px 8px;")
+        self.btn_file_mode.clicked.connect(self._switch_to_file_mode)
+        header.addWidget(self.btn_file_mode)
+
+        # Save button
+        self.btn_save = QPushButton("Save")
+        self.btn_save.setFixedHeight(22)
+        self.btn_save.setStyleSheet(
+            "QPushButton { background-color: #238636; border: 1px solid #2ea043; color: white; font-size: 11px; padding: 1px 8px; font-weight: bold; } "
+            "QPushButton:hover { background-color: #2ea043; }"
+        )
+        self.btn_save.setToolTip("Save changes to file (Ctrl+S)")
+        self.btn_save.clicked.connect(self.save_current)
+        header.addWidget(self.btn_save)
+
+        # Wrap checkbox (defaults to config.wrap_diff, default True!)
         self.wrap_cb = QCheckBox("Wrap")
-        self.wrap_cb.setChecked(False)
-        self.wrap_cb.toggled.connect(self._toggle_wrap)
+        self.wrap_cb.setChecked(self.config.wrap_diff)
+        self.wrap_cb.toggled.connect(self._on_wrap_toggled)
         header.addWidget(self.wrap_cb)
 
         self.btn_copy = QPushButton("Copy")
@@ -266,21 +323,109 @@ class DiffViewer(QWidget):
 
         # Editor
         self.editor = DiffCodeEditor()
+        # Initialize wrap according to config
+        wrap_mode = QPlainTextEdit.LineWrapMode.WidgetWidth if self.config.wrap_diff else QPlainTextEdit.LineWrapMode.NoWrap
+        self.editor.setLineWrapMode(wrap_mode)
+        self.editor.document().contentsChanged.connect(self._on_editor_modified)
         layout.addWidget(self.editor)
 
-    def _toggle_wrap(self, checked: bool):
+        # Shortcut Ctrl+S
+        shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        shortcut.activated.connect(self.save_current)
+
+    def _on_wrap_toggled(self, checked: bool):
         mode = QPlainTextEdit.LineWrapMode.WidgetWidth if checked else QPlainTextEdit.LineWrapMode.NoWrap
         self.editor.setLineWrapMode(mode)
+        self.config.wrap_diff = checked
+        ConfigManager.save(self.config)
 
-    def set_diff(self, diff_text: str, title: str = "Diff Preview", additions: int = 0, deletions: int = 0):
+    def _on_editor_modified(self):
+        if not self._is_dirty:
+            self._is_dirty = True
+            self.dirty_badge.setText("● Modified")
+
+    def set_diff(self, diff_text: str, title: str = "Diff Preview", additions: int = 0, deletions: int = 0, rel_path: Optional[str] = None):
+        self.current_rel_path = rel_path
+        self.current_diff_text = diff_text
         self.title_label.setText(title)
+
         stat_text = ""
         if additions > 0:
             stat_text += f"<span style='color: #3fb950;'>+{additions}</span> "
         if deletions > 0:
             stat_text += f"<span style='color: #f85149;'>-{deletions}</span>"
         self.stats_label.setText(stat_text)
-        self.editor.set_diff_content(diff_text if diff_text else "(Clean working tree or no diff)")
+
+        # Can only edit full file if a single existing file path is available
+        has_file = bool(rel_path and self.repo_path and os.path.exists(os.path.join(self.repo_path, rel_path)))
+        self.btn_file_mode.setEnabled(has_file)
+
+        if self.view_mode == "file" and has_file:
+            self._load_file_content()
+        else:
+            self._switch_to_diff_mode()
+
+    def _switch_to_diff_mode(self):
+        self.view_mode = "diff"
+        self.btn_diff_mode.setChecked(True)
+        self.btn_file_mode.setChecked(False)
+        self.editor.blockSignals(True)
+        self.editor.set_content(self.current_diff_text if self.current_diff_text else "(Clean working tree or no diff)", is_diff=True)
+        self.editor.blockSignals(False)
+        self._is_dirty = False
+        self.dirty_badge.setText("")
+
+    def _switch_to_file_mode(self):
+        if not self.current_rel_path:
+            return
+        self.view_mode = "file"
+        self.btn_diff_mode.setChecked(False)
+        self.btn_file_mode.setChecked(True)
+        self._load_file_content()
+
+    def _load_file_content(self):
+        if not self.current_rel_path or not self.repo_path:
+            return
+        full_path = os.path.join(self.repo_path, self.current_rel_path)
+        if not os.path.isfile(full_path):
+            return
+        try:
+            with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            self.editor.blockSignals(True)
+            self.editor.set_content(content, is_diff=False)
+            self.editor.blockSignals(False)
+            self._is_dirty = False
+            self.dirty_badge.setText("")
+        except Exception as e:
+            QMessageBox.warning(self, "Read Error", f"Could not read file {full_path}:\n{e}")
+
+    def save_current(self):
+        if not self.current_rel_path or not self.repo_path:
+            # If editing raw diff buffer without a single file, nothing to write to disk
+            self._is_dirty = False
+            self.dirty_badge.setText("")
+            return
+
+        full_path = os.path.join(self.repo_path, self.current_rel_path)
+        if self.view_mode == "file":
+            try:
+                content = self.editor.toPlainText()
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                self._is_dirty = False
+                self.dirty_badge.setText("Saved")
+                self.file_saved.emit(self.current_rel_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Save Failed", f"Could not save {full_path}:\n{e}")
+        else:
+            # In diff view mode, if user edited the diff, let them know or switch to file
+            QMessageBox.information(
+                self,
+                "Save Information",
+                "To save changes to disk, click 'Edit File' and press Save (Ctrl+S).\n"
+                "Diff View is for reviewing patch changes.",
+            )
 
     def copy_all(self):
         self.editor.selectAll()

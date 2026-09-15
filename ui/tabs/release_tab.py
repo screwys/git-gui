@@ -1,5 +1,6 @@
 import os
 import re
+from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget,
@@ -10,10 +11,12 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QCheckBox,
+    QComboBox,
     QPushButton,
     QGroupBox,
     QTabWidget,
     QMessageBox,
+    QFrame,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
@@ -40,11 +43,30 @@ class ReleaseTab(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root_layout.addWidget(splitter)
 
-        # ----------------- Left Panel: Form -----------------
+        # ----------------- Left Panel: Release Configuration -----------------
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 2, 4, 2)
         left_layout.setSpacing(8)
+
+        # Mode Selection
+        mode_grp = QGroupBox("Release Mode")
+        mode_layout = QVBoxLayout(mode_grp)
+        mode_layout.setContentsMargins(8, 8, 8, 8)
+        mode_layout.setSpacing(6)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("New Release", "new")
+        self.mode_combo.addItem("Replace Failed Release (--replace)", "replace")
+        self.mode_combo.addItem("Resume Release (--resume-after-prep)", "resume")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_layout.addWidget(self.mode_combo)
+
+        self.mode_hint_lbl = QLabel("Syncs default branch, creates release prep PR, and publishes tag.")
+        self.mode_hint_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
+        mode_layout.addWidget(self.mode_hint_lbl)
+
+        left_layout.addWidget(mode_grp, 0)
 
         # Version Group
         ver_grp = QGroupBox("Release Version")
@@ -56,31 +78,47 @@ class ReleaseTab(QWidget):
         h_ver.setSpacing(6)
         self.version_input = QLineEdit()
         self.version_input.setPlaceholderText("e.g. v0.15.5")
+        self.version_input.textChanged.connect(self._on_version_changed)
         h_ver.addWidget(self.version_input)
 
-        btn_patch = QPushButton("+ Patch")
-        btn_patch.setFixedHeight(26)
-        btn_patch.clicked.connect(lambda: self._bump_version("patch"))
-        h_ver.addWidget(btn_patch)
+        self.btn_patch = QPushButton("+ Patch")
+        self.btn_patch.setFixedHeight(26)
+        self.btn_patch.clicked.connect(lambda: self._bump_version("patch"))
+        h_ver.addWidget(self.btn_patch)
 
-        btn_minor = QPushButton("+ Minor")
-        btn_minor.setFixedHeight(26)
-        btn_minor.clicked.connect(lambda: self._bump_version("minor"))
-        h_ver.addWidget(btn_minor)
+        self.btn_minor = QPushButton("+ Minor")
+        self.btn_minor.setFixedHeight(26)
+        self.btn_minor.clicked.connect(lambda: self._bump_version("minor"))
+        h_ver.addWidget(self.btn_minor)
 
         ver_layout.addLayout(h_ver)
 
+        h_tag_info = QHBoxLayout()
         self.latest_tag_lbl = QLabel("Latest tag: detecting...")
         self.latest_tag_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
-        ver_layout.addWidget(self.latest_tag_lbl)
+        h_tag_info.addWidget(self.latest_tag_lbl)
+        h_tag_info.addStretch()
+
+        self.btn_fetch_notes = QPushButton("Fetch Tag Notes")
+        self.btn_fetch_notes.setFixedHeight(22)
+        self.btn_fetch_notes.setStyleSheet("font-size: 10px; padding: 1px 6px;")
+        self.btn_fetch_notes.clicked.connect(self._fetch_notes_for_version)
+        self.btn_fetch_notes.setVisible(False)
+        h_tag_info.addWidget(self.btn_fetch_notes)
+
+        ver_layout.addLayout(h_tag_info)
 
         left_layout.addWidget(ver_grp, 0)
 
-        # Summary / Release Notes Group
+        # Summary / Release Notes Group (expands to fill space)
         notes_grp = QGroupBox("Release Summary / Notes")
         notes_layout = QVBoxLayout(notes_grp)
         notes_layout.setContentsMargins(8, 8, 8, 8)
         notes_layout.setSpacing(4)
+
+        self.notes_status_lbl = QLabel("Write release description and changelog:")
+        self.notes_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
+        notes_layout.addWidget(self.notes_status_lbl)
 
         self.summary_input = QPlainTextEdit()
         self.summary_input.setPlaceholderText(
@@ -92,8 +130,8 @@ class ReleaseTab(QWidget):
 
         left_layout.addWidget(notes_grp, 1)
 
-        # Flags Group
-        opts_grp = QGroupBox("Options")
+        # Options Group
+        opts_grp = QGroupBox("Execution Options")
         opts_layout = QVBoxLayout(opts_grp)
         opts_layout.setContentsMargins(8, 8, 8, 8)
         opts_layout.setSpacing(3)
@@ -106,10 +144,6 @@ class ReleaseTab(QWidget):
         self.dry_run_cb.setChecked(False)
         opts_layout.addWidget(self.dry_run_cb)
 
-        self.replace_cb = QCheckBox("Replace existing failed tag (--replace)")
-        self.replace_cb.setChecked(False)
-        opts_layout.addWidget(self.replace_cb)
-
         self.skip_flathub_cb = QCheckBox("Skip Flathub PR (--skip-flathub)")
         self.skip_flathub_cb.setChecked(False)
         opts_layout.addWidget(self.skip_flathub_cb)
@@ -117,10 +151,6 @@ class ReleaseTab(QWidget):
         self.skip_gh_release_cb = QCheckBox("Skip GitHub Release publication (--skip-github-release)")
         self.skip_gh_release_cb.setChecked(False)
         opts_layout.addWidget(self.skip_gh_release_cb)
-
-        self.resume_cb = QCheckBox("Resume after release prep (--resume-after-prep)")
-        self.resume_cb.setChecked(False)
-        opts_layout.addWidget(self.resume_cb)
 
         left_layout.addWidget(opts_grp, 0)
 
@@ -156,6 +186,50 @@ class ReleaseTab(QWidget):
         self.runner.finished.connect(self._on_process_finished)
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
         self.terminal.stop_requested.connect(self.runner.stop)
+
+    def _on_mode_changed(self):
+        mode = self.mode_combo.currentData()
+        if mode == "new":
+            self.mode_hint_lbl.setText("Syncs default branch, creates release prep PR, and publishes tag.")
+            self.summary_input.setEnabled(True)
+            self.notes_status_lbl.setText("Write release description and changelog:")
+            self.btn_fetch_notes.setVisible(False)
+            self.push_cb.setEnabled(True)
+            self.dry_run_cb.setEnabled(True)
+            self.btn_release.setText("Start Release")
+        elif mode == "replace":
+            self.mode_hint_lbl.setText("Replaces existing tag. You can reuse or modify the tag's release notes below.")
+            self.summary_input.setEnabled(True)
+            self.notes_status_lbl.setText("Release notes (editable; leave blank to reuse unchanged):")
+            self.btn_fetch_notes.setVisible(True)
+            self.push_cb.setEnabled(True)
+            self.dry_run_cb.setEnabled(True)
+            self.btn_release.setText("Replace & Release")
+            self._fetch_notes_for_version()
+        elif mode == "resume":
+            self.mode_hint_lbl.setText("Resumes release asset staging and publication after release prep PR has merged.")
+            self.summary_input.setEnabled(False)
+            self.notes_status_lbl.setText("Release notes already committed; not needed for resume.")
+            self.btn_fetch_notes.setVisible(False)
+            self.push_cb.setEnabled(False)  # resume-after-prep implies push
+            self.dry_run_cb.setEnabled(False)
+            self.btn_release.setText("Resume Release")
+
+    def _on_version_changed(self):
+        mode = self.mode_combo.currentData()
+        if mode == "replace":
+            self._fetch_notes_for_version()
+
+    def _fetch_notes_for_version(self):
+        ver = self.version_input.text().strip()
+        if not ver:
+            return
+        notes = self.git_mgr.get_tag_notes(ver)
+        if notes:
+            self.summary_input.setPlainText(notes)
+            self.notes_status_lbl.setText(f"Loaded notes from tag {ver} (editable):")
+        else:
+            self.notes_status_lbl.setText(f"No existing tag notes found for {ver}.")
 
     def _on_output_received(self, text: str):
         self.terminal.append_output(text)
@@ -206,34 +280,49 @@ class ReleaseTab(QWidget):
             QMessageBox.warning(self, "Missing Version", "Please enter a release version (e.g. v0.15.5).")
             return
 
+        mode = self.mode_combo.currentData()
         summary = self.summary_input.toPlainText().strip()
-        if not summary and not self.resume_cb.isChecked() and not self.replace_cb.isChecked():
+
+        if mode == "new" and not summary:
             QMessageBox.warning(self, "Missing Summary", "Please enter a release summary / notes.")
             return
 
         args = []
-        if self.push_cb.isChecked():
-            args.append("--push")
-        if self.dry_run_cb.isChecked():
-            args.append("--dry-run")
-        if self.replace_cb.isChecked():
+
+        if mode == "resume":
+            args.append("--resume-after-prep")
+        elif mode == "replace":
             args.append("--replace")
+            if self.push_cb.isChecked():
+                args.append("--push")
+            if self.dry_run_cb.isChecked():
+                args.append("--dry-run")
+        else:
+            # new release
+            if self.push_cb.isChecked():
+                args.append("--push")
+            if self.dry_run_cb.isChecked():
+                args.append("--dry-run")
+
         if self.skip_flathub_cb.isChecked():
             args.append("--skip-flathub")
         if self.skip_gh_release_cb.isChecked():
             args.append("--skip-github-release")
-        if self.resume_cb.isChecked():
-            args.append("--resume-after-prep")
 
         args.append(version)
-        if summary:
+        if mode != "resume" and summary:
             args.append(summary)
 
-        if self.push_cb.isChecked() and not self.dry_run_cb.isChecked():
+        # Confirm if pushing
+        will_push = (mode == "resume") or (self.push_cb.isChecked() and not self.dry_run_cb.isChecked())
+        if will_push:
+            action_desc = "replace the failed tag and publish" if mode == "replace" else (
+                "resume release staging for" if mode == "resume" else "release"
+            )
             reply = QMessageBox.question(
                 self,
                 "Confirm Release",
-                f"Are you sure you want to release {version}?\nThis will create tags, open PRs, and push to origin.",
+                f"Are you sure you want to {action_desc} {version}?\nThis will create/push tags, open PRs, and dispatch workflows.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -242,7 +331,7 @@ class ReleaseTab(QWidget):
 
         self.jobs_view.reset_state()
         self.terminal.clear_terminal()
-        self.terminal.set_status(f"Releasing {version}", "running")
+        self.terminal.set_status(f"Running {version}", "running")
         self.output_tabs.setCurrentWidget(self.jobs_view)
         self.runner.start(script_path, args, cwd=self.git_mgr.repo_path)
 

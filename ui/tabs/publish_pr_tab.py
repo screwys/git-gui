@@ -198,7 +198,9 @@ class PublishPrTab(QWidget):
 
         right_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        self.diff_viewer = DiffViewer()
+        # DiffViewer with editable capabilities and wrap config
+        self.diff_viewer = DiffViewer(self.config, self.git_mgr.repo_path)
+        self.diff_viewer.file_saved.connect(self._on_file_saved)
         right_splitter.addWidget(self.diff_viewer)
 
         self.terminal = TerminalWidget()
@@ -220,9 +222,12 @@ class PublishPrTab(QWidget):
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
         self.terminal.stop_requested.connect(self.runner.stop)
 
+    def _on_file_saved(self, rel_path: str):
+        self.refresh()
+        self._show_single_file_diff(rel_path)
+
     def _on_output_received(self, text: str):
         self.terminal.append_output(text)
-        # Check for PR URL
         m = re.search(r"https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)", text)
         if m:
             url = m.group(0)
@@ -236,6 +241,7 @@ class PublishPrTab(QWidget):
             QDesktopServices.openUrl(QUrl(self.detected_pr_url))
 
     def refresh(self):
+        self.diff_viewer.repo_path = self.git_mgr.repo_path
         items = self.git_mgr.get_status_files()
         self.file_list.set_files(items)
         curr_branch = self.git_mgr.get_current_branch()
@@ -244,18 +250,20 @@ class PublishPrTab(QWidget):
         else:
             self.branch_input.setPlaceholderText("Derived from title (on main)")
 
-        if items:
+        selected_paths = self.file_list.get_selected_paths()
+        if len(selected_paths) == 1:
+            self._show_single_file_diff(selected_paths[0])
+        elif items:
             self._show_multi_file_diff([i.path for i in items])
         else:
             self.diff_viewer.set_diff("", "Clean working tree")
 
     def _show_single_file_diff(self, path: str):
         diff_text = self.git_mgr.get_diff([path])
-        # Find item stats
         item = next((i for i in self.file_list.items if i.path == path), None)
         adds = item.additions if item else 0
         dels = item.deletions if item else 0
-        self.diff_viewer.set_diff(diff_text, path, adds, dels)
+        self.diff_viewer.set_diff(diff_text, path, adds, dels, rel_path=path)
 
     def _show_multi_file_diff(self, paths: List[str]):
         selected_items = [i for i in self.file_list.items if i.path in paths]
@@ -263,10 +271,10 @@ class PublishPrTab(QWidget):
         dels = sum(i.deletions for i in selected_items)
         if not paths or len(paths) == len(self.file_list.items):
             diff_text = self.git_mgr.get_diff()
-            self.diff_viewer.set_diff(diff_text, f"All Changes ({len(self.file_list.items)} files)", adds, dels)
+            self.diff_viewer.set_diff(diff_text, f"All Changes ({len(self.file_list.items)} files)", adds, dels, rel_path=None)
         else:
             diff_text = self.git_mgr.get_diff(paths)
-            self.diff_viewer.set_diff(diff_text, f"{len(paths)} files selected", adds, dels)
+            self.diff_viewer.set_diff(diff_text, f"{len(paths)} files selected", adds, dels, rel_path=None)
 
     def run_publish(self):
         if self.runner.is_running:

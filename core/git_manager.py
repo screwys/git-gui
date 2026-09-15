@@ -203,3 +203,29 @@ class GitManager:
                     diff_chunks.append(out.strip())
 
         return "\n\n".join(diff_chunks)
+
+    def get_tag_notes(self, tag_name: str) -> str:
+        """Extracts the release notes message from an existing annotated git tag."""
+        if not tag_name.startswith("refs/tags/"):
+            tag_name = f"refs/tags/{tag_name}"
+        code, stdout, _ = self._run_git(["cat-file", "tag", tag_name])
+        if code != 0:
+            return ""
+
+        raw = stdout
+        lines = raw.splitlines()
+        msg_lines = []
+        in_message = False
+
+        for line in lines:
+            if not in_message:
+                if line == "":
+                    in_message = True
+                continue
+            if line.startswith("-----BEGIN PGP SIGNATURE-----"):
+                break
+            if line.startswith("## Changelog"):
+                break
+            msg_lines.append(line)
+
+        return "\n".join(msg_lines).strip()

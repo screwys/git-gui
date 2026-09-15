@@ -1,5 +1,5 @@
 import os
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QMessageBox,
+    QFrame,
 )
 from core.config import AppConfig, ConfigManager
 
@@ -20,24 +21,50 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = config
         self.current_repo = current_repo
-        self.setWindowTitle("Settings")
-        self.resize(540, 380)
+        # Make this a popup that closes when clicked outside
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.resize(520, 390)
+        self.setStyleSheet(
+            "SettingsDialog { background-color: #161b22; border: 1px solid #484f58; border-radius: 8px; } "
+            "QGroupBox { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; margin-top: 10px; padding: 10px; font-weight: 600; font-size: 11px; } "
+            "QGroupBox::title { background-color: #0d1117; color: #8b949e; left: 8px; } "
+            "QLineEdit { background-color: #161b22; border: 1px solid #30363d; color: #e6edf3; border-radius: 4px; padding: 4px 6px; } "
+            "QLineEdit:focus { border-color: #58a6ff; }"
+        )
         self._init_ui()
         self._load_values()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
 
-        title_lbl = QLabel("Application Settings")
-        title_lbl.setStyleSheet("font-size: 14px; font-weight: 700; color: #58a6ff;")
-        layout.addWidget(title_lbl)
+        # Header bar with close button
+        header = QHBoxLayout()
+        header.setSpacing(6)
+
+        title_lbl = QLabel("Preferences")
+        title_lbl.setStyleSheet("font-size: 13px; font-weight: 700; color: #58a6ff;")
+        header.addWidget(title_lbl)
+
+        header.addStretch()
+
+        btn_close = QPushButton("✕")
+        btn_close.setFixedSize(22, 22)
+        btn_close.setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #8b949e; font-size: 12px; font-weight: bold; } "
+            "QPushButton:hover { background-color: #30363d; color: white; border-radius: 4px; }"
+        )
+        btn_close.clicked.connect(self.close)
+        header.addWidget(btn_close)
+
+        layout.addLayout(header)
 
         # ---------------- Scripts Group ----------------
         scripts_grp = QGroupBox("Script Locations")
         scripts_layout = QVBoxLayout(scripts_grp)
-        scripts_layout.setContentsMargins(10, 10, 10, 10)
+        scripts_layout.setContentsMargins(8, 8, 8, 8)
         scripts_layout.setSpacing(6)
 
         scripts_layout.addWidget(QLabel("Publish PR Script:"))
@@ -45,10 +72,11 @@ class SettingsDialog(QDialog):
         h_pub.setSpacing(6)
         self.publish_script_edit = QLineEdit()
         self.publish_script_edit.setPlaceholderText(".local/scripts/publish-pr.sh")
+        self.publish_script_edit.textChanged.connect(self._auto_save)
         h_pub.addWidget(self.publish_script_edit)
 
         btn_browse_pub = QPushButton("Browse...")
-        btn_browse_pub.setFixedHeight(26)
+        btn_browse_pub.setFixedHeight(24)
         btn_browse_pub.clicked.connect(lambda: self._browse_file(self.publish_script_edit))
         h_pub.addWidget(btn_browse_pub)
         scripts_layout.addLayout(h_pub)
@@ -58,60 +86,62 @@ class SettingsDialog(QDialog):
         h_rel.setSpacing(6)
         self.release_script_edit = QLineEdit()
         self.release_script_edit.setPlaceholderText(".local/scripts/release-rufin.sh")
+        self.release_script_edit.textChanged.connect(self._auto_save)
         h_rel.addWidget(self.release_script_edit)
 
         btn_browse_rel = QPushButton("Browse...")
-        btn_browse_rel.setFixedHeight(26)
+        btn_browse_rel.setFixedHeight(24)
         btn_browse_rel.clicked.connect(lambda: self._browse_file(self.release_script_edit))
         h_rel.addWidget(btn_browse_rel)
         scripts_layout.addLayout(h_rel)
-
-        lbl_hint = QLabel("Relative paths are resolved against the active repository root.")
-        lbl_hint.setStyleSheet("color: #7d8590; font-size: 11px;")
-        scripts_layout.addWidget(lbl_hint)
 
         layout.addWidget(scripts_grp)
 
         # ---------------- Defaults Group ----------------
         defaults_grp = QGroupBox("Defaults")
         defaults_layout = QVBoxLayout(defaults_grp)
-        defaults_layout.setContentsMargins(10, 10, 10, 10)
+        defaults_layout.setContentsMargins(8, 8, 8, 8)
         defaults_layout.setSpacing(6)
 
         h_base = QHBoxLayout()
         lbl_base = QLabel("Base Branch:")
-        lbl_base.setFixedWidth(100)
+        lbl_base.setFixedWidth(90)
         self.base_branch_edit = QLineEdit()
+        self.base_branch_edit.textChanged.connect(self._auto_save)
         h_base.addWidget(lbl_base)
         h_base.addWidget(self.base_branch_edit)
         defaults_layout.addLayout(h_base)
 
-        self.auto_merge_cb = QCheckBox("Enable squash auto-merge by default")
+        self.auto_merge_cb = QCheckBox("Squash auto-merge by default")
+        self.auto_merge_cb.toggled.connect(self._auto_save)
         defaults_layout.addWidget(self.auto_merge_cb)
 
         self.wait_ci_cb = QCheckBox("Wait for CI checks by default (--wait)")
+        self.wait_ci_cb.toggled.connect(self._auto_save)
         defaults_layout.addWidget(self.wait_ci_cb)
+
+        self.wrap_diff_cb = QCheckBox("Wrap diff & editor lines by default")
+        self.wrap_diff_cb.toggled.connect(self._auto_save)
+        defaults_layout.addWidget(self.wrap_diff_cb)
 
         layout.addWidget(defaults_grp)
 
         layout.addStretch()
 
-        # ---------------- Button Bar ----------------
+        # Bottom row
         btns = QHBoxLayout()
-        btn_reset = QPushButton("Reset to Defaults")
+        btn_reset = QPushButton("Reset Defaults")
+        btn_reset.setFixedHeight(26)
         btn_reset.clicked.connect(self._reset_defaults)
         btns.addWidget(btn_reset)
 
         btns.addStretch()
 
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(self.reject)
-        btns.addWidget(btn_cancel)
-
-        btn_save = QPushButton("Save")
-        btn_save.setObjectName("primaryButton")
-        btn_save.clicked.connect(self._save_settings)
-        btns.addWidget(btn_save)
+        btn_done = QPushButton("Done")
+        btn_done.setObjectName("primaryButton")
+        btn_done.setFixedHeight(26)
+        btn_done.clicked.connect(self.accept)
+        btns.addWidget(btn_done)
 
         layout.addLayout(btns)
 
@@ -131,11 +161,26 @@ class SettingsDialog(QDialog):
             target_edit.setText(chosen)
 
     def _load_values(self):
+        self.publish_script_edit.blockSignals(True)
+        self.release_script_edit.blockSignals(True)
+        self.base_branch_edit.blockSignals(True)
+        self.auto_merge_cb.blockSignals(True)
+        self.wait_ci_cb.blockSignals(True)
+        self.wrap_diff_cb.blockSignals(True)
+
         self.publish_script_edit.setText(self.config.publish_pr_script)
         self.release_script_edit.setText(self.config.release_script)
         self.base_branch_edit.setText(self.config.default_base_branch)
         self.auto_merge_cb.setChecked(self.config.default_auto_merge)
         self.wait_ci_cb.setChecked(self.config.default_wait_ci)
+        self.wrap_diff_cb.setChecked(self.config.wrap_diff)
+
+        self.publish_script_edit.blockSignals(False)
+        self.release_script_edit.blockSignals(False)
+        self.base_branch_edit.blockSignals(False)
+        self.auto_merge_cb.blockSignals(False)
+        self.wait_ci_cb.blockSignals(False)
+        self.wrap_diff_cb.blockSignals(False)
 
     def _reset_defaults(self):
         default = AppConfig()
@@ -144,20 +189,27 @@ class SettingsDialog(QDialog):
         self.base_branch_edit.setText(default.default_base_branch)
         self.auto_merge_cb.setChecked(default.default_auto_merge)
         self.wait_ci_cb.setChecked(default.default_wait_ci)
+        self.wrap_diff_cb.setChecked(default.wrap_diff)
+        self._auto_save()
 
-    def _save_settings(self):
+    def _auto_save(self):
         pub = self.publish_script_edit.text().strip()
         rel = self.release_script_edit.text().strip()
+        if pub:
+            self.config.publish_pr_script = pub
+        if rel:
+            self.config.release_script = rel
 
-        if not pub or not rel:
-            QMessageBox.warning(self, "Invalid Input", "Script paths cannot be empty.")
-            return
+        base = self.base_branch_edit.text().strip()
+        if base:
+            self.config.default_base_branch = base
 
-        self.config.publish_pr_script = pub
-        self.config.release_script = rel
-        self.config.default_base_branch = self.base_branch_edit.text().strip() or "main"
         self.config.default_auto_merge = self.auto_merge_cb.isChecked()
         self.config.default_wait_ci = self.wait_ci_cb.isChecked()
+        self.config.wrap_diff = self.wrap_diff_cb.isChecked()
 
         ConfigManager.save(self.config)
-        self.accept()
+
+    def hideEvent(self, event):
+        self._auto_save()
+        super().hideEvent(event)
