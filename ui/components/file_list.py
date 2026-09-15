@@ -136,6 +136,7 @@ class FileListWidget(QWidget):
     file_selected = pyqtSignal(str)
     selection_changed = pyqtSignal(list)
     view_diff_requested = pyqtSignal(list)
+    publish_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -159,6 +160,14 @@ class FileListWidget(QWidget):
         header.addWidget(self.title_lbl)
 
         header.addStretch()
+
+        # Publish PR button placed on top right next to View Diff
+        self.btn_publish = QPushButton("Publish PR")
+        self.btn_publish.setObjectName("primaryButton")
+        self.btn_publish.setFixedHeight(22)
+        self.btn_publish.setStyleSheet("font-size: 11px; padding: 1px 10px; font-weight: 600;")
+        self.btn_publish.clicked.connect(self.publish_requested.emit)
+        header.addWidget(self.btn_publish)
 
         self.btn_view_diff = QPushButton("View Diff")
         self.btn_view_diff.setFixedHeight(22)

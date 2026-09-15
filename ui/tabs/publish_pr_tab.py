@@ -47,17 +47,14 @@ class PublishPrTab(QWidget):
         root_layout.addWidget(self.main_splitter)
 
         # ----------------- Left Panel -----------------
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
+        # Vertical splitter between the expanding Changes list and PR settings
+        self.left_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # File List (compact height)
+        # 1. File List (Changes) - configured to expand and fill available height
         self.file_list = FileListWidget()
-        self.file_list.setFixedHeight(210)
-        left_layout.addWidget(self.file_list)
+        self.left_splitter.addWidget(self.file_list)
 
-        # Form Scroll Area
+        # 2. Form Scroll Area - holds the configuration groups, pushes down
         form_scroll = QScrollArea()
         form_scroll.setWidgetResizable(True)
         form_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
@@ -113,7 +110,7 @@ class PublishPrTab(QWidget):
         pr_layout.addWidget(lbl_body)
 
         self.body_input = QPlainTextEdit()
-        self.body_input.setFixedHeight(90)
+        self.body_input.setFixedHeight(85)
         self.body_input.setPlaceholderText("Markdown description of the pull request...")
         pr_layout.addWidget(self.body_input)
 
@@ -158,19 +155,18 @@ class PublishPrTab(QWidget):
 
         form_layout.addWidget(flags_grp)
 
-        # Publish Button
-        self.btn_publish = QPushButton("Publish Pull Request")
-        self.btn_publish.setObjectName("primaryButton")
-        self.btn_publish.setFixedHeight(32)
-        self.btn_publish.clicked.connect(self.run_publish)
-        form_layout.addWidget(self.btn_publish)
-
+        # Keep form packed cleanly without trailing gap
         form_layout.addStretch()
 
         form_scroll.setWidget(form_widget)
-        left_layout.addWidget(form_scroll)
+        self.left_splitter.addWidget(form_scroll)
 
-        self.main_splitter.addWidget(left_widget)
+        # Make Changes list take stretch priority (e.g. 500px changes vs 350px form)
+        self.left_splitter.setStretchFactor(0, 3)
+        self.left_splitter.setStretchFactor(1, 2)
+        self.left_splitter.setSizes([450, 300])
+
+        self.main_splitter.addWidget(self.left_splitter)
 
         # ----------------- Right Panel -----------------
         right_widget = QWidget()
@@ -215,6 +211,7 @@ class PublishPrTab(QWidget):
     def _wire_signals(self):
         self.file_list.file_selected.connect(self._show_single_file_diff)
         self.file_list.view_diff_requested.connect(self._show_multi_file_diff)
+        self.file_list.publish_requested.connect(self.run_publish)
 
         self.runner.output_received.connect(self._on_output_received)
         self.runner.started.connect(lambda: self.terminal.set_status("Running", "running"))

@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QCheckBox,
-    QComboBox,
     QPushButton,
+    QButtonGroup,
     QGroupBox,
     QTabWidget,
     QMessageBox,
@@ -31,6 +31,7 @@ class ReleaseTab(QWidget):
         self.git_mgr = git_mgr
         self.config = config
         self.runner = ProcessRunner(self)
+        self.current_mode = "new"
         self._init_ui()
         self._wire_signals()
         self.refresh()
@@ -49,18 +50,61 @@ class ReleaseTab(QWidget):
         left_layout.setContentsMargins(0, 2, 4, 2)
         left_layout.setSpacing(8)
 
-        # Mode Selection
+        # Mode Selection: Compact side-by-side selectable segment boxes
         mode_grp = QGroupBox("Release Mode")
         mode_layout = QVBoxLayout(mode_grp)
         mode_layout.setContentsMargins(8, 8, 8, 8)
         mode_layout.setSpacing(6)
 
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("New Release", "new")
-        self.mode_combo.addItem("Replace Failed Release (--replace)", "replace")
-        self.mode_combo.addItem("Resume Release (--resume-after-prep)", "resume")
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        mode_layout.addWidget(self.mode_combo)
+        h_mode_boxes = QHBoxLayout()
+        h_mode_boxes.setSpacing(6)
+
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+
+        mode_style = (
+            "QPushButton { "
+            "  background-color: #0b0e14; "
+            "  border: 1px solid #30363d; "
+            "  color: #8b949e; "
+            "  border-radius: 5px; "
+            "  padding: 6px 4px; "
+            "  font-size: 11px; "
+            "  font-weight: 500; "
+            "} "
+            "QPushButton:hover:!checked { "
+            "  background-color: #161b22; "
+            "  border-color: #484f58; "
+            "  color: #e6edf3; "
+            "} "
+            "QPushButton:checked { "
+            "  background-color: #16243b; "
+            "  border: 1px solid #388bfd; "
+            "  color: #79c0ff; "
+            "  font-weight: 600; "
+            "}"
+        )
+
+        self.btn_mode_new = QPushButton("New Release")
+        self.btn_mode_new.setCheckable(True)
+        self.btn_mode_new.setChecked(True)
+        self.btn_mode_new.setStyleSheet(mode_style)
+        self.mode_group.addButton(self.btn_mode_new, 0)
+        h_mode_boxes.addWidget(self.btn_mode_new)
+
+        self.btn_mode_replace = QPushButton("Replace Tag\n(--replace)")
+        self.btn_mode_replace.setCheckable(True)
+        self.btn_mode_replace.setStyleSheet(mode_style)
+        self.mode_group.addButton(self.btn_mode_replace, 1)
+        h_mode_boxes.addWidget(self.btn_mode_replace)
+
+        self.btn_mode_resume = QPushButton("Resume\n(--resume-after-prep)")
+        self.btn_mode_resume.setCheckable(True)
+        self.btn_mode_resume.setStyleSheet(mode_style)
+        self.mode_group.addButton(self.btn_mode_resume, 2)
+        h_mode_boxes.addWidget(self.btn_mode_resume)
+
+        mode_layout.addLayout(h_mode_boxes)
 
         self.mode_hint_lbl = QLabel("Syncs default branch, creates release prep PR, and publishes tag.")
         self.mode_hint_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
@@ -181,15 +225,20 @@ class ReleaseTab(QWidget):
         splitter.setSizes([420, 640])
 
     def _wire_signals(self):
+        self.btn_mode_new.clicked.connect(lambda: self._set_mode("new"))
+        self.btn_mode_replace.clicked.connect(lambda: self._set_mode("replace"))
+        self.btn_mode_resume.clicked.connect(lambda: self._set_mode("resume"))
+
         self.runner.output_received.connect(self._on_output_received)
         self.runner.started.connect(lambda: self.terminal.set_status("Running", "running"))
         self.runner.finished.connect(self._on_process_finished)
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
         self.terminal.stop_requested.connect(self.runner.stop)
 
-    def _on_mode_changed(self):
-        mode = self.mode_combo.currentData()
+    def _set_mode(self, mode: str):
+        self.current_mode = mode
         if mode == "new":
+            self.btn_mode_new.setChecked(True)
             self.mode_hint_lbl.setText("Syncs default branch, creates release prep PR, and publishes tag.")
             self.summary_input.setEnabled(True)
             self.notes_status_lbl.setText("Write release description and changelog:")
@@ -198,6 +247,7 @@ class ReleaseTab(QWidget):
             self.dry_run_cb.setEnabled(True)
             self.btn_release.setText("Start Release")
         elif mode == "replace":
+            self.btn_mode_replace.setChecked(True)
             self.mode_hint_lbl.setText("Replaces existing tag. You can reuse or modify the tag's release notes below.")
             self.summary_input.setEnabled(True)
             self.notes_status_lbl.setText("Release notes (editable; leave blank to reuse unchanged):")
@@ -207,17 +257,17 @@ class ReleaseTab(QWidget):
             self.btn_release.setText("Replace & Release")
             self._fetch_notes_for_version()
         elif mode == "resume":
+            self.btn_mode_resume.setChecked(True)
             self.mode_hint_lbl.setText("Resumes release asset staging and publication after release prep PR has merged.")
             self.summary_input.setEnabled(False)
             self.notes_status_lbl.setText("Release notes already committed; not needed for resume.")
             self.btn_fetch_notes.setVisible(False)
-            self.push_cb.setEnabled(False)  # resume-after-prep implies push
+            self.push_cb.setEnabled(False)
             self.dry_run_cb.setEnabled(False)
             self.btn_release.setText("Resume Release")
 
     def _on_version_changed(self):
-        mode = self.mode_combo.currentData()
-        if mode == "replace":
+        if self.current_mode == "replace":
             self._fetch_notes_for_version()
 
     def _fetch_notes_for_version(self):
@@ -280,7 +330,7 @@ class ReleaseTab(QWidget):
             QMessageBox.warning(self, "Missing Version", "Please enter a release version (e.g. v0.15.5).")
             return
 
-        mode = self.mode_combo.currentData()
+        mode = self.current_mode
         summary = self.summary_input.toPlainText().strip()
 
         if mode == "new" and not summary:
@@ -313,7 +363,6 @@ class ReleaseTab(QWidget):
         if mode != "resume" and summary:
             args.append(summary)
 
-        # Confirm if pushing
         will_push = (mode == "resume") or (self.push_cb.isChecked() and not self.dry_run_cb.isChecked())
         if will_push:
             action_desc = "replace the failed tag and publish" if mode == "replace" else (
