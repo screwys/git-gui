@@ -58,6 +58,7 @@ class MinimalCheckBox(QAbstractButton):
 
 class FileRowWidget(QWidget):
     checked_toggled = pyqtSignal(bool)
+    diff_clicked = pyqtSignal(str)
 
     def __init__(self, item: GitFileItem, is_checked: bool = True, parent=None):
         super().__init__(parent)
@@ -66,8 +67,8 @@ class FileRowWidget(QWidget):
 
     def _init_ui(self, is_checked: bool):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 3, 6, 3)
-        layout.setSpacing(8)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(6)
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # Minimal vector checkbox
@@ -130,6 +131,29 @@ class FileRowWidget(QWidget):
         self.stat_lbl.setText(stat_text)
         self.stat_lbl.setStyleSheet("font-size: 11px; font-family: monospace;")
         layout.addWidget(self.stat_lbl)
+
+        # Individual "Diff" button next to each file
+        self.btn_diff = QPushButton("Diff")
+        self.btn_diff.setFixedHeight(20)
+        self.btn_diff.setToolTip(f"View diff for {self.item.filename}")
+        self.btn_diff.setStyleSheet(
+            "QPushButton { "
+            "  background-color: #21262d; "
+            "  border: 1px solid #30363d; "
+            "  color: #c9d1d9; "
+            "  border-radius: 3px; "
+            "  padding: 1px 7px; "
+            "  font-size: 10px; "
+            "  font-weight: 500; "
+            "} "
+            "QPushButton:hover { "
+            "  background-color: #30363d; "
+            "  border-color: #58a6ff; "
+            "  color: #58a6ff; "
+            "}"
+        )
+        self.btn_diff.clicked.connect(lambda: self.diff_clicked.emit(self.item.path))
+        layout.addWidget(self.btn_diff)
 
 
 class FileListWidget(QWidget):
@@ -226,12 +250,22 @@ class FileListWidget(QWidget):
             row_widget.checked_toggled.connect(
                 lambda checked, p=item.path: self._on_row_checked(p, checked)
             )
+            row_widget.diff_clicked.connect(self._on_individual_diff_clicked)
 
             list_item.setSizeHint(row_widget.sizeHint())
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, row_widget)
 
         self._updating = False
+
+    def _on_individual_diff_clicked(self, path: str):
+        # Select the item in the list widget visually
+        for idx in range(self.list_widget.count()):
+            item = self.list_widget.item(idx)
+            if item.data(Qt.ItemDataRole.UserRole) == path:
+                self.list_widget.setCurrentItem(item)
+                break
+        self.file_selected.emit(path)
 
     def _on_row_checked(self, path: str, checked: bool):
         if self._updating:
