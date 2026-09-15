@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QMessageBox,
     QFrame,
+    QApplication,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
@@ -289,22 +290,27 @@ class PublishPrTab(QWidget):
             )
             return
 
+        base_branch = self.base_input.text().strip() or self.config.default_base_branch
+        branch = self.branch_input.text().strip()
+        body = self.body_input.toPlainText().strip()
+        phase = self.phase_input.text().strip()
+        title = self.title_input.text().strip()
+
+        selected_paths = self.file_list.get_selected_paths()
+        all_paths = [i.path for i in self.file_list.items]
+        partial_files = bool(selected_paths and len(selected_paths) < len(all_paths))
+
         args = []
-        base_branch = self.base_input.text().strip()
         if base_branch:
             args.extend(["--base", base_branch])
-
-        branch = self.branch_input.text().strip()
         if branch:
             args.extend(["--branch", branch])
 
-        body = self.body_input.toPlainText().strip()
         env_vars = {}
         if body:
             args.extend(["--body", body])
             env_vars["RUFIN_ALLOW_PR_BODY"] = "1"
 
-        phase = self.phase_input.text().strip()
         if phase:
             args.extend(["--phase", phase])
 
@@ -320,44 +326,40 @@ class PublishPrTab(QWidget):
         elif i18n_choice == "sync":
             args.append("--sync-i18n-catalogs")
 
-        title = self.title_input.text().strip()
         if title:
             args.append(title)
 
-        selected_paths = self.file_list.get_selected_paths()
-        all_paths = [i.path for i in self.file_list.items]
-        partial_files = bool(selected_paths and len(selected_paths) < len(all_paths))
         if partial_files:
             args.extend(selected_paths)
 
-        # Build preview popup breakdown
-        cmd_preview = f"{os.path.basename(script_path)} " + " ".join(args)
+        # Meaningful high-signal summary
         details = [
-            ("Target Base", base_branch or self.config.default_base_branch),
-            ("PR Branch", branch or "(derived automatically)"),
+            ("Branch Target", f"{branch or '(derived)'} → {base_branch}"),
             ("PR Title", title or "(derived from branch or commit)"),
-            ("PR Body", f"{len(body)} chars" if body else "None"),
-            ("Phase / Commit", phase or "(default: title)"),
-            ("Auto-merge", "Yes (Squash)" if self.auto_merge_cb.isChecked() else "No"),
-            ("Wait CI", "Yes (--wait)" if self.wait_cb.isChecked() else "No"),
-            ("I18n Catalogs", self.i18n_combo.currentText()),
-            (
-                "Files Included",
-                f"{len(selected_paths)} of {len(all_paths)} changed files"
-                if partial_files
-                else f"All {len(all_paths)} changed files",
-            ),
+            ("Files Included", f"{len(selected_paths)} of {len(all_paths)} files" if partial_files else f"All {len(all_paths)} files"),
+            ("Squash Merge", "Enabled" if self.auto_merge_cb.isChecked() else "Disabled"),
+            ("Wait CI Checks", "Yes" if self.wait_cb.isChecked() else "No"),
         ]
+        if i18n_choice != "none":
+            details.append(("I18n Catalogs", self.i18n_combo.currentText()))
 
-        dlg = ConfirmPreviewDialog(
-            title="Publish Pull Request Preview",
-            subtitle="Review execution details before creating the branch and pull request.",
-            command_preview=cmd_preview,
+        # Anchor small popup right under the Publish PR button
+        popup = ConfirmPreviewDialog(
+            title="Publish Pull Request",
             details=details,
+            preview_text=body if body else None,
+            preview_text_label="PR Description Preview:",
             action_button_text="Publish PR",
+            anchor_widget=self.file_list.btn_publish,
             parent=self,
         )
-        if dlg.exec() != ConfirmPreviewDialog.DialogCode.Accepted:
+        popup.show()
+
+        # Run local event loop until dismissed or confirmed
+        while popup.isVisible():
+            QApplication.processEvents()
+
+        if not popup.confirmed:
             return
 
         self.detected_pr_url = ""

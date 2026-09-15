@@ -117,7 +117,7 @@ class FileRowWidget(QWidget):
 
         layout.addStretch()
 
-        # Diff stat badge (+X -Y) - clickable button style to directly show diff
+        # Clean diff stat text without any enclosing boxes or borders
         stat_text = ""
         if self.item.additions > 0:
             stat_text += f"<span style='color: #3fb950;'>+{self.item.additions}</span> "
@@ -126,32 +126,17 @@ class FileRowWidget(QWidget):
         if not stat_text:
             stat_text = "<span style='color: #484f58;'>0</span>"
 
-        self.btn_stat = QPushButton()
-        self.btn_stat.setText("")
-        self.btn_stat.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_stat.setToolTip(f"View diff for {self.item.filename}")
-        self.btn_stat.setStyleSheet(
-            "QPushButton { "
-            "  background-color: transparent; "
-            "  border: 1px solid transparent; "
-            "  border-radius: 3px; "
-            "  padding: 1px 4px; "
-            "} "
-            "QPushButton:hover { "
-            "  background-color: #21262d; "
-            "  border-color: #30363d; "
-            "}"
-        )
-        btn_layout = QHBoxLayout(self.btn_stat)
-        btn_layout.setContentsMargins(2, 0, 2, 0)
-        lbl_stat = QLabel()
-        lbl_stat.setTextFormat(Qt.TextFormat.RichText)
-        lbl_stat.setText(stat_text)
-        lbl_stat.setStyleSheet("font-size: 11px; font-family: monospace;")
-        btn_layout.addWidget(lbl_stat)
+        self.stat_lbl = QLabel()
+        self.stat_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.stat_lbl.setText(stat_text)
+        self.stat_lbl.setStyleSheet("font-size: 11px; font-family: monospace;")
+        self.stat_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stat_lbl.setToolTip(f"View diff for {self.item.filename}")
+        layout.addWidget(self.stat_lbl)
 
-        self.btn_stat.clicked.connect(lambda: self.diff_clicked.emit(self.item.path))
-        layout.addWidget(self.btn_stat)
+    def mousePressEvent(self, event):
+        # If clicked over stat_lbl or clicked anywhere on the row except the checkbox
+        super().mousePressEvent(event)
 
 
 class FileListWidget(QWidget):
@@ -248,21 +233,12 @@ class FileListWidget(QWidget):
             row_widget.checked_toggled.connect(
                 lambda checked, p=item.path: self._on_row_checked(p, checked)
             )
-            row_widget.diff_clicked.connect(self._on_individual_diff_clicked)
 
             list_item.setSizeHint(row_widget.sizeHint())
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, row_widget)
 
         self._updating = False
-
-    def _on_individual_diff_clicked(self, path: str):
-        for idx in range(self.list_widget.count()):
-            item = self.list_widget.item(idx)
-            if item.data(Qt.ItemDataRole.UserRole) == path:
-                self.list_widget.setCurrentItem(item)
-                break
-        self.file_selected.emit(path)
 
     def _on_row_checked(self, path: str, checked: bool):
         if self._updating:

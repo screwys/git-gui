@@ -1,155 +1,140 @@
-from typing import List, Dict, Tuple
-from PyQt6.QtCore import Qt
+from typing import List, Tuple, Optional
+from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtWidgets import (
-    QDialog,
+    QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QFrame,
-    QScrollArea,
-    QWidget,
+    QPlainTextEdit,
 )
 
 
-class ConfirmPreviewDialog(QDialog):
+class ConfirmPreviewDialog(QWidget):
     """
-    A preview modal shown before executing PR publication or Release.
-    Provides a clear, itemized breakdown of what will be performed, target branches/tags,
-    selected files, flags, and requires confirmation.
+    Compact flyout / popup card anchored below the triggering button,
+    dismisses automatically when clicking outside.
+    Presents a clean, high-signal summary of what is about to be published.
     """
 
     def __init__(
         self,
         title: str,
-        subtitle: str,
-        command_preview: str,
         details: List[Tuple[str, str]],
-        action_button_text: str = "Confirm & Proceed",
+        preview_text: Optional[str] = None,
+        preview_text_label: str = "Body / Description:",
+        action_button_text: str = "Confirm",
+        anchor_widget: Optional[QWidget] = None,
         parent=None,
     ):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        # Popup window flag makes it behave like a sleek popup that dismisses on outside clicks
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.resize(540, 420)
+        self.confirmed = False
+        self.setFixedWidth(380)
+
         self.setStyleSheet(
             "ConfirmPreviewDialog { "
             "  background-color: #161b22; "
             "  border: 1px solid #484f58; "
             "  border-radius: 8px; "
             "} "
-            "QLabel { color: #e6edf3; font-size: 12px; } "
-            "QFrame#cmdFrame { "
+            "QLabel { color: #e6edf3; font-size: 11px; } "
+            "QPlainTextEdit { "
             "  background-color: #0b0e14; "
             "  border: 1px solid #30363d; "
-            "  border-radius: 6px; "
-            "  padding: 8px; "
-            "} "
-            "QLabel#cmdLabel { "
-            "  color: #79c0ff; "
-            "  font-family: monospace; "
+            "  border-radius: 4px; "
+            "  color: #c9d1d9; "
             "  font-size: 11px; "
+            "  font-family: monospace; "
+            "  padding: 4px; "
             "} "
-            "QScrollArea { border: none; background: transparent; } "
         )
-        self._init_ui(title, subtitle, command_preview, details, action_button_text)
+        self._init_ui(title, details, preview_text, preview_text_label, action_button_text)
+        if anchor_widget:
+            self._position_near(anchor_widget)
 
     def _init_ui(
         self,
         title: str,
-        subtitle: str,
-        command_preview: str,
         details: List[Tuple[str, str]],
+        preview_text: Optional[str],
+        preview_text_label: str,
         action_button_text: str,
     ):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
 
-        # Header
+        # Header with title & close button
         h_header = QHBoxLayout()
+        h_header.setSpacing(4)
         title_lbl = QLabel(title)
-        title_lbl.setStyleSheet("font-size: 14px; font-weight: 700; color: #58a6ff;")
+        title_lbl.setStyleSheet("font-size: 12px; font-weight: 700; color: #58a6ff;")
         h_header.addWidget(title_lbl)
         h_header.addStretch()
 
         btn_close = QPushButton("✕")
-        btn_close.setFixedSize(20, 20)
+        btn_close.setFixedSize(16, 16)
         btn_close.setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #8b949e; font-size: 12px; } "
+            "QPushButton { background: transparent; border: none; color: #8b949e; font-size: 11px; } "
             "QPushButton:hover { color: #ffffff; }"
         )
-        btn_close.clicked.connect(self.reject)
+        btn_close.clicked.connect(self.close)
         h_header.addWidget(btn_close)
         layout.addLayout(h_header)
 
-        if subtitle:
-            sub_lbl = QLabel(subtitle)
-            sub_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
-            layout.addWidget(sub_lbl)
-
-        # Command Preview Box
-        cmd_frame = QFrame()
-        cmd_frame.setObjectName("cmdFrame")
-        cmd_layout = QVBoxLayout(cmd_frame)
-        cmd_layout.setContentsMargins(8, 6, 8, 6)
-        cmd_layout.setSpacing(2)
-
-        cmd_title = QLabel("Command Preview:")
-        cmd_title.setStyleSheet("color: #8b949e; font-size: 10px; font-weight: 600; text-transform: uppercase;")
-        cmd_layout.addWidget(cmd_title)
-
-        cmd_lbl = QLabel(command_preview)
-        cmd_lbl.setObjectName("cmdLabel")
-        cmd_lbl.setWordWrap(True)
-        cmd_layout.addWidget(cmd_lbl)
-        layout.addWidget(cmd_frame)
-
-        # Details list inside scroll
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(0, 4, 4, 4)
-        scroll_layout.setSpacing(6)
-
+        # High-signal key-value rows
         for label, val in details:
             row = QHBoxLayout()
-            row.setSpacing(8)
+            row.setSpacing(6)
             lbl = QLabel(f"{label}:")
-            lbl.setStyleSheet("color: #8b949e; font-weight: 600; font-size: 11px; min-width: 100px;")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            lbl.setStyleSheet("color: #8b949e; font-size: 11px; min-width: 85px;")
             row.addWidget(lbl)
 
             v_lbl = QLabel(val)
-            v_lbl.setStyleSheet("color: #e6edf3; font-size: 11px;")
+            v_lbl.setStyleSheet("color: #e6edf3; font-weight: 500; font-size: 11px;")
             v_lbl.setWordWrap(True)
             row.addWidget(v_lbl, 1)
+            layout.addLayout(row)
 
-            scroll_layout.addLayout(row)
+        # Preview text box (e.g. actual PR description or release notes) if provided
+        if preview_text and preview_text.strip():
+            lbl_preview = QLabel(preview_text_label)
+            lbl_preview.setStyleSheet("color: #8b949e; font-size: 10px; margin-top: 2px;")
+            layout.addWidget(lbl_preview)
 
-        scroll_layout.addStretch()
-        scroll.setWidget(scroll_content)
-        layout.addWidget(scroll, 1)
+            txt = QPlainTextEdit()
+            txt.setReadOnly(True)
+            txt.setPlainText(preview_text.strip())
+            txt.setFixedHeight(75)
+            layout.addWidget(txt)
 
-        # Bottom actions
+        # Action Buttons
         h_actions = QHBoxLayout()
-        h_actions.setSpacing(10)
+        h_actions.setSpacing(8)
+        h_actions.addStretch()
 
         btn_cancel = QPushButton("Cancel")
-        btn_cancel.setFixedHeight(28)
-        btn_cancel.setStyleSheet("font-size: 11px; padding: 2px 14px;")
-        btn_cancel.clicked.connect(self.reject)
+        btn_cancel.setFixedHeight(24)
+        btn_cancel.setStyleSheet("font-size: 11px; padding: 2px 10px;")
+        btn_cancel.clicked.connect(self.close)
         h_actions.addWidget(btn_cancel)
-
-        h_actions.addStretch()
 
         btn_confirm = QPushButton(action_button_text)
         btn_confirm.setObjectName("primaryButton")
-        btn_confirm.setFixedHeight(28)
-        btn_confirm.setStyleSheet("font-size: 11px; font-weight: bold; padding: 2px 16px;")
-        btn_confirm.clicked.connect(self.accept)
+        btn_confirm.setFixedHeight(24)
+        btn_confirm.setStyleSheet("font-size: 11px; font-weight: 600; padding: 2px 14px;")
+        btn_confirm.clicked.connect(self._on_confirm)
         h_actions.addWidget(btn_confirm)
 
         layout.addLayout(h_actions)
+
+    def _on_confirm(self):
+        self.confirmed = True
+        self.close()
+
+    def _position_near(self, widget: QWidget):
+        pt = widget.mapToGlobal(QPoint(0, widget.height() + 4))
+        self.move(pt)

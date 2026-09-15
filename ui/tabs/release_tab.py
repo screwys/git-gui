@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QMessageBox,
     QFrame,
+    QApplication,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
@@ -372,28 +373,35 @@ class ReleaseTab(QWidget):
         if mode != "resume" and summary:
             args.append(summary)
 
-        # Build preview popup breakdown
-        cmd_preview = f"{os.path.basename(script_path)} " + " ".join(args)
+        # Meaningful high-signal summary
         mode_label = "New Release" if mode == "new" else ("Replace Tag" if mode == "replace" else "Resume Release")
         details = [
             ("Release Mode", mode_label),
-            ("Version", version),
-            ("Push to Origin", "Yes (--push)" if self.push_cb.isChecked() and mode != "resume" else ("Implicit" if mode == "resume" else "No")),
-            ("Dry Run", "Yes (--dry-run)" if self.dry_run_cb.isChecked() and mode != "resume" else "No"),
-            ("Skip Flathub", "Yes" if self.skip_flathub_cb.isChecked() else "No"),
-            ("Skip GH Release", "Yes" if self.skip_gh_release_cb.isChecked() else "No"),
-            ("Release Notes", f"{len(summary)} characters" if (mode != "resume" and summary) else ("(Existing tag notes)" if mode == "replace" else "(None required)")),
+            ("Target Version", version),
+            ("Push Remote", "Yes" if (mode == "resume" or self.push_cb.isChecked()) else "No"),
         ]
+        if self.dry_run_cb.isChecked() and mode != "resume":
+            details.append(("Dry Run", "Yes"))
+        if self.skip_flathub_cb.isChecked():
+            details.append(("Flathub PR", "Skipped"))
+        if self.skip_gh_release_cb.isChecked():
+            details.append(("GitHub Release", "Skipped"))
 
-        dlg = ConfirmPreviewDialog(
-            title="Release Orchestrator Preview",
-            subtitle="Review execution details before triggering release creation and dispatching workflows.",
-            command_preview=cmd_preview,
+        popup = ConfirmPreviewDialog(
+            title=f"Release {version}",
             details=details,
-            action_button_text=f"Start Release ({version})",
+            preview_text=summary if (mode != "resume" and summary) else None,
+            preview_text_label="Release Notes Preview:",
+            action_button_text=f"Confirm Release",
+            anchor_widget=self.btn_release,
             parent=self,
         )
-        if dlg.exec() != ConfirmPreviewDialog.DialogCode.Accepted:
+        popup.show()
+
+        while popup.isVisible():
+            QApplication.processEvents()
+
+        if not popup.confirmed:
             return
 
         self.jobs_view.reset_state()
