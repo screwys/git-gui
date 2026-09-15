@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 from core.config import AppConfig, ConfigManager
+from ui.components.toast import ToastNotification
 
 
 class LineNumberArea(QWidget):
@@ -85,7 +86,6 @@ class DiffCodeEditor(QPlainTextEdit):
         font = QFont("monospace", 10)
         font.setStyleHint(QFont.StyleHint.Monospace)
         self.setFont(font)
-        # Allow editing by default as requested
         self.setReadOnly(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
 
@@ -139,9 +139,9 @@ class DiffCodeEditor(QPlainTextEdit):
         new_no = 0
         extra_selections = []
 
-        color_add_bg = QColor(19, 46, 27, 210)     # Muted dark green background
-        color_del_bg = QColor(61, 23, 25, 210)     # Muted dark red background
-        color_chunk_bg = QColor(14, 29, 46, 160)   # Muted dark cyan for @@
+        color_add_bg = QColor(19, 46, 27, 210)
+        color_del_bg = QColor(61, 23, 25, 210)
+        color_chunk_bg = QColor(14, 29, 46, 160)
 
         block = self.document().firstBlock()
 
@@ -228,7 +228,6 @@ class DiffCodeEditor(QPlainTextEdit):
                             Qt.AlignmentFlag.AlignRight, "@@"
                         )
                 else:
-                    # Regular file line numbering (1, 2, 3...)
                     line_str = str(block_number + 1)
                     painter.setPen(QColor("#6e7681"))
                     painter.drawText(
@@ -253,6 +252,7 @@ class DiffViewer(QWidget):
         self.current_diff_text = ""
         self.view_mode = "diff"  # "diff" or "file"
         self._is_dirty = False
+        self._revert_backup_content: Optional[str] = None
         self._init_ui()
 
     def _init_ui(self):
@@ -307,7 +307,15 @@ class DiffViewer(QWidget):
         self.btn_save.clicked.connect(self.save_current)
         header.addWidget(self.btn_save)
 
-        # Wrap checkbox (defaults to config.wrap_diff, default True!)
+        # Reset button
+        self.btn_reset = QPushButton("Reset")
+        self.btn_reset.setFixedHeight(22)
+        self.btn_reset.setStyleSheet("font-size: 11px; padding: 1px 8px;")
+        self.btn_reset.setToolTip("Discard unsaved in-editor changes")
+        self.btn_reset.clicked.connect(self.reset_current)
+        header.addWidget(self.btn_reset)
+
+        # Wrap checkbox
         self.wrap_cb = QCheckBox("Wrap")
         self.wrap_cb.setChecked(self.config.wrap_diff)
         self.wrap_cb.toggled.connect(self._on_wrap_toggled)
@@ -323,15 +331,22 @@ class DiffViewer(QWidget):
 
         # Editor
         self.editor = DiffCodeEditor()
-        # Initialize wrap according to config
         wrap_mode = QPlainTextEdit.LineWrapMode.WidgetWidth if self.config.wrap_diff else QPlainTextEdit.LineWrapMode.NoWrap
         self.editor.setLineWrapMode(wrap_mode)
         self.editor.document().contentsChanged.connect(self._on_editor_modified)
         layout.addWidget(self.editor)
 
+        # Toast overlay for post-save revert
+        self.toast = ToastNotification(self)
+        self.toast.action_clicked.connect(self._revert_saved_file)
+
         # Shortcut Ctrl+S
         shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
         shortcut.activated.connect(self.save_current)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.toast.reposition()
 
     def _on_wrap_toggled(self, checked: bool):
         mode = QPlainTextEdit.LineWrapMode.WidgetWidth if checked else QPlainTextEdit.LineWrapMode.NoWrap
@@ -356,7 +371,6 @@ class DiffViewer(QWidget):
             stat_text += f"<span style='color: #f85149;'>-{deletions}</span>"
         self.stats_label.setText(stat_text)
 
-        # Can only edit full file if a single existing file path is available
         has_file = bool(rel_path and self.repo_path and os.path.exists(os.path.join(self.repo_path, rel_path)))
         self.btn_file_mode.setEnabled(has_file)
 
@@ -400,9 +414,17 @@ class DiffViewer(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Read Error", f"Could not read file {full_path}:\n{e}")
 
+    def reset_current(self):
+        """Discards current in-memory edits and resets to the on-disk/original state."""
+        if self.view_mode == "file":
+            self._load_file_content()
+            self._is_dirty = False
+            self.dirty_badge.setText("")
+        else:
+            self._switch_to_diff_mode()
+
     def save_current(self):
         if not self.current_rel_path or not self.repo_path:
-            # If editing raw diff buffer without a single file, nothing to write to disk
             self._is_dirty = False
             self.dirty_badge.setText("")
             return
@@ -410,22 +432,50 @@ class DiffViewer(QWidget):
         full_path = os.path.join(self.repo_path, self.current_rel_path)
         if self.view_mode == "file":
             try:
+                # Backup current on-disk content before overwriting so it can be reverted via toast
+                if os.path.exists(full_path):
+                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                        self._revert_backup_content = f.read()
+
                 content = self.editor.toPlainText()
                 with open(full_path, "w", encoding="utf-8") as f:
                     f.write(content)
+
                 self._is_dirty = False
                 self.dirty_badge.setText("Saved")
                 self.file_saved.emit(self.current_rel_path)
+
+                # Show toast notification with Revert action
+                self.toast.show_toast(
+                    "File is edited. Do you want to revert your changes?",
+                    action_text="Revert",
+                    duration_ms=8000,
+                )
             except Exception as e:
                 QMessageBox.critical(self, "Save Failed", f"Could not save {full_path}:\n{e}")
         else:
-            # In diff view mode, if user edited the diff, let them know or switch to file
             QMessageBox.information(
                 self,
                 "Save Information",
-                "To save changes to disk, click 'Edit File' and press Save (Ctrl+S).\n"
+                "To save changes to disk, switch to 'Edit File' mode and press Save (Ctrl+S).\n"
                 "Diff View is for reviewing patch changes.",
             )
+
+    def _revert_saved_file(self):
+        """Reverts the file back to the state before the last save."""
+        if not self.current_rel_path or not self.repo_path or self._revert_backup_content is None:
+            return
+        full_path = os.path.join(self.repo_path, self.current_rel_path)
+        try:
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(self._revert_backup_content)
+            self._revert_backup_content = None
+            self._load_file_content()
+            self._is_dirty = False
+            self.dirty_badge.setText("Reverted")
+            self.file_saved.emit(self.current_rel_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Revert Failed", f"Could not revert {full_path}:\n{e}")
 
     def copy_all(self):
         self.editor.selectAll()
