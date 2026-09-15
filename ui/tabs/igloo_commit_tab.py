@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QPushButton,
     QGroupBox,
-    QScrollArea,
     QMessageBox,
     QApplication,
 )
@@ -53,22 +52,16 @@ class IglooCommitTab(QWidget):
         # ----------------- Left Panel -----------------
         self.left_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # 1. Changes File List
+        # 1. Changes File List (Top, expands to take space)
         self.file_list = FileListWidget()
         self.file_list.btn_publish.setText("Commit & Push")
         self.file_list.btn_publish.setToolTip("Commit selected changes and push to origin")
         self.left_splitter.addWidget(self.file_list)
 
-        # 2. Commit Options Form
-        self.form_scroll = QScrollArea()
-        self.form_scroll.setWidgetResizable(True)
-        self.form_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.form_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-
+        # 2. Commit Options Form (Bottom, direct widget with NO scrollbar)
         form_widget = QWidget()
         form_layout = QVBoxLayout(form_widget)
-        form_layout.setContentsMargins(0, 0, 4, 0)
+        form_layout.setContentsMargins(0, 2, 0, 0)
         form_layout.setSpacing(4)
 
         # Commit Details Group
@@ -88,7 +81,7 @@ class IglooCommitTab(QWidget):
         commit_layout.addLayout(h_summary)
 
         self.desc_input = QPlainTextEdit()
-        self.desc_input.setFixedHeight(50)
+        self.desc_input.setFixedHeight(45)
         self.desc_input.setPlaceholderText("Extended description (optional markdown)...")
         commit_layout.addWidget(self.desc_input)
 
@@ -116,13 +109,13 @@ class IglooCommitTab(QWidget):
 
         form_layout.addWidget(opts_grp)
 
-        self.form_scroll.setWidget(form_widget)
-        self.left_splitter.addWidget(self.form_scroll)
+        self.left_splitter.addWidget(form_widget)
 
         # Splitter sizing: Changes expands (1), form fits natural size (0)
         self.left_splitter.setStretchFactor(0, 1)
         self.left_splitter.setStretchFactor(1, 0)
-        self.left_splitter.setSizes([520, 190])
+        self.left_splitter.setCollapsible(0, False)
+        self.left_splitter.setCollapsible(1, False)
 
         self.main_splitter.addWidget(self.left_splitter)
 
@@ -146,12 +139,6 @@ class IglooCommitTab(QWidget):
 
         self.main_splitter.addWidget(right_widget)
         self.main_splitter.setSizes([380, 620])
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        total_h = self.left_splitter.height()
-        if total_h > 260:
-            self.left_splitter.setSizes([total_h - 190, 190])
 
     def _wire_signals(self):
         self.file_list.file_selected.connect(self._show_single_file_diff)
