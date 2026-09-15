@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QCheckBox,
     QPushButton,
     QButtonGroup,
     QGroupBox,
@@ -28,8 +29,9 @@ from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
 class IglooReleaseTab(QWidget):
     """
     Release tab for Igloo repository.
-    Supports bump selection (patch / minor / major), changelog notes,
-    and triggering GitHub Actions release workflow or local release scripts.
+    Runs fast local release via 'just release <bump> "<summary>"' (or 'just release-local'),
+    which prepares metadata, creates signed release tag, pushes tag to origin,
+    and directly triggers release artifact workflows without running the slow full CI gate.
     """
 
     def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None):
@@ -129,8 +131,7 @@ class IglooReleaseTab(QWidget):
         h_ver.setSpacing(6)
         self.version_input = QLineEdit()
         self.version_input.setPlaceholderText("e.g. v3.8.1")
-        h_ver.addWidget(self.version_input)
-        ver_layout.addLayout(h_ver)
+        ver_layout.addWidget(self.version_input)
 
         h_tag_info = QHBoxLayout()
         self.latest_tag_lbl = QLabel("Latest tag: detecting...")
@@ -147,19 +148,31 @@ class IglooReleaseTab(QWidget):
         notes_layout.setContentsMargins(8, 8, 8, 8)
         notes_layout.setSpacing(4)
 
-        self.notes_status_lbl = QLabel("Summary of changes for GitHub release & signed tag:")
+        self.notes_status_lbl = QLabel("Summary of changes (becomes first paragraph of GitHub release):")
         self.notes_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
         notes_layout.addWidget(self.notes_status_lbl)
 
         self.summary_input = QPlainTextEdit()
         self.summary_input.setPlaceholderText(
             "Write the release summary / changelog here...\n\n"
-            "This will be passed to the GitHub Actions release workflow."
+            "This will be recorded in the signed tag and GitHub Release notes."
         )
         self.summary_input.setMinimumHeight(240)
         notes_layout.addWidget(self.summary_input, 1)
 
         left_layout.addWidget(notes_grp, 1)
+
+        # Execution Options
+        opts_grp = QGroupBox("Execution Options")
+        opts_layout = QVBoxLayout(opts_grp)
+        opts_layout.setContentsMargins(8, 8, 8, 8)
+        opts_layout.setSpacing(4)
+
+        self.push_cb = QCheckBox("Publish release and dispatch artifacts (just release)")
+        self.push_cb.setChecked(True)
+        opts_layout.addWidget(self.push_cb)
+
+        left_layout.addWidget(opts_grp, 0)
 
         # Start Release Button
         self.btn_release = QPushButton("Start Release")
@@ -178,7 +191,7 @@ class IglooReleaseTab(QWidget):
 
         self.output_tabs = QTabWidget()
         self.jobs_view = ReleaseJobsWidget(project_name="Igloo")
-        self.terminal = TerminalWidget()
+        self.terminal = TerminalWidget(repo_path=self.git_mgr.repo_path)
 
         self.output_tabs.addTab(self.jobs_view, "Jobs and Progress")
         self.output_tabs.addTab(self.terminal, "Terminal Log")
@@ -208,6 +221,7 @@ class IglooReleaseTab(QWidget):
         self.jobs_view.process_output_chunk(text)
 
     def refresh(self):
+        self.terminal.repo_path = self.git_mgr.repo_path
         latest = self.git_mgr.get_latest_tag()
         self.latest_tag_lbl.setText(f"Latest tag: {latest}")
         self._calculate_version(latest, self.current_bump)
@@ -244,10 +258,14 @@ class IglooReleaseTab(QWidget):
             QMessageBox.warning(self, "Missing Summary", "Please enter a release summary / notes.")
             return
 
+        will_push = self.push_cb.isChecked()
+        recipe = "release" if will_push else "release-local"
+
         details = [
             ("Release Bump", self.current_bump.capitalize()),
             ("Target Version", version),
-            ("Workflow", "release.yml (workflow dispatch)"),
+            ("Release Recipe", f"just {recipe}"),
+            ("Push & Artifacts", "Yes (push tag, release, and build artifacts)" if will_push else "No (local signed tag only)"),
             ("Release Notes", f"{len(summary)} characters"),
         ]
 
@@ -273,17 +291,14 @@ class IglooReleaseTab(QWidget):
         self.terminal.set_status(f"Running {version}", "running")
         self.output_tabs.setCurrentWidget(self.jobs_view)
 
-        # Dispatch GitHub Actions release workflow via gh CLI
+        # Delegate directly to just recipe as documented in AGENTS.md:
+        # just release <patch|minor|major> "<user summary>"
         args = [
-            "workflow",
-            "run",
-            "release.yml",
-            "-f",
-            f"bump={self.current_bump}",
-            "-f",
-            f"summary={summary}",
+            recipe,
+            self.current_bump,
+            summary,
         ]
-        self.runner.start("gh", args, cwd=self.git_mgr.repo_path)
+        self.runner.start("just", args, cwd=self.git_mgr.repo_path)
 
     def _on_process_finished(self, exit_code: int):
         status = "success" if exit_code == 0 else "failed"
