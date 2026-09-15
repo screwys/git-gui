@@ -23,6 +23,7 @@ from core.git_manager import GitManager
 from core.runner import ProcessRunner
 from ui.components.terminal_view import TerminalWidget
 from ui.components.release_jobs_view import ReleaseJobsWidget
+from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
 
 
 class ReleaseTab(QWidget):
@@ -371,20 +372,29 @@ class ReleaseTab(QWidget):
         if mode != "resume" and summary:
             args.append(summary)
 
-        will_push = (mode == "resume") or (self.push_cb.isChecked() and not self.dry_run_cb.isChecked())
-        if will_push:
-            action_desc = "replace the failed tag and publish" if mode == "replace" else (
-                "resume release staging for" if mode == "resume" else "release"
-            )
-            reply = QMessageBox.question(
-                self,
-                "Confirm Release",
-                f"Are you sure you want to {action_desc} {version}?\nThis will create/push tags, open PRs, and dispatch workflows.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
+        # Build preview popup breakdown
+        cmd_preview = f"{os.path.basename(script_path)} " + " ".join(args)
+        mode_label = "New Release" if mode == "new" else ("Replace Tag" if mode == "replace" else "Resume Release")
+        details = [
+            ("Release Mode", mode_label),
+            ("Version", version),
+            ("Push to Origin", "Yes (--push)" if self.push_cb.isChecked() and mode != "resume" else ("Implicit" if mode == "resume" else "No")),
+            ("Dry Run", "Yes (--dry-run)" if self.dry_run_cb.isChecked() and mode != "resume" else "No"),
+            ("Skip Flathub", "Yes" if self.skip_flathub_cb.isChecked() else "No"),
+            ("Skip GH Release", "Yes" if self.skip_gh_release_cb.isChecked() else "No"),
+            ("Release Notes", f"{len(summary)} characters" if (mode != "resume" and summary) else ("(Existing tag notes)" if mode == "replace" else "(None required)")),
+        ]
+
+        dlg = ConfirmPreviewDialog(
+            title="Release Orchestrator Preview",
+            subtitle="Review execution details before triggering release creation and dispatching workflows.",
+            command_preview=cmd_preview,
+            details=details,
+            action_button_text=f"Start Release ({version})",
+            parent=self,
+        )
+        if dlg.exec() != ConfirmPreviewDialog.DialogCode.Accepted:
+            return
 
         self.jobs_view.reset_state()
         self.terminal.clear_terminal()

@@ -25,6 +25,7 @@ from core.runner import ProcessRunner
 from ui.components.file_list import FileListWidget
 from ui.components.diff_viewer import DiffViewer
 from ui.components.terminal_view import TerminalWidget
+from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
 
 
 class PublishPrTab(QWidget):
@@ -54,20 +55,22 @@ class PublishPrTab(QWidget):
         self.file_list = FileListWidget()
         self.left_splitter.addWidget(self.file_list)
 
-        # 2. Form Scroll Area - holds the configuration groups, pushes down
+        # 2. Form Scroll Area - fits its natural height without vertical scrollbar by default
         form_scroll = QScrollArea()
         form_scroll.setWidgetResizable(True)
+        form_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         form_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         form_widget = QWidget()
         form_layout = QVBoxLayout(form_widget)
         form_layout.setContentsMargins(0, 2, 4, 2)
-        form_layout.setSpacing(8)
+        form_layout.setSpacing(6)
 
         # Branch configuration group
         branch_grp = QGroupBox("Branch Options")
         branch_layout = QVBoxLayout(branch_grp)
-        branch_layout.setContentsMargins(8, 8, 8, 8)
+        branch_layout.setContentsMargins(8, 6, 8, 6)
         branch_layout.setSpacing(4)
 
         h_branch = QHBoxLayout()
@@ -94,7 +97,7 @@ class PublishPrTab(QWidget):
         # PR Content group
         pr_grp = QGroupBox("Pull Request Details")
         pr_layout = QVBoxLayout(pr_grp)
-        pr_layout.setContentsMargins(8, 8, 8, 8)
+        pr_layout.setContentsMargins(8, 6, 8, 6)
         pr_layout.setSpacing(4)
 
         lbl_title = QLabel("Title:")
@@ -110,7 +113,7 @@ class PublishPrTab(QWidget):
         pr_layout.addWidget(lbl_body)
 
         self.body_input = QPlainTextEdit()
-        self.body_input.setFixedHeight(85)
+        self.body_input.setFixedHeight(70)
         self.body_input.setPlaceholderText("Markdown description of the pull request...")
         pr_layout.addWidget(self.body_input)
 
@@ -130,8 +133,8 @@ class PublishPrTab(QWidget):
         # Options group
         flags_grp = QGroupBox("Options")
         flags_layout = QVBoxLayout(flags_grp)
-        flags_layout.setContentsMargins(8, 8, 8, 8)
-        flags_layout.setSpacing(4)
+        flags_layout.setContentsMargins(8, 6, 8, 6)
+        flags_layout.setSpacing(3)
 
         self.auto_merge_cb = QCheckBox("Squash auto-merge")
         self.auto_merge_cb.setChecked(self.config.default_auto_merge)
@@ -155,16 +158,15 @@ class PublishPrTab(QWidget):
 
         form_layout.addWidget(flags_grp)
 
-        # Keep form packed cleanly without trailing gap
-        form_layout.addStretch()
-
         form_scroll.setWidget(form_widget)
         self.left_splitter.addWidget(form_scroll)
 
-        # Make Changes list take stretch priority (e.g. 500px changes vs 350px form)
-        self.left_splitter.setStretchFactor(0, 3)
-        self.left_splitter.setStretchFactor(1, 2)
-        self.left_splitter.setSizes([450, 300])
+        # Allow form to take exactly its natural height (~320px) without scrolling,
+        # with Changes list filling all remainder above it
+        natural_form_h = 320
+        self.left_splitter.setStretchFactor(0, 1)
+        self.left_splitter.setStretchFactor(1, 0)
+        self.left_splitter.setSizes([450, natural_form_h])
 
         self.main_splitter.addWidget(self.left_splitter)
 
@@ -324,8 +326,39 @@ class PublishPrTab(QWidget):
 
         selected_paths = self.file_list.get_selected_paths()
         all_paths = [i.path for i in self.file_list.items]
-        if selected_paths and len(selected_paths) < len(all_paths):
+        partial_files = bool(selected_paths and len(selected_paths) < len(all_paths))
+        if partial_files:
             args.extend(selected_paths)
+
+        # Build preview popup breakdown
+        cmd_preview = f"{os.path.basename(script_path)} " + " ".join(args)
+        details = [
+            ("Target Base", base_branch or self.config.default_base_branch),
+            ("PR Branch", branch or "(derived automatically)"),
+            ("PR Title", title or "(derived from branch or commit)"),
+            ("PR Body", f"{len(body)} chars" if body else "None"),
+            ("Phase / Commit", phase or "(default: title)"),
+            ("Auto-merge", "Yes (Squash)" if self.auto_merge_cb.isChecked() else "No"),
+            ("Wait CI", "Yes (--wait)" if self.wait_cb.isChecked() else "No"),
+            ("I18n Catalogs", self.i18n_combo.currentText()),
+            (
+                "Files Included",
+                f"{len(selected_paths)} of {len(all_paths)} changed files"
+                if partial_files
+                else f"All {len(all_paths)} changed files",
+            ),
+        ]
+
+        dlg = ConfirmPreviewDialog(
+            title="Publish Pull Request Preview",
+            subtitle="Review execution details before creating the branch and pull request.",
+            command_preview=cmd_preview,
+            details=details,
+            action_button_text="Publish PR",
+            parent=self,
+        )
+        if dlg.exec() != ConfirmPreviewDialog.DialogCode.Accepted:
+            return
 
         self.detected_pr_url = ""
         self.pr_banner.setVisible(False)

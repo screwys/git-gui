@@ -117,7 +117,7 @@ class FileRowWidget(QWidget):
 
         layout.addStretch()
 
-        # Diff stat badge (+X -Y)
+        # Diff stat badge (+X -Y) - clickable button style to directly show diff
         stat_text = ""
         if self.item.additions > 0:
             stat_text += f"<span style='color: #3fb950;'>+{self.item.additions}</span> "
@@ -126,34 +126,32 @@ class FileRowWidget(QWidget):
         if not stat_text:
             stat_text = "<span style='color: #484f58;'>0</span>"
 
-        self.stat_lbl = QLabel()
-        self.stat_lbl.setTextFormat(Qt.TextFormat.RichText)
-        self.stat_lbl.setText(stat_text)
-        self.stat_lbl.setStyleSheet("font-size: 11px; font-family: monospace;")
-        layout.addWidget(self.stat_lbl)
-
-        # Individual "Diff" button next to each file
-        self.btn_diff = QPushButton("Diff")
-        self.btn_diff.setFixedHeight(20)
-        self.btn_diff.setToolTip(f"View diff for {self.item.filename}")
-        self.btn_diff.setStyleSheet(
+        self.btn_stat = QPushButton()
+        self.btn_stat.setText("")
+        self.btn_stat.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stat.setToolTip(f"View diff for {self.item.filename}")
+        self.btn_stat.setStyleSheet(
             "QPushButton { "
-            "  background-color: #21262d; "
-            "  border: 1px solid #30363d; "
-            "  color: #c9d1d9; "
+            "  background-color: transparent; "
+            "  border: 1px solid transparent; "
             "  border-radius: 3px; "
-            "  padding: 1px 7px; "
-            "  font-size: 10px; "
-            "  font-weight: 500; "
+            "  padding: 1px 4px; "
             "} "
             "QPushButton:hover { "
-            "  background-color: #30363d; "
-            "  border-color: #58a6ff; "
-            "  color: #58a6ff; "
+            "  background-color: #21262d; "
+            "  border-color: #30363d; "
             "}"
         )
-        self.btn_diff.clicked.connect(lambda: self.diff_clicked.emit(self.item.path))
-        layout.addWidget(self.btn_diff)
+        btn_layout = QHBoxLayout(self.btn_stat)
+        btn_layout.setContentsMargins(2, 0, 2, 0)
+        lbl_stat = QLabel()
+        lbl_stat.setTextFormat(Qt.TextFormat.RichText)
+        lbl_stat.setText(stat_text)
+        lbl_stat.setStyleSheet("font-size: 11px; font-family: monospace;")
+        btn_layout.addWidget(lbl_stat)
+
+        self.btn_stat.clicked.connect(lambda: self.diff_clicked.emit(self.item.path))
+        layout.addWidget(self.btn_stat)
 
 
 class FileListWidget(QWidget):
@@ -259,7 +257,6 @@ class FileListWidget(QWidget):
         self._updating = False
 
     def _on_individual_diff_clicked(self, path: str):
-        # Select the item in the list widget visually
         for idx in range(self.list_widget.count()):
             item = self.list_widget.item(idx)
             if item.data(Qt.ItemDataRole.UserRole) == path:
