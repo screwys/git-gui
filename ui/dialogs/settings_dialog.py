@@ -21,7 +21,7 @@ class SettingsDialog(QDialog):
         self.config = config
         self.current_repo = current_repo
         self.setWindowTitle("Settings")
-        self.resize(560, 420)
+        self.resize(540, 380)
         self._init_ui()
         self._load_values()
 
@@ -30,19 +30,17 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
 
-        # Title
         title_lbl = QLabel("Application Settings")
-        title_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #58a6ff;")
+        title_lbl.setStyleSheet("font-size: 14px; font-weight: 700; color: #58a6ff;")
         layout.addWidget(title_lbl)
 
         # ---------------- Scripts Group ----------------
         scripts_grp = QGroupBox("Script Locations")
         scripts_layout = QVBoxLayout(scripts_grp)
         scripts_layout.setContentsMargins(10, 10, 10, 10)
-        scripts_layout.setSpacing(8)
+        scripts_layout.setSpacing(6)
 
-        # Publish PR Script
-        scripts_layout.addWidget(QLabel("Publish PR Script Path:"))
+        scripts_layout.addWidget(QLabel("Publish PR Script:"))
         h_pub = QHBoxLayout()
         h_pub.setSpacing(6)
         self.publish_script_edit = QLineEdit()
@@ -55,12 +53,7 @@ class SettingsDialog(QDialog):
         h_pub.addWidget(btn_browse_pub)
         scripts_layout.addLayout(h_pub)
 
-        lbl_pub_hint = QLabel("Relative paths are resolved against the active repository root.")
-        lbl_pub_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
-        scripts_layout.addWidget(lbl_pub_hint)
-
-        # Release Script
-        scripts_layout.addWidget(QLabel("Release Script Path:"))
+        scripts_layout.addWidget(QLabel("Release Script:"))
         h_rel = QHBoxLayout()
         h_rel.setSpacing(6)
         self.release_script_edit = QLineEdit()
@@ -73,21 +66,21 @@ class SettingsDialog(QDialog):
         h_rel.addWidget(btn_browse_rel)
         scripts_layout.addLayout(h_rel)
 
-        lbl_rel_hint = QLabel("Relative paths are resolved against the active repository root.")
-        lbl_rel_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
-        scripts_layout.addWidget(lbl_rel_hint)
+        lbl_hint = QLabel("Relative paths are resolved against the active repository root.")
+        lbl_hint.setStyleSheet("color: #7d8590; font-size: 11px;")
+        scripts_layout.addWidget(lbl_hint)
 
         layout.addWidget(scripts_grp)
 
         # ---------------- Defaults Group ----------------
-        defaults_grp = QGroupBox("Workflow Defaults")
+        defaults_grp = QGroupBox("Defaults")
         defaults_layout = QVBoxLayout(defaults_grp)
         defaults_layout.setContentsMargins(10, 10, 10, 10)
         defaults_layout.setSpacing(6)
 
         h_base = QHBoxLayout()
-        lbl_base = QLabel("Default Base Branch:")
-        lbl_base.setFixedWidth(130)
+        lbl_base = QLabel("Base Branch:")
+        lbl_base.setFixedWidth(100)
         self.base_branch_edit = QLineEdit()
         h_base.addWidget(lbl_base)
         h_base.addWidget(self.base_branch_edit)
@@ -115,7 +108,7 @@ class SettingsDialog(QDialog):
         btn_cancel.clicked.connect(self.reject)
         btns.addWidget(btn_cancel)
 
-        btn_save = QPushButton("Save Settings")
+        btn_save = QPushButton("Save")
         btn_save.setObjectName("primaryButton")
         btn_save.clicked.connect(self._save_settings)
         btns.addWidget(btn_save)
@@ -128,7 +121,6 @@ class SettingsDialog(QDialog):
             self, "Select Script", start_dir, "Shell Scripts (*.sh);;All Files (*)"
         )
         if chosen:
-            # If within current repo, allow storing as relative
             try:
                 rel = os.path.relpath(chosen, self.current_repo)
                 if not rel.startswith(".."):

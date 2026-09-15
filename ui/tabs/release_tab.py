@@ -12,12 +12,14 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QPushButton,
     QGroupBox,
+    QTabWidget,
     QMessageBox,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
 from ui.components.terminal_view import TerminalWidget
+from ui.components.release_jobs_view import ReleaseJobsWidget
 
 
 class ReleaseTab(QWidget):
@@ -32,8 +34,8 @@ class ReleaseTab(QWidget):
 
     def _init_ui(self):
         root_layout = QHBoxLayout(self)
-        root_layout.setContentsMargins(4, 4, 4, 4)
-        root_layout.setSpacing(6)
+        root_layout.setContentsMargins(6, 6, 6, 6)
+        root_layout.setSpacing(8)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root_layout.addWidget(splitter)
@@ -44,7 +46,7 @@ class ReleaseTab(QWidget):
         left_layout.setContentsMargins(0, 2, 4, 2)
         left_layout.setSpacing(8)
 
-        # Version Group (compact)
+        # Version Group
         ver_grp = QGroupBox("Release Version")
         ver_layout = QVBoxLayout(ver_grp)
         ver_layout.setContentsMargins(8, 8, 8, 8)
@@ -57,12 +59,12 @@ class ReleaseTab(QWidget):
         h_ver.addWidget(self.version_input)
 
         btn_patch = QPushButton("+ Patch")
-        btn_patch.setFixedHeight(28)
+        btn_patch.setFixedHeight(26)
         btn_patch.clicked.connect(lambda: self._bump_version("patch"))
         h_ver.addWidget(btn_patch)
 
         btn_minor = QPushButton("+ Minor")
-        btn_minor.setFixedHeight(28)
+        btn_minor.setFixedHeight(26)
         btn_minor.clicked.connect(lambda: self._bump_version("minor"))
         h_ver.addWidget(btn_minor)
 
@@ -74,7 +76,7 @@ class ReleaseTab(QWidget):
 
         left_layout.addWidget(ver_grp, 0)
 
-        # Summary / Release Notes Group (expands to fill vertical space!)
+        # Summary / Release Notes Group
         notes_grp = QGroupBox("Release Summary / Notes")
         notes_layout = QVBoxLayout(notes_grp)
         notes_layout.setContentsMargins(8, 8, 8, 8)
@@ -85,13 +87,13 @@ class ReleaseTab(QWidget):
             "Write the release description / changelog here...\n\n"
             "This will be recorded in the signed git tag and draft GitHub Release notes."
         )
-        self.summary_input.setMinimumHeight(220)
+        self.summary_input.setMinimumHeight(240)
         notes_layout.addWidget(self.summary_input, 1)
 
         left_layout.addWidget(notes_grp, 1)
 
-        # Flags Group (compact)
-        opts_grp = QGroupBox("Release Flags")
+        # Flags Group
+        opts_grp = QGroupBox("Options")
         opts_layout = QVBoxLayout(opts_grp)
         opts_layout.setContentsMargins(8, 8, 8, 8)
         opts_layout.setSpacing(3)
@@ -108,7 +110,7 @@ class ReleaseTab(QWidget):
         self.replace_cb.setChecked(False)
         opts_layout.addWidget(self.replace_cb)
 
-        self.skip_flathub_cb = QCheckBox("Skip Flathub PR opening (--skip-flathub)")
+        self.skip_flathub_cb = QCheckBox("Skip Flathub PR (--skip-flathub)")
         self.skip_flathub_cb.setChecked(False)
         opts_layout.addWidget(self.skip_flathub_cb)
 
@@ -123,26 +125,41 @@ class ReleaseTab(QWidget):
         left_layout.addWidget(opts_grp, 0)
 
         # Start Button
-        self.btn_release = QPushButton("📦 Start Release")
+        self.btn_release = QPushButton("Start Release")
         self.btn_release.setObjectName("primaryButton")
-        self.btn_release.setFixedHeight(34)
+        self.btn_release.setFixedHeight(32)
         self.btn_release.clicked.connect(self.run_release)
         left_layout.addWidget(self.btn_release, 0)
 
         splitter.addWidget(left_widget)
 
-        # ----------------- Right Panel: Terminal -----------------
-        self.terminal = TerminalWidget()
-        splitter.addWidget(self.terminal)
+        # ----------------- Right Panel: Jobs & Terminal Tabs -----------------
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
 
-        splitter.setSizes([420, 600])
+        self.output_tabs = QTabWidget()
+        self.jobs_view = ReleaseJobsWidget()
+        self.terminal = TerminalWidget()
+
+        self.output_tabs.addTab(self.jobs_view, "Jobs & Progress")
+        self.output_tabs.addTab(self.terminal, "Terminal Log")
+        right_layout.addWidget(self.output_tabs)
+
+        splitter.addWidget(right_widget)
+        splitter.setSizes([420, 640])
 
     def _wire_signals(self):
-        self.runner.output_received.connect(self.terminal.append_output)
-        self.runner.started.connect(lambda: self.terminal.set_status("Running Release...", "running"))
+        self.runner.output_received.connect(self._on_output_received)
+        self.runner.started.connect(lambda: self.terminal.set_status("Running", "running"))
         self.runner.finished.connect(self._on_process_finished)
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
         self.terminal.stop_requested.connect(self.runner.stop)
+
+    def _on_output_received(self, text: str):
+        self.terminal.append_output(text)
+        self.jobs_view.process_output_chunk(text)
 
     def refresh(self):
         latest = self.git_mgr.get_latest_tag()
@@ -172,7 +189,7 @@ class ReleaseTab(QWidget):
 
     def run_release(self):
         if self.runner.is_running:
-            QMessageBox.warning(self, "Running", "A script is already running!")
+            QMessageBox.warning(self, "Running", "A script is already running.")
             return
 
         script_path = self.config.resolve_release_script(self.git_mgr.repo_path)
@@ -180,7 +197,7 @@ class ReleaseTab(QWidget):
             QMessageBox.critical(
                 self,
                 "Script Not Found",
-                f"Cannot find release script at:\n{script_path}\n\nYou can configure the script location in Settings (⚙).",
+                f"Cannot find release script at:\n{script_path}\n\nYou can configure the script location in Settings.",
             )
             return
 
@@ -223,8 +240,10 @@ class ReleaseTab(QWidget):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
+        self.jobs_view.reset_state()
         self.terminal.clear_terminal()
-        self.terminal.set_status(f"Releasing {version}...", "running")
+        self.terminal.set_status(f"Releasing {version}", "running")
+        self.output_tabs.setCurrentWidget(self.jobs_view)
         self.runner.start(script_path, args, cwd=self.git_mgr.repo_path)
 
     def _on_process_finished(self, exit_code: int):

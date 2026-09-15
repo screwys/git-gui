@@ -112,8 +112,8 @@ class DraggableTopBar(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # App Title
-        self.app_title = QLabel("Rufin Git")
-        self.app_title.setStyleSheet("font-weight: 800; font-size: 13px; color: #58a6ff;")
+        self.app_title = QLabel("Rufin")
+        self.app_title.setStyleSheet("font-weight: 800; font-size: 13px; color: #58a6ff; letter-spacing: 0.5px;")
         layout.addWidget(self.app_title)
 
         # Repo selector button
@@ -124,7 +124,7 @@ class DraggableTopBar(QWidget):
         layout.addWidget(self.repo_btn)
 
         # Branch indicator badge
-        self.branch_badge = QLabel("Branch: ...")
+        self.branch_badge = QLabel("branch: ...")
         self.branch_badge.setStyleSheet(
             "background-color: #21262d; color: #7ee787; border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; font-weight: 600; font-size: 11px;"
         )
@@ -134,26 +134,26 @@ class DraggableTopBar(QWidget):
         layout.addStretch()
 
         # Git Actions
-        self.btn_refresh = QPushButton("⟳ Refresh")
+        self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.setFixedHeight(24)
         self.btn_refresh.setToolTip("Reload changes, diffs, and branches")
         self.btn_refresh.clicked.connect(self.main_window.refresh_all)
         layout.addWidget(self.btn_refresh)
 
-        self.btn_fetch = QPushButton("📥 Fetch")
+        self.btn_fetch = QPushButton("Fetch")
         self.btn_fetch.setFixedHeight(24)
         self.btn_fetch.setToolTip("git fetch --prune origin")
         self.btn_fetch.clicked.connect(self.main_window._do_fetch)
         layout.addWidget(self.btn_fetch)
 
-        self.btn_pull = QPushButton("⬇ Pull")
+        self.btn_pull = QPushButton("Pull")
         self.btn_pull.setFixedHeight(24)
         self.btn_pull.setToolTip("git pull --ff-only")
         self.btn_pull.clicked.connect(self.main_window._do_pull)
         layout.addWidget(self.btn_pull)
 
         # Settings button
-        self.btn_settings = QPushButton("⚙ Settings")
+        self.btn_settings = QPushButton("Settings")
         self.btn_settings.setFixedHeight(24)
         self.btn_settings.setToolTip("Configure script locations and default options")
         self.btn_settings.clicked.connect(self.main_window.open_settings)
@@ -229,9 +229,9 @@ class MainWindow(QMainWindow):
         self.update_repo_display()
 
     def _init_ui(self):
-        self.setWindowTitle("Rufin Git GUI")
-        self.resize(1180, 760)
-        self.setMinimumSize(850, 550)
+        self.setWindowTitle("Rufin")
+        self.resize(1200, 780)
+        self.setMinimumSize(880, 560)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -243,13 +243,13 @@ class MainWindow(QMainWindow):
         self.top_bar = DraggableTopBar(self)
         root_layout.addWidget(self.top_bar)
 
-        # Tab Widget (Workflow Extensibility)
+        # Tab Widget
         self.tabs = QTabWidget()
         self.publish_tab = PublishPrTab(self.git_mgr, self.config)
         self.release_tab = ReleaseTab(self.git_mgr, self.config)
 
-        self.tabs.addTab(self.publish_tab, "🚀 Publish PR")
-        self.tabs.addTab(self.release_tab, "📦 Release Orchestrator")
+        self.tabs.addTab(self.publish_tab, "Publish PR")
+        self.tabs.addTab(self.release_tab, "Release")
 
         root_layout.addWidget(self.tabs)
 
@@ -280,14 +280,14 @@ class MainWindow(QMainWindow):
 
     def update_repo_display(self):
         if not self.git_mgr.is_git_repo():
-            self.top_bar.branch_badge.setText("Not a git repo")
+            self.top_bar.branch_badge.setText("not a git repo")
             self.top_bar.branch_badge.setStyleSheet(
                 "color: #f85149; background-color: #21262d; border-radius: 4px; padding: 2px 8px;"
             )
             return
 
         branch = self.git_mgr.get_current_branch()
-        self.top_bar.branch_badge.setText(f"🌿 {branch}")
+        self.top_bar.branch_badge.setText(f"branch: {branch}")
         self.top_bar.branch_badge.setStyleSheet(
             "background-color: #21262d; color: #7ee787; border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; font-weight: 600; font-size: 11px;"
         )
@@ -296,7 +296,7 @@ class MainWindow(QMainWindow):
         self.update_repo_display()
         self.publish_tab.refresh()
         self.release_tab.refresh()
-        self.status_bar.showMessage("Refreshed git repository state.", 3000)
+        self.status_bar.showMessage("Refreshed repository state.", 3000)
 
     def _do_fetch(self):
         self.status_bar.showMessage("Fetching from origin...")
@@ -304,7 +304,7 @@ class MainWindow(QMainWindow):
         code, msg = self.git_mgr.fetch()
         self.top_bar.btn_fetch.setEnabled(True)
         if code == 0:
-            self.status_bar.showMessage("Fetch completed successfully.", 4000)
+            self.status_bar.showMessage("Fetch completed.", 4000)
             self.refresh_all()
         else:
             QMessageBox.warning(self, "Fetch Failed", f"Git fetch failed:\n{msg}")
@@ -316,7 +316,7 @@ class MainWindow(QMainWindow):
         code, msg = self.git_mgr.pull()
         self.top_bar.btn_pull.setEnabled(True)
         if code == 0:
-            self.status_bar.showMessage("Pull completed successfully.", 4000)
+            self.status_bar.showMessage("Pull completed.", 4000)
             self.refresh_all()
         else:
             QMessageBox.warning(self, "Pull Failed", f"Git pull failed:\n{msg}")

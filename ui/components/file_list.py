@@ -1,16 +1,59 @@
 from typing import List, Set
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF
+from PyQt6.QtGui import QPainter, QColor, QPen
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
-    QCheckBox,
+    QAbstractButton,
     QPushButton,
     QLabel,
 )
 from core.git_manager import GitFileItem
+
+
+class MinimalCheckBox(QAbstractButton):
+    def __init__(self, checked: bool = True, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setChecked(checked)
+        self.setFixedSize(16, 16)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        r = 3.0
+
+        if self.isChecked():
+            bg = QColor("#1f6feb") if not self.underMouse() else QColor("#388bfd")
+            border = QColor("#58a6ff")
+            painter.setBrush(bg)
+            painter.setPen(border)
+            painter.drawRoundedRect(rect, r, r)
+
+            # Draw white checkmark
+            pen = QPen(QColor("#ffffff"))
+            pen.setWidthF(1.8)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+
+            p1 = QPointF(rect.left() + 3.2, rect.top() + 7.0)
+            p2 = QPointF(rect.left() + 5.8, rect.top() + 10.2)
+            p3 = QPointF(rect.left() + 11.2, rect.top() + 4.2)
+            painter.drawLine(p1, p2)
+            painter.drawLine(p2, p3)
+        else:
+            bg = QColor("#0d1117") if not self.underMouse() else QColor("#161b22")
+            border = QColor("#30363d") if not self.underMouse() else QColor("#8b949e")
+            painter.setBrush(bg)
+            painter.setPen(border)
+            painter.drawRoundedRect(rect, r, r)
 
 
 class FileRowWidget(QWidget):
@@ -23,49 +66,52 @@ class FileRowWidget(QWidget):
 
     def _init_ui(self, is_checked: bool):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        # Checkbox
-        self.checkbox = QCheckBox()
-        self.checkbox.setChecked(is_checked)
+        # Minimal vector checkbox
+        self.checkbox = MinimalCheckBox(is_checked, self)
         self.checkbox.toggled.connect(self.checked_toggled.emit)
         layout.addWidget(self.checkbox)
 
-        # Status badge
+        # Status badge (GitHub/Zed style badge)
         status_char = self.item.display_status
         self.status_lbl = QLabel(status_char)
-        self.status_lbl.setFixedWidth(18)
+        self.status_lbl.setFixedSize(16, 16)
         self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Color based on status
         if status_char in ("A", "U"):
-            st_color = "#22c55e"  # Green
-            st_bg = "#14532d"
+            color = "#3fb950"
+            bg = "rgba(46, 160, 67, 0.18)"
+            border = "rgba(46, 160, 67, 0.4)"
         elif status_char == "D":
-            st_color = "#ef4444"  # Red
-            st_bg = "#7f1d1d"
+            color = "#f85149"
+            bg = "rgba(248, 81, 73, 0.18)"
+            border = "rgba(248, 81, 73, 0.4)"
         elif status_char == "R":
-            st_color = "#a855f7"  # Purple
-            st_bg = "#581c87"
+            color = "#a371f7"
+            bg = "rgba(163, 113, 247, 0.18)"
+            border = "rgba(163, 113, 247, 0.4)"
         else:
-            st_color = "#eab308"  # Yellow/Orange for M
-            st_bg = "#713f12"
+            color = "#d29922"
+            bg = "rgba(187, 128, 9, 0.18)"
+            border = "rgba(187, 128, 9, 0.4)"
 
         self.status_lbl.setStyleSheet(
-            f"color: {st_color}; background-color: {st_bg}; border-radius: 3px; font-weight: bold; font-size: 11px; padding: 1px;"
+            f"color: {color}; background-color: {bg}; border: 1px solid {border}; border-radius: 3px; font-weight: bold; font-size: 10px; font-family: monospace;"
         )
         layout.addWidget(self.status_lbl)
 
-        # Filename (primary)
+        # Filename
         self.name_lbl = QLabel(self.item.filename)
-        self.name_lbl.setStyleSheet("color: #f4f4f5; font-weight: 500; font-size: 12px;")
+        self.name_lbl.setStyleSheet("color: #e6edf3; font-weight: 500; font-size: 12px;")
         layout.addWidget(self.name_lbl)
 
-        # Dirname (secondary / dim)
+        # Dirname (dimmed)
         if self.item.dirname != ".":
             self.dir_lbl = QLabel(self.item.dirname)
-            self.dir_lbl.setStyleSheet("color: #71717a; font-size: 11px;")
+            self.dir_lbl.setStyleSheet("color: #7d8590; font-size: 11px;")
             layout.addWidget(self.dir_lbl)
 
         layout.addStretch()
@@ -73,11 +119,11 @@ class FileRowWidget(QWidget):
         # Diff stat badge (+X -Y)
         stat_text = ""
         if self.item.additions > 0:
-            stat_text += f"<span style='color: #22c55e;'>+{self.item.additions}</span> "
+            stat_text += f"<span style='color: #3fb950;'>+{self.item.additions}</span> "
         if self.item.deletions > 0:
-            stat_text += f"<span style='color: #ef4444;'>-{self.item.deletions}</span>"
+            stat_text += f"<span style='color: #f85149;'>-{self.item.deletions}</span>"
         if not stat_text:
-            stat_text = "<span style='color: #71717a;'>±0</span>"
+            stat_text = "<span style='color: #484f58;'>0</span>"
 
         self.stat_lbl = QLabel()
         self.stat_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -87,9 +133,9 @@ class FileRowWidget(QWidget):
 
 
 class FileListWidget(QWidget):
-    file_selected = pyqtSignal(str)  # emitted when a single file is clicked/selected
-    selection_changed = pyqtSignal(list)  # list of checked file paths
-    view_diff_requested = pyqtSignal(list)  # list of paths to view diff for
+    file_selected = pyqtSignal(str)
+    selection_changed = pyqtSignal(list)
+    view_diff_requested = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -101,28 +147,28 @@ class FileListWidget(QWidget):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
         # Header
         header = QHBoxLayout()
         header.setContentsMargins(4, 2, 4, 2)
+        header.setSpacing(6)
 
         self.title_lbl = QLabel("Changes (0)")
-        self.title_lbl.setStyleSheet("color: #f4f4f5; font-weight: bold; font-size: 13px;")
+        self.title_lbl.setStyleSheet("color: #e6edf3; font-weight: 600; font-size: 12px;")
         header.addWidget(self.title_lbl)
 
         header.addStretch()
 
-        self.btn_view_diff = QPushButton("± View Diff")
-        self.btn_view_diff.setFixedHeight(26)
-        self.btn_view_diff.setStyleSheet("background-color: #27272a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 4px; padding: 2px 8px; font-size: 11px;")
+        self.btn_view_diff = QPushButton("View Diff")
+        self.btn_view_diff.setFixedHeight(22)
+        self.btn_view_diff.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_view_diff.clicked.connect(self._on_view_diff_clicked)
         header.addWidget(self.btn_view_diff)
 
-        self.select_all_cb = QCheckBox()
+        self.select_all_cb = MinimalCheckBox(True, self)
         self.select_all_cb.setToolTip("Select / Deselect All")
-        self.select_all_cb.setChecked(True)
-        self.select_all_cb.stateChanged.connect(self._on_select_all_toggled)
+        self.select_all_cb.toggled.connect(self._on_select_all_toggled)
         header.addWidget(self.select_all_cb)
 
         layout.addLayout(header)
@@ -130,11 +176,13 @@ class FileListWidget(QWidget):
         # List Widget
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(
-            "QListWidget { background-color: #12141a; border: 1px solid #27272a; border-radius: 6px; } "
-            "QListWidget::item { padding: 0px; border-bottom: 1px solid #1c1f26; } "
-            "QListWidget::item:selected { background-color: #1e293b; } "
-            "QListWidget::item:hover { background-color: #182030; }"
+            "QListWidget { background-color: #0b0e14; border: 1px solid #30363d; border-radius: 6px; } "
+            "QListWidget::item { padding: 0px; border-bottom: 1px solid #161b22; } "
+            "QListWidget::item:selected { background-color: #1c2128; } "
+            "QListWidget::item:hover { background-color: #13171e; }"
         )
+        self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self.list_widget)
 
@@ -143,20 +191,23 @@ class FileListWidget(QWidget):
         self.items = items
         self.list_widget.clear()
 
-        # Update title & total diff stat
         total_adds = sum(i.additions for i in items)
         total_dels = sum(i.deletions for i in items)
         self.title_lbl.setText(f"Changes ({len(items)})")
-        self.btn_view_diff.setText(f"± View Diff +{total_adds} -{total_dels}")
+        stat_suffix = ""
+        if total_adds > 0 or total_dels > 0:
+            stat_suffix = f" (+{total_adds} -{total_dels})"
+        self.btn_view_diff.setText(f"View Diff{stat_suffix}")
 
-        # Default all checked if paths were already checked or first load
         if not self.checked_paths:
             self.checked_paths = {i.path for i in items}
         else:
             current_paths = {i.path for i in items}
             self.checked_paths = self.checked_paths.intersection(current_paths)
 
+        self.select_all_cb.blockSignals(True)
         self.select_all_cb.setChecked(len(self.checked_paths) == len(items) and len(items) > 0)
+        self.select_all_cb.blockSignals(False)
 
         for item in items:
             list_item = QListWidgetItem(self.list_widget)
@@ -187,11 +238,10 @@ class FileListWidget(QWidget):
 
         self.selection_changed.emit(list(self.checked_paths))
 
-    def _on_select_all_toggled(self, state):
+    def _on_select_all_toggled(self, is_checked: bool):
         if self._updating:
             return
         self._updating = True
-        is_checked = (state == Qt.CheckState.Checked.value or state == 2)
         if is_checked:
             self.checked_paths = {i.path for i in self.items}
         else:
@@ -214,7 +264,6 @@ class FileListWidget(QWidget):
             self.file_selected.emit(path)
 
     def _on_view_diff_clicked(self):
-        # View diff for checked paths, or all paths if none checked
         paths = list(self.checked_paths) if self.checked_paths else [i.path for i in self.items]
         self.view_diff_requested.emit(paths)
 
