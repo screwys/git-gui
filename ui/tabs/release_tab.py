@@ -227,7 +227,7 @@ class ReleaseTab(QWidget):
         self.jobs_view = ReleaseJobsWidget()
         self.terminal = TerminalWidget()
 
-        self.output_tabs.addTab(self.jobs_view, "Jobs & Progress")
+        self.output_tabs.addTab(self.jobs_view, "Jobs and Progress")
         self.output_tabs.addTab(self.terminal, "Terminal Log")
         right_layout.addWidget(self.output_tabs)
 

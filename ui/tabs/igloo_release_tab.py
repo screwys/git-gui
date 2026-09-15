@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
-    QCheckBox,
     QPushButton,
     QButtonGroup,
     QGroupBox,
@@ -178,10 +177,10 @@ class IglooReleaseTab(QWidget):
         right_layout.setSpacing(0)
 
         self.output_tabs = QTabWidget()
-        self.jobs_view = ReleaseJobsWidget()
+        self.jobs_view = ReleaseJobsWidget(project_name="Igloo")
         self.terminal = TerminalWidget()
 
-        self.output_tabs.addTab(self.jobs_view, "Jobs & Progress")
+        self.output_tabs.addTab(self.jobs_view, "Jobs and Progress")
         self.output_tabs.addTab(self.terminal, "Terminal Log")
         right_layout.addWidget(self.output_tabs)
 
@@ -248,7 +247,7 @@ class IglooReleaseTab(QWidget):
         details = [
             ("Release Bump", self.current_bump.capitalize()),
             ("Target Version", version),
-            ("Workflow", "release.yml (workflow_dispatch)"),
+            ("Workflow", "release.yml (workflow dispatch)"),
             ("Release Notes", f"{len(summary)} characters"),
         ]
 

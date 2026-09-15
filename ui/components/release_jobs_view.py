@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QColor
 from PyQt6.QtWidgets import (
@@ -16,24 +16,37 @@ from PyQt6.QtWidgets import (
 
 
 class ReleaseJobsWidget(QWidget):
-    DEFAULT_COPR = "https://copr.fedorainfracloud.org/coprs/screwyy/rufin/"
+    DEFAULT_RUFIN_COPR = "https://copr.fedorainfracloud.org/coprs/screwyy/rufin/"
 
-    def __init__(self, parent=None):
+    def __init__(self, project_name: str = "Rufin", parent=None):
         super().__init__(parent)
-        self.jobs: Dict[str, Dict[str, str]] = {
-            "AUR": {"status": "idle", "url": "", "step": "—"},
-            "Flatpak": {"status": "idle", "url": "", "step": "—"},
-            "Nix": {"status": "idle", "url": "", "step": "—"},
-            "macOS": {"status": "idle", "url": "", "step": "—"},
-            "RPM": {"status": "idle", "url": "", "step": "—"},
-            "Windows": {"status": "idle", "url": "", "step": "—"},
-            "Homebrew": {"status": "idle", "url": "", "step": "—"},
-        }
-        self.copr_url = self.DEFAULT_COPR
+        self.project_name = project_name
+        self.jobs: Dict[str, Dict[str, str]] = {}
+        self.copr_url = self.DEFAULT_RUFIN_COPR
         self.pr_url = ""
         self.flathub_url = ""
         self.release_url = ""
+        self._init_project_jobs()
         self._init_ui()
+
+    def _init_project_jobs(self):
+        if self.project_name == "Igloo":
+            self.jobs = {
+                "Release Gate": {"status": "idle", "url": "", "step": "—"},
+                "Container Release": {"status": "idle", "url": "", "step": "—"},
+                "Android Release": {"status": "idle", "url": "", "step": "—"},
+                "Windows Release": {"status": "idle", "url": "", "step": "—"},
+            }
+        else:
+            self.jobs = {
+                "AUR": {"status": "idle", "url": "", "step": "—"},
+                "Flatpak": {"status": "idle", "url": "", "step": "—"},
+                "Nix": {"status": "idle", "url": "", "step": "—"},
+                "macOS": {"status": "idle", "url": "", "step": "—"},
+                "RPM": {"status": "idle", "url": "", "step": "—"},
+                "Windows": {"status": "idle", "url": "", "step": "—"},
+                "Homebrew": {"status": "idle", "url": "", "step": "—"},
+            }
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -53,25 +66,36 @@ class ReleaseJobsWidget(QWidget):
         lbl_quick.setStyleSheet("color: #8b949e; font-weight: 600; font-size: 11px;")
         h_links.addWidget(lbl_quick)
 
-        self.btn_copr = QPushButton("COPR Builds")
-        self.btn_copr.setFixedHeight(26)
-        self.btn_copr.setStyleSheet("padding: 2px 10px; font-size: 11px;")
-        self.btn_copr.clicked.connect(lambda: self._open_url(self.copr_url))
-        h_links.addWidget(self.btn_copr)
+        if self.project_name == "Rufin":
+            self.btn_copr = QPushButton("COPR Builds")
+            self.btn_copr.setFixedHeight(26)
+            self.btn_copr.setStyleSheet("padding: 2px 10px; font-size: 11px;")
+            self.btn_copr.clicked.connect(lambda: self._open_url(self.copr_url))
+            h_links.addWidget(self.btn_copr)
 
-        self.btn_pr = QPushButton("Release PR")
-        self.btn_pr.setFixedHeight(26)
-        self.btn_pr.setEnabled(False)
-        self.btn_pr.setStyleSheet("padding: 2px 10px; font-size: 11px;")
-        self.btn_pr.clicked.connect(lambda: self._open_url(self.pr_url))
-        h_links.addWidget(self.btn_pr)
+            self.btn_pr = QPushButton("Release PR")
+            self.btn_pr.setFixedHeight(26)
+            self.btn_pr.setEnabled(False)
+            self.btn_pr.setStyleSheet("padding: 2px 10px; font-size: 11px;")
+            self.btn_pr.clicked.connect(lambda: self._open_url(self.pr_url))
+            h_links.addWidget(self.btn_pr)
 
-        self.btn_flathub = QPushButton("Flathub PR")
-        self.btn_flathub.setFixedHeight(26)
-        self.btn_flathub.setEnabled(False)
-        self.btn_flathub.setStyleSheet("padding: 2px 10px; font-size: 11px;")
-        self.btn_flathub.clicked.connect(lambda: self._open_url(self.flathub_url))
-        h_links.addWidget(self.btn_flathub)
+            self.btn_flathub = QPushButton("Flathub PR")
+            self.btn_flathub.setFixedHeight(26)
+            self.btn_flathub.setEnabled(False)
+            self.btn_flathub.setStyleSheet("padding: 2px 10px; font-size: 11px;")
+            self.btn_flathub.clicked.connect(lambda: self._open_url(self.flathub_url))
+            h_links.addWidget(self.btn_flathub)
+        else:
+            self.btn_copr = None
+            self.btn_pr = None
+            self.btn_flathub = None
+
+            self.btn_actions = QPushButton("GitHub Actions")
+            self.btn_actions.setFixedHeight(26)
+            self.btn_actions.setStyleSheet("padding: 2px 10px; font-size: 11px;")
+            self.btn_actions.clicked.connect(lambda: self._open_url("https://github.com/screwys/Igloo/actions"))
+            h_links.addWidget(self.btn_actions)
 
         self.btn_gh_rel = QPushButton("GitHub Release")
         self.btn_gh_rel.setFixedHeight(26)
@@ -160,12 +184,13 @@ class ReleaseJobsWidget(QWidget):
     def reset_state(self):
         for k in self.jobs:
             self.jobs[k] = {"status": "idle", "url": "", "step": "—"}
-        self.copr_url = self.DEFAULT_COPR
-        self.btn_copr.setText("COPR Builds")
-        self.pr_url = ""
-        self.btn_pr.setEnabled(False)
-        self.flathub_url = ""
-        self.btn_flathub.setEnabled(False)
+        self.copr_url = self.DEFAULT_RUFIN_COPR
+        if self.btn_copr:
+            self.btn_copr.setText("COPR Builds")
+        if self.btn_pr:
+            self.btn_pr.setEnabled(False)
+        if self.btn_flathub:
+            self.btn_flathub.setEnabled(False)
         self.release_url = ""
         self.btn_gh_rel.setEnabled(False)
         self._populate_table()
@@ -173,15 +198,15 @@ class ReleaseJobsWidget(QWidget):
     def process_output_chunk(self, text: str):
         changed = False
 
-        # Match COPR build logs
+        # Match COPR build logs (Rufin)
         copr_match = re.search(r"https://copr\.fedorainfracloud\.org/coprs/screwyy/rufin/build/(\d+)/?", text)
-        if copr_match:
+        if copr_match and self.btn_copr:
             b_id = copr_match.group(1)
             self.copr_url = f"https://copr.fedorainfracloud.org/coprs/screwyy/rufin/build/{b_id}/"
             self.btn_copr.setText(f"COPR Build #{b_id}")
 
         copr_id_match = re.search(r"COPR build (\d+):", text)
-        if copr_id_match and "screwyy/rufin/build" not in self.copr_url:
+        if copr_id_match and self.btn_copr and "screwyy/rufin/build" not in self.copr_url:
             b_id = copr_id_match.group(1)
             self.copr_url = f"https://copr.fedorainfracloud.org/coprs/screwyy/rufin/build/{b_id}/"
             self.btn_copr.setText(f"COPR Build #{b_id}")
@@ -190,19 +215,23 @@ class ReleaseJobsWidget(QWidget):
         pr_match = re.search(r"https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)", text)
         if pr_match:
             full_url = pr_match.group(0)
-            if "flathub" in full_url:
+            if "flathub" in full_url and self.btn_flathub:
                 self.flathub_url = full_url
                 self.btn_flathub.setEnabled(True)
-            else:
+            elif self.btn_pr:
                 self.pr_url = full_url
                 self.btn_pr.setEnabled(True)
 
-        # Match Workflow Run URLs
-        # e.g. "Started AUR: https://github.com/.../runs/12345"
-        # or "- AUR: https://github.com/.../runs/12345"
-        # or "Reusing AUR candidate run: https://github.com/.../runs/12345"
+        # Match GitHub Release URLs
+        rel_match = re.search(r"https://github\.com/[^/\s]+/[^/\s]+/releases/tag/([^\s]+)", text)
+        if rel_match:
+            self.release_url = rel_match.group(0)
+            self.btn_gh_rel.setEnabled(True)
+
+        # Match workflow triggers or runs
         for key in self.jobs.keys():
-            pattern = rf"(?:Started|Reusing|-)\s+{key}(?:\s+candidate\s+run)?:\s*(https://github\.com/[^\s]+/actions/runs/\d+)"
+            # e.g. "Started AUR: https://..." or "- AUR: https://..." or "container-release.yml"
+            pattern = rf"(?:Started|Reusing|-)\s+{re.escape(key)}(?:\s+candidate\s+run)?:\s*(https://github\.com/[^\s]+/actions/runs/\d+)"
             m = re.search(pattern, text, re.IGNORECASE)
             if m:
                 url = m.group(1)
@@ -211,24 +240,40 @@ class ReleaseJobsWidget(QWidget):
                     self.jobs[key]["status"] = "running"
                 changed = True
 
-        # Parse table snapshots or summary text
+        # Igloo workflow dispatch matchers
+        if self.project_name == "Igloo":
+            if "workflow run release.yml" in text:
+                self.jobs["Release Gate"]["status"] = "running"
+                changed = True
+            if "workflow run container-release.yml" in text:
+                self.jobs["Container Release"]["status"] = "running"
+                changed = True
+            if "workflow run android-release.yml" in text:
+                self.jobs["Android Release"]["status"] = "running"
+                changed = True
+            if "workflow run windows-release.yml" in text:
+                self.jobs["Windows Release"]["status"] = "running"
+                changed = True
+
+        # Summary text matches
         if "All draft candidate workflows completed successfully." in text:
             for k in ["AUR", "Flatpak", "Nix", "macOS", "RPM", "Windows"]:
-                self.jobs[k]["status"] = "passed"
+                if k in self.jobs:
+                    self.jobs[k]["status"] = "passed"
             changed = True
 
         if "All package-manager publication workflows completed successfully." in text:
             for k in ["AUR", "Homebrew"]:
-                self.jobs[k]["status"] = "passed"
+                if k in self.jobs:
+                    self.jobs[k]["status"] = "passed"
             changed = True
 
-        # Check job table rows (e.g. from release-job-table.py)
+        # Table rows parsing
         for line in text.splitlines():
             parts = [p.strip() for p in re.split(r"\s{2,}", line) if p.strip()]
             if len(parts) >= 3:
                 wf_name = parts[0]
                 if wf_name in self.jobs:
-                    # status is parts[2]
                     status_str = parts[2].lower()
                     if status_str in ("passed", "success", "completed"):
                         self.jobs[wf_name]["status"] = "passed"
