@@ -3,7 +3,7 @@ import sys
 import os
 import subprocess
 from typing import List, Optional
-from PyQt6.QtCore import Qt, QPointF
+from PyQt6.QtCore import Qt, QPointF, QSize
 from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -22,12 +22,14 @@ from PyQt6.QtWidgets import (
 
 from core.config import AppConfig, ConfigManager
 from core.git_manager import GitManager
+from core.runner import ProcessRunner
 from ui.style import DARK_STYLESHEET
 from ui.tabs.publish_pr_tab import PublishPrTab
 from ui.tabs.release_tab import ReleaseTab
 from ui.tabs.igloo_commit_tab import IglooCommitTab
 from ui.tabs.igloo_release_tab import IglooReleaseTab
 from ui.dialogs.settings_dialog import SettingsDialog
+from ui.components.icons import create_restart_icon, create_android_icon
 
 
 def get_gtk_button_layout() -> List[str]:
@@ -133,6 +135,31 @@ class DraggableTopBar(QWidget):
         layout.addWidget(self.branch_badge)
 
         layout.addStretch()
+
+        # Igloo Action Buttons (Restart & Build Android)
+        self.igloo_tools_widget = QWidget()
+        h_tools = QHBoxLayout(self.igloo_tools_widget)
+        h_tools.setContentsMargins(0, 0, 0, 0)
+        h_tools.setSpacing(6)
+
+        self.btn_just_restart = QPushButton()
+        self.btn_just_restart.setIcon(create_restart_icon())
+        self.btn_just_restart.setIconSize(QSize(16, 16))
+        self.btn_just_restart.setFixedSize(28, 24)
+        self.btn_just_restart.setToolTip("Restart Server (just restart)")
+        self.btn_just_restart.clicked.connect(lambda: self.main_window.run_igloo_just("restart"))
+        h_tools.addWidget(self.btn_just_restart)
+
+        self.btn_just_android = QPushButton()
+        self.btn_just_android.setIcon(create_android_icon())
+        self.btn_just_android.setIconSize(QSize(16, 16))
+        self.btn_just_android.setFixedSize(28, 24)
+        self.btn_just_android.setToolTip("Build & Install Android App (just build-android)")
+        self.btn_just_android.clicked.connect(lambda: self.main_window.run_igloo_just("build-android"))
+        h_tools.addWidget(self.btn_just_android)
+
+        self.igloo_tools_widget.setVisible(False)
+        layout.addWidget(self.igloo_tools_widget)
 
         # Git Actions
         self.btn_refresh = QPushButton("Refresh")
@@ -276,7 +303,9 @@ class MainWindow(QMainWindow):
         self.config: AppConfig = ConfigManager.load()
         self.rufin_git_mgr = GitManager(self.config.rufin_repo_path)
         self.igloo_git_mgr = GitManager(self.config.igloo_repo_path)
+        self.runner = ProcessRunner(self)
         self._init_ui()
+        self._wire_signals()
         self.update_repo_display()
 
     def _init_ui(self):
@@ -315,6 +344,29 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
+    def _wire_signals(self):
+        self.runner.output_received.connect(self._on_runner_output)
+        self.runner.started.connect(lambda: self.status_bar.showMessage("Running task...", 3000))
+        self.runner.finished.connect(self._on_runner_finished)
+
+    def _on_runner_output(self, text: str):
+        # Route just output to Igloo commit tab terminal
+        self.igloo_view.commit_tab.terminal.append_output(text)
+
+    def _on_runner_finished(self, exit_code: int):
+        status = "success" if exit_code == 0 else "failed"
+        self.igloo_view.commit_tab.terminal.set_status("Completed" if exit_code == 0 else f"Exit {exit_code}", status)
+        self.status_bar.showMessage(f"Task completed (Exit {exit_code}).", 3000)
+
+    def run_igloo_just(self, command: str):
+        if self.runner.is_running:
+            QMessageBox.warning(self, "Running", "A command is already executing.")
+            return
+        self.igloo_view.commit_tab.terminal.clear_terminal()
+        self.igloo_view.commit_tab.terminal.set_status(f"just {command}", "running")
+        self.status_bar.showMessage(f"Executing: just {command}...")
+        self.runner.start("just", [command], cwd=self.igloo_git_mgr.repo_path)
+
     @property
     def active_git_mgr(self) -> GitManager:
         if self.project_tabs.currentIndex() == 1:
@@ -352,8 +404,11 @@ class MainWindow(QMainWindow):
     def update_repo_display(self):
         mgr = self.active_git_mgr
         name = self.active_repo_name
+        is_igloo = bool(self.project_tabs.currentIndex() == 1)
+
         self.top_bar.repo_badge.setText(name)
         self.top_bar.repo_badge.setToolTip(f"Repository path: {mgr.repo_path}")
+        self.top_bar.igloo_tools_widget.setVisible(is_igloo)
 
         if not mgr.is_git_repo():
             self.top_bar.branch_badge.setText("not a git repo")
