@@ -50,7 +50,7 @@ class ReleaseTab(QWidget):
         left_layout.setContentsMargins(0, 2, 4, 2)
         left_layout.setSpacing(8)
 
-        # Mode Selection: Compact side-by-side selectable segment boxes
+        # Mode Selection: Compact side-by-side selectable pills/tabs (auto-sized to text, not stretched)
         mode_grp = QGroupBox("Release Mode")
         mode_layout = QVBoxLayout(mode_grp)
         mode_layout.setContentsMargins(8, 8, 8, 8)
@@ -58,6 +58,7 @@ class ReleaseTab(QWidget):
 
         h_mode_boxes = QHBoxLayout()
         h_mode_boxes.setSpacing(6)
+        h_mode_boxes.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self.mode_group = QButtonGroup(self)
         self.mode_group.setExclusive(True)
@@ -68,7 +69,7 @@ class ReleaseTab(QWidget):
             "  border: 1px solid #30363d; "
             "  color: #8b949e; "
             "  border-radius: 5px; "
-            "  padding: 6px 4px; "
+            "  padding: 4px 12px; "
             "  font-size: 11px; "
             "  font-weight: 500; "
             "} "
@@ -88,22 +89,26 @@ class ReleaseTab(QWidget):
         self.btn_mode_new = QPushButton("New Release")
         self.btn_mode_new.setCheckable(True)
         self.btn_mode_new.setChecked(True)
+        self.btn_mode_new.setFixedHeight(26)
         self.btn_mode_new.setStyleSheet(mode_style)
         self.mode_group.addButton(self.btn_mode_new, 0)
         h_mode_boxes.addWidget(self.btn_mode_new)
 
-        self.btn_mode_replace = QPushButton("Replace Tag\n(--replace)")
+        self.btn_mode_replace = QPushButton("Replace")
         self.btn_mode_replace.setCheckable(True)
+        self.btn_mode_replace.setFixedHeight(26)
         self.btn_mode_replace.setStyleSheet(mode_style)
         self.mode_group.addButton(self.btn_mode_replace, 1)
         h_mode_boxes.addWidget(self.btn_mode_replace)
 
-        self.btn_mode_resume = QPushButton("Resume\n(--resume-after-prep)")
+        self.btn_mode_resume = QPushButton("Resume")
         self.btn_mode_resume.setCheckable(True)
+        self.btn_mode_resume.setFixedHeight(26)
         self.btn_mode_resume.setStyleSheet(mode_style)
         self.mode_group.addButton(self.btn_mode_resume, 2)
         h_mode_boxes.addWidget(self.btn_mode_resume)
 
+        h_mode_boxes.addStretch()
         mode_layout.addLayout(h_mode_boxes)
 
         self.mode_hint_lbl = QLabel("Syncs default branch, creates release prep PR, and publishes tag.")
