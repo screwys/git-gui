@@ -2,7 +2,7 @@
 import sys
 import os
 import subprocess
-from typing import List
+from typing import List, Optional
 from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QPen
 from PyQt6.QtWidgets import (
@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QAbstractButton,
     QLabel,
-    QFileDialog,
     QStatusBar,
     QMessageBox,
     QFrame,
@@ -26,6 +25,8 @@ from core.git_manager import GitManager
 from ui.style import DARK_STYLESHEET
 from ui.tabs.publish_pr_tab import PublishPrTab
 from ui.tabs.release_tab import ReleaseTab
+from ui.tabs.igloo_commit_tab import IglooCommitTab
+from ui.tabs.igloo_release_tab import IglooReleaseTab
 from ui.dialogs.settings_dialog import SettingsDialog
 
 
@@ -49,6 +50,7 @@ def get_gtk_button_layout() -> List[str]:
 
 class TitlebarButton(QAbstractButton):
     """GTK-styled vector-drawn titlebar button."""
+
     def __init__(self, role: str = "close", parent=None):
         super().__init__(parent)
         self.role = role
@@ -89,9 +91,7 @@ class TitlebarButton(QAbstractButton):
         elif self.role == "maximize":
             side = 4.0
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(
-                cx - side, cy - side, side * 2, side * 2, 1.0, 1.0
-            )
+            painter.drawRoundedRect(cx - side, cy - side, side * 2, side * 2, 1.0, 1.0)
 
 
 class DraggableTopBar(QWidget):
@@ -112,16 +112,18 @@ class DraggableTopBar(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # App Title
-        self.app_title = QLabel("Rufin")
-        self.app_title.setStyleSheet("font-weight: 800; font-size: 13px; color: #58a6ff; letter-spacing: 0.5px;")
+        self.app_title = QLabel("Git GUI")
+        self.app_title.setStyleSheet(
+            "font-weight: 800; font-size: 13px; color: #58a6ff; letter-spacing: 0.5px;"
+        )
         layout.addWidget(self.app_title)
 
-        # Repo selector button
-        self.repo_btn = QPushButton(os.path.basename(self.main_window.repo_path))
-        self.repo_btn.setFixedHeight(24)
-        self.repo_btn.setToolTip(f"Repository path: {self.main_window.repo_path}\nClick to switch repo")
-        self.repo_btn.clicked.connect(self.main_window._choose_repo)
-        layout.addWidget(self.repo_btn)
+        # Active Repo indicator badge
+        self.repo_badge = QLabel("Rufin")
+        self.repo_badge.setStyleSheet(
+            "background-color: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; font-weight: 600; font-size: 11px;"
+        )
+        layout.addWidget(self.repo_badge)
 
         # Branch indicator badge
         self.branch_badge = QLabel("branch: ...")
@@ -130,14 +132,13 @@ class DraggableTopBar(QWidget):
         )
         layout.addWidget(self.branch_badge)
 
-        # Draggable middle space
         layout.addStretch()
 
         # Git Actions
         self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.setFixedHeight(24)
         self.btn_refresh.setToolTip("Reload changes, diffs, and branches")
-        self.btn_refresh.clicked.connect(self.main_window.refresh_all)
+        self.btn_refresh.clicked.connect(self.main_window.refresh_active_repo)
         layout.addWidget(self.btn_refresh)
 
         self.btn_fetch = QPushButton("Fetch")
@@ -155,7 +156,7 @@ class DraggableTopBar(QWidget):
         # Settings button
         self.btn_settings = QPushButton("Settings")
         self.btn_settings.setFixedHeight(24)
-        self.btn_settings.setToolTip("Configure script locations and default options")
+        self.btn_settings.setToolTip("Configure repository locations and options")
         self.btn_settings.clicked.connect(self.main_window.open_settings)
         layout.addWidget(self.btn_settings)
 
@@ -166,7 +167,7 @@ class DraggableTopBar(QWidget):
         sep.setStyleSheet("color: #30363d; max-height: 16px;")
         layout.addWidget(sep)
 
-        # Follow GTK / Niri window button conventions
+        # GTK Window buttons
         buttons = get_gtk_button_layout()
         if "minimize" in buttons:
             btn_min = TitlebarButton("minimize", self)
@@ -219,17 +220,67 @@ class DraggableTopBar(QWidget):
             super().mouseDoubleClickEvent(event)
 
 
+class RufinView(QWidget):
+    """Container widget for Rufin tabs."""
+
+    def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None):
+        super().__init__(parent)
+        self.git_mgr = git_mgr
+        self.config = config
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        self.publish_tab = PublishPrTab(self.git_mgr, self.config)
+        self.release_tab = ReleaseTab(self.git_mgr, self.config)
+
+        self.tabs.addTab(self.publish_tab, "Publish PR")
+        self.tabs.addTab(self.release_tab, "Release")
+
+        layout.addWidget(self.tabs)
+
+    def refresh(self):
+        self.publish_tab.refresh()
+        self.release_tab.refresh()
+
+
+class IglooView(QWidget):
+    """Container widget for Igloo tabs."""
+
+    def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None):
+        super().__init__(parent)
+        self.git_mgr = git_mgr
+        self.config = config
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        self.commit_tab = IglooCommitTab(self.git_mgr, self.config)
+        self.release_tab = IglooReleaseTab(self.git_mgr, self.config)
+
+        self.tabs.addTab(self.commit_tab, "Commit & Push")
+        self.tabs.addTab(self.release_tab, "Release")
+
+        layout.addWidget(self.tabs)
+
+    def refresh(self):
+        self.commit_tab.refresh()
+        self.release_tab.refresh()
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, default_repo: str = "/var/home/screwy/Projects/Rufin"):
+    def __init__(self):
         super().__init__()
         self.config: AppConfig = ConfigManager.load()
-        self.repo_path = default_repo or self.config.repo_path
-        self.git_mgr = GitManager(self.repo_path)
+        self.rufin_git_mgr = GitManager(self.config.rufin_repo_path)
+        self.igloo_git_mgr = GitManager(self.config.igloo_repo_path)
         self._init_ui()
         self.update_repo_display()
 
     def _init_ui(self):
-        self.setWindowTitle("Rufin")
+        self.setWindowTitle("Git GUI")
         self.resize(1200, 780)
         self.setMinimumSize(880, 560)
 
@@ -239,91 +290,118 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(6, 6, 6, 6)
         root_layout.setSpacing(6)
 
-        # Custom draggable top bar with window controls
+        # Custom draggable top bar
         self.top_bar = DraggableTopBar(self)
         root_layout.addWidget(self.top_bar)
 
-        # Tab Widget
-        self.tabs = QTabWidget()
-        self.publish_tab = PublishPrTab(self.git_mgr, self.config)
-        self.release_tab = ReleaseTab(self.git_mgr, self.config)
+        # Main Repository Tabs: Rufin & Igloo side-by-side
+        self.project_tabs = QTabWidget()
+        self.project_tabs.setStyleSheet(
+            "QTabWidget::tab-bar { alignment: left; } "
+            "QTabBar::tab { font-weight: 600; font-size: 12px; padding: 6px 16px; margin-right: 4px; }"
+        )
 
-        self.tabs.addTab(self.publish_tab, "Publish PR")
-        self.tabs.addTab(self.release_tab, "Release")
+        self.rufin_view = RufinView(self.rufin_git_mgr, self.config)
+        self.igloo_view = IglooView(self.igloo_git_mgr, self.config)
 
-        root_layout.addWidget(self.tabs)
+        self.project_tabs.addTab(self.rufin_view, "Rufin")
+        self.project_tabs.addTab(self.igloo_view, "Igloo")
+        self.project_tabs.currentChanged.connect(self._on_project_changed)
+
+        root_layout.addWidget(self.project_tabs)
 
         # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
-    def add_workflow_tab(self, name: str, widget: QWidget):
-        """Allows trivially extending the GUI with new custom workflow tabs."""
-        self.tabs.addTab(widget, name)
+    @property
+    def active_git_mgr(self) -> GitManager:
+        if self.project_tabs.currentIndex() == 1:
+            return self.igloo_git_mgr
+        return self.rufin_git_mgr
+
+    @property
+    def active_repo_name(self) -> str:
+        return "Igloo" if self.project_tabs.currentIndex() == 1 else "Rufin"
+
+    def _on_project_changed(self, index: int):
+        self.update_repo_display()
+        self.refresh_active_repo()
 
     def open_settings(self):
-        dlg = SettingsDialog(self.config, self.repo_path, self)
+        dlg = SettingsDialog(self.config, self)
         btn = self.top_bar.btn_settings
         btn_pos = btn.mapToGlobal(btn.rect().bottomRight())
         dlg.move(max(10, btn_pos.x() - dlg.width()), btn_pos.y() + 4)
         dlg.exec()
-        self.publish_tab.config = self.config
-        self.release_tab.config = self.config
-        self.publish_tab.diff_viewer.config = self.config
+
+        # Update paths if changed
+        self.rufin_git_mgr.repo_path = self.config.rufin_repo_path
+        self.igloo_git_mgr.repo_path = self.config.igloo_repo_path
+
+        self.rufin_view.config = self.config
+        self.igloo_view.config = self.config
+        self.rufin_view.publish_tab.diff_viewer.config = self.config
+        self.igloo_view.commit_tab.diff_viewer.config = self.config
+
+        self.update_repo_display()
+        self.refresh_active_repo()
         self.status_bar.showMessage("Preferences updated.", 2000)
 
-    def _choose_repo(self):
-        selected = QFileDialog.getExistingDirectory(self, "Select Git Repository", self.repo_path)
-        if selected:
-            self.repo_path = selected
-            self.git_mgr.repo_path = selected
-            self.top_bar.repo_btn.setText(os.path.basename(selected))
-            self.top_bar.repo_btn.setToolTip(f"Repository path: {selected}")
-            self.refresh_all()
-
     def update_repo_display(self):
-        if not self.git_mgr.is_git_repo():
+        mgr = self.active_git_mgr
+        name = self.active_repo_name
+        self.top_bar.repo_badge.setText(name)
+        self.top_bar.repo_badge.setToolTip(f"Repository path: {mgr.repo_path}")
+
+        if not mgr.is_git_repo():
             self.top_bar.branch_badge.setText("not a git repo")
             self.top_bar.branch_badge.setStyleSheet(
                 "color: #f85149; background-color: #21262d; border-radius: 4px; padding: 2px 8px;"
             )
             return
 
-        branch = self.git_mgr.get_current_branch()
+        branch = mgr.get_current_branch()
         self.top_bar.branch_badge.setText(f"branch: {branch}")
         self.top_bar.branch_badge.setStyleSheet(
             "background-color: #21262d; color: #7ee787; border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; font-weight: 600; font-size: 11px;"
         )
 
-    def refresh_all(self):
+    def refresh_active_repo(self):
         self.update_repo_display()
-        self.publish_tab.refresh()
-        self.release_tab.refresh()
-        self.status_bar.showMessage("Refreshed repository state.", 3000)
+        if self.project_tabs.currentIndex() == 1:
+            self.igloo_view.refresh()
+        else:
+            self.rufin_view.refresh()
+        self.status_bar.showMessage(f"Refreshed {self.active_repo_name} repository state.", 3000)
 
     def _do_fetch(self):
-        self.status_bar.showMessage("Fetching from origin...")
+        mgr = self.active_git_mgr
+        name = self.active_repo_name
+        self.status_bar.showMessage(f"Fetching {name} from origin...")
         self.top_bar.btn_fetch.setEnabled(False)
-        code, msg = self.git_mgr.fetch()
+        code, msg = self.active_git_mgr.fetch()
         self.top_bar.btn_fetch.setEnabled(True)
         if code == 0:
-            self.status_bar.showMessage("Fetch completed.", 4000)
-            self.refresh_all()
+            self.status_bar.showMessage(f"Fetch completed for {name}.", 4000)
+            self.refresh_active_repo()
         else:
-            QMessageBox.warning(self, "Fetch Failed", f"Git fetch failed:\n{msg}")
+            QMessageBox.warning(self, "Fetch Failed", f"Git fetch failed for {name}:\n{msg}")
             self.status_bar.showMessage("Fetch failed.", 4000)
 
     def _do_pull(self):
-        self.status_bar.showMessage("Pulling latest changes...")
+        mgr = self.active_git_mgr
+        name = self.active_repo_name
+        self.status_bar.showMessage(f"Pulling {name} latest changes...")
         self.top_bar.btn_pull.setEnabled(False)
-        code, msg = self.git_mgr.pull()
+        code, msg = self.active_git_mgr.pull()
         self.top_bar.btn_pull.setEnabled(True)
         if code == 0:
-            self.status_bar.showMessage("Pull completed.", 4000)
-            self.refresh_all()
+            self.status_bar.showMessage(f"Pull completed for {name}.", 4000)
+            self.refresh_active_repo()
         else:
-            QMessageBox.warning(self, "Pull Failed", f"Git pull failed:\n{msg}")
+            QMessageBox.warning(self, "Pull Failed", f"Git pull failed for {name}:\n{msg}")
             self.status_bar.showMessage("Pull failed.", 4000)
 
 
@@ -331,8 +409,7 @@ def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(DARK_STYLESHEET)
 
-    repo_dir = sys.argv[1] if len(sys.argv) > 1 else "/var/home/screwy/Projects/Rufin"
-    window = MainWindow(default_repo=repo_dir)
+    window = MainWindow()
     window.show()
     sys.exit(app.exec())
 

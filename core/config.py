@@ -6,7 +6,9 @@ from typing import Optional
 
 @dataclass
 class AppConfig:
-    repo_path: str = "/var/home/screwy/Projects/Rufin"
+    rufin_repo_path: str = "/var/home/screwy/Projects/Rufin"
+    igloo_repo_path: str = "/var/home/screwy/Projects/Igloo"
+    repo_path: str = "/var/home/screwy/Projects/Rufin"  # backward compat
     publish_pr_script: str = ".local/scripts/publish-pr.sh"
     release_script: str = ".local/scripts/release-rufin.sh"
     default_base_branch: str = "main"
@@ -15,32 +17,37 @@ class AppConfig:
     wrap_diff: bool = True
 
     def resolve_publish_script(self, current_repo: Optional[str] = None) -> str:
-        repo = current_repo or self.repo_path
+        repo = current_repo or self.rufin_repo_path
         if os.path.isabs(self.publish_pr_script):
             return self.publish_pr_script
         return os.path.join(repo, self.publish_pr_script)
 
     def resolve_release_script(self, current_repo: Optional[str] = None) -> str:
-        repo = current_repo or self.repo_path
+        repo = current_repo or self.rufin_repo_path
         if os.path.isabs(self.release_script):
             return self.release_script
         return os.path.join(repo, self.release_script)
 
 
 class ConfigManager:
-    CONFIG_DIR = os.path.expanduser("~/.config/rufin-git-gui")
+    CONFIG_DIR = os.path.expanduser("~/.config/git-gui")
     CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+    LEGACY_DIR = os.path.expanduser("~/.config/rufin-git-gui")
+    LEGACY_FILE = os.path.join(LEGACY_DIR, "config.json")
 
     @classmethod
     def load(cls) -> AppConfig:
-        if not os.path.exists(cls.CONFIG_FILE):
+        target_file = cls.CONFIG_FILE
+        if not os.path.exists(target_file) and os.path.exists(cls.LEGACY_FILE):
+            target_file = cls.LEGACY_FILE
+
+        if not os.path.exists(target_file):
             cfg = AppConfig()
             cls.save(cfg)
             return cfg
         try:
-            with open(cls.CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(target_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Only pass keys that belong to AppConfig
             valid_keys = {f.name for f in fields(AppConfig)}
             filtered = {k: v for k, v in data.items() if k in valid_keys}
             return AppConfig(**filtered)
