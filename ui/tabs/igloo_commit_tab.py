@@ -60,38 +60,36 @@ class IglooCommitTab(QWidget):
         self.left_splitter.addWidget(self.file_list)
 
         # 2. Commit Options Form
-        form_scroll = QScrollArea()
-        form_scroll.setWidgetResizable(True)
-        form_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        form_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.form_scroll = QScrollArea()
+        self.form_scroll.setWidgetResizable(True)
+        self.form_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.form_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         form_widget = QWidget()
         form_layout = QVBoxLayout(form_widget)
-        form_layout.setContentsMargins(0, 2, 4, 2)
-        form_layout.setSpacing(6)
+        form_layout.setContentsMargins(0, 0, 4, 0)
+        form_layout.setSpacing(4)
 
         # Commit Details Group
         commit_grp = QGroupBox("Commit Message")
         commit_layout = QVBoxLayout(commit_grp)
-        commit_layout.setContentsMargins(8, 6, 8, 6)
+        commit_layout.setContentsMargins(8, 4, 8, 4)
         commit_layout.setSpacing(4)
 
-        lbl_summary = QLabel("Summary / Title:")
+        h_summary = QHBoxLayout()
+        h_summary.setSpacing(6)
+        lbl_summary = QLabel("Summary:")
         lbl_summary.setStyleSheet("color: #8b949e; font-size: 11px;")
-        commit_layout.addWidget(lbl_summary)
-
         self.summary_input = QLineEdit()
         self.summary_input.setPlaceholderText("e.g. feat(feed): add interactive media cards")
-        commit_layout.addWidget(self.summary_input)
-
-        lbl_desc = QLabel("Description (optional):")
-        lbl_desc.setStyleSheet("color: #8b949e; font-size: 11px; margin-top: 2px;")
-        commit_layout.addWidget(lbl_desc)
+        h_summary.addWidget(lbl_summary)
+        h_summary.addWidget(self.summary_input, 1)
+        commit_layout.addLayout(h_summary)
 
         self.desc_input = QPlainTextEdit()
-        self.desc_input.setFixedHeight(75)
-        self.desc_input.setPlaceholderText("Detailed description / context for this commit...")
+        self.desc_input.setFixedHeight(50)
+        self.desc_input.setPlaceholderText("Extended description (optional markdown)...")
         commit_layout.addWidget(self.desc_input)
 
         form_layout.addWidget(commit_grp)
@@ -99,28 +97,32 @@ class IglooCommitTab(QWidget):
         # Options Group
         opts_grp = QGroupBox("Options")
         opts_layout = QVBoxLayout(opts_grp)
-        opts_layout.setContentsMargins(8, 6, 8, 6)
-        opts_layout.setSpacing(4)
+        opts_layout.setContentsMargins(8, 4, 8, 4)
+        opts_layout.setSpacing(3)
 
+        h_opts = QHBoxLayout()
+        h_opts.setSpacing(12)
         self.push_cb = QCheckBox("Push to origin upon commit")
         self.push_cb.setChecked(True)
         self.push_cb.toggled.connect(self._on_push_toggled)
-        opts_layout.addWidget(self.push_cb)
+        h_opts.addWidget(self.push_cb)
 
         self.amend_cb = QCheckBox("Amend previous commit (--amend)")
         self.amend_cb.setChecked(False)
         self.amend_cb.toggled.connect(self._on_amend_toggled)
-        opts_layout.addWidget(self.amend_cb)
+        h_opts.addWidget(self.amend_cb)
+        h_opts.addStretch()
+        opts_layout.addLayout(h_opts)
 
         form_layout.addWidget(opts_grp)
 
-        form_scroll.setWidget(form_widget)
-        self.left_splitter.addWidget(form_scroll)
+        self.form_scroll.setWidget(form_widget)
+        self.left_splitter.addWidget(self.form_scroll)
 
-        # Splitter sizing
+        # Splitter sizing: Changes expands (1), form fits natural size (0)
         self.left_splitter.setStretchFactor(0, 1)
         self.left_splitter.setStretchFactor(1, 0)
-        self.left_splitter.setSizes([450, 240])
+        self.left_splitter.setSizes([520, 190])
 
         self.main_splitter.addWidget(self.left_splitter)
 
@@ -145,6 +147,12 @@ class IglooCommitTab(QWidget):
         self.main_splitter.addWidget(right_widget)
         self.main_splitter.setSizes([380, 620])
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        total_h = self.left_splitter.height()
+        if total_h > 260:
+            self.left_splitter.setSizes([total_h - 190, 190])
+
     def _wire_signals(self):
         self.file_list.file_selected.connect(self._show_single_file_diff)
         self.file_list.view_diff_requested.connect(self._show_multi_file_diff)
@@ -164,7 +172,6 @@ class IglooCommitTab(QWidget):
 
     def _on_amend_toggled(self, checked: bool):
         if checked and not self.summary_input.text().strip():
-            # Fill with last commit message
             code, out, _ = self.git_mgr._run_git(["log", "-1", "--pretty=%B"])
             if code == 0 and out.strip():
                 lines = out.strip().split("\n", 1)
@@ -221,7 +228,7 @@ class IglooCommitTab(QWidget):
         is_amend = self.amend_cb.isChecked()
 
         if not summary and not is_amend:
-            QMessageBox.warning(self, "Missing Summary", "Please enter a commit summary/title.")
+            QMessageBox.warning(self, "Missing Summary", "Please enter a commit summary or title.")
             return
 
         selected_paths = self.file_list.get_selected_paths()
@@ -233,13 +240,11 @@ class IglooCommitTab(QWidget):
         branch = self.git_mgr.get_current_branch()
         will_push = self.push_cb.isChecked()
 
-        # Build full commit message
         if summary and desc:
             full_msg = f"{summary}\n\n{desc}"
         else:
             full_msg = summary
 
-        # Preview Details
         details = [
             ("Current Branch", branch),
             ("Commit Title", summary or "(keep existing)"),
@@ -266,7 +271,6 @@ class IglooCommitTab(QWidget):
         if not popup.confirmed:
             return
 
-        # Build composite bash script to execute staged add + commit + optional push
         commands = []
         if selected_paths:
             escaped_files = " ".join(shlex.quote(p) for p in selected_paths)

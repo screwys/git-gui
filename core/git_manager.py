@@ -94,7 +94,6 @@ class GitManager:
 
         # Gather numstat for staged and unstaged
         stats: Dict[str, Tuple[int, int]] = {}
-        # Unstaged stats
         _, numstat_out, _ = self._run_git(["diff", "--numstat"])
         for line in numstat_out.splitlines():
             parts = line.split("\t")
@@ -103,7 +102,6 @@ class GitManager:
                 dels = int(parts[1]) if parts[1].isdigit() else 0
                 stats[parts[2]] = (adds, dels)
 
-        # Staged stats
         _, cached_numstat_out, _ = self._run_git(["diff", "--cached", "--numstat"])
         for line in cached_numstat_out.splitlines():
             parts = line.split("\t")
@@ -119,7 +117,6 @@ class GitManager:
                 continue
             status_code = line[:2]
             raw_path = line[3:].strip()
-            # Handle renamed files: e.g. "old -> new"
             if " -> " in raw_path:
                 raw_path = raw_path.split(" -> ")[-1].strip()
 
@@ -130,7 +127,6 @@ class GitManager:
 
             additions, deletions = stats.get(path, (0, 0))
             if is_untracked and additions == 0:
-                # Count lines in untracked file
                 full_p = os.path.join(self.repo_path, path)
                 if os.path.isfile(full_p):
                     try:
@@ -153,6 +149,28 @@ class GitManager:
 
         return items
 
+    def _format_untracked_diff(self, rel_paths: List[str]) -> str:
+        chunks = []
+        for rel in rel_paths:
+            full = os.path.join(self.repo_path, rel)
+            if not os.path.isfile(full):
+                continue
+            try:
+                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+                chunk = [
+                    f"diff --git a/{rel} b/{rel}",
+                    "new file mode 100644",
+                    "--- /dev/null",
+                    f"+++ b/{rel}",
+                    f"@@ -0,0 +1,{len(lines)} @@",
+                ]
+                chunk.extend("+" + l.rstrip("\r\n") for l in lines)
+                chunks.append("\n".join(chunk))
+            except Exception:
+                pass
+        return "\n\n".join(chunks)
+
     def get_diff(self, paths: Optional[List[str]] = None) -> str:
         diff_chunks = []
 
@@ -160,31 +178,27 @@ class GitManager:
             tracked_paths = []
             untracked_paths = []
             for p in paths:
-                full_p = os.path.join(self.repo_path, p)
-                # Check if untracked
                 code, _, _ = self._run_git(["ls-files", "--error-unmatch", p])
                 if code == 0:
                     tracked_paths.append(p)
-                elif os.path.exists(full_p):
+                else:
                     untracked_paths.append(p)
 
             if tracked_paths:
                 code, out, _ = self._run_git(["diff", "HEAD", "--"] + tracked_paths)
                 if not out.strip():
-                    # If HEAD doesn't work (initial commit) or working tree vs index
                     code, out, _ = self._run_git(["diff", "--"] + tracked_paths)
                     code_c, out_c, _ = self._run_git(["diff", "--cached", "--"] + tracked_paths)
                     out = (out + "\n" + out_c).strip()
                 if out.strip():
                     diff_chunks.append(out.strip())
 
-            for up in untracked_paths:
-                full_p = os.path.join(self.repo_path, up)
-                code, out, _ = self._run_git(["diff", "--no-index", "--", "/dev/null", up])
-                if out.strip():
-                    diff_chunks.append(out.strip())
+            if untracked_paths:
+                u_diff = self._format_untracked_diff(untracked_paths)
+                if u_diff.strip():
+                    diff_chunks.append(u_diff.strip())
         else:
-            # Whole diff: tracked + untracked
+            # Whole diff: tracked
             code, out, _ = self._run_git(["diff", "HEAD"])
             if not out.strip():
                 code, out, _ = self._run_git(["diff"])
@@ -195,17 +209,15 @@ class GitManager:
 
             # Untracked files
             code, u_out, _ = self._run_git(["ls-files", "--others", "--exclude-standard"])
-            for up in u_out.splitlines():
-                if not up.strip():
-                    continue
-                code, out, _ = self._run_git(["diff", "--no-index", "--", "/dev/null", up.strip()])
-                if out.strip():
-                    diff_chunks.append(out.strip())
+            if code == 0 and u_out.strip():
+                u_paths = [up.strip() for up in u_out.splitlines() if up.strip()]
+                u_diff = self._format_untracked_diff(u_paths)
+                if u_diff.strip():
+                    diff_chunks.append(u_diff.strip())
 
         return "\n\n".join(diff_chunks)
 
     def get_tag_notes(self, tag_name: str) -> str:
-        """Extracts the release notes message from an existing annotated git tag."""
         if not tag_name.startswith("refs/tags/"):
             tag_name = f"refs/tags/{tag_name}"
         code, stdout, _ = self._run_git(["cat-file", "tag", tag_name])

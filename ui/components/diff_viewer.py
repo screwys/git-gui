@@ -6,7 +6,6 @@ from PyQt6.QtGui import (
     QPainter,
     QColor,
     QFont,
-    QTextFormat,
     QTextCursor,
     QSyntaxHighlighter,
     QTextCharFormat,
@@ -18,11 +17,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPlainTextEdit,
-    QTextEdit,
     QPushButton,
     QLabel,
     QCheckBox,
-    QFrame,
     QMessageBox,
 )
 from core.config import AppConfig, ConfigManager
@@ -46,25 +43,32 @@ class DiffSyntaxHighlighter(QSyntaxHighlighter):
         super().__init__(parent)
         self.is_diff_mode = True
 
-        self.chunk_fmt = QTextCharFormat()
-        self.chunk_fmt.setForeground(QColor("#79c0ff"))
-        self.chunk_fmt.setFontWeight(QFont.Weight.Bold)
-
+        # Header lines (diff --git, index, +++, ---)
         self.hdr_fmt = QTextCharFormat()
         self.hdr_fmt.setForeground(QColor("#8b949e"))
 
-        self.add_fmt = QTextCharFormat()
-        self.add_fmt.setForeground(QColor("#e6edf3"))
+        # Chunk header (@@ ... @@)
+        self.chunk_fmt = QTextCharFormat()
+        self.chunk_fmt.setForeground(QColor("#79c0ff"))
+        self.chunk_fmt.setBackground(QColor(14, 29, 46, 180))
+        self.chunk_fmt.setFontWeight(QFont.Weight.Bold)
 
+        # Added lines (+)
+        self.add_fmt = QTextCharFormat()
+        self.add_fmt.setForeground(QColor("#7ee787"))
+        self.add_fmt.setBackground(QColor(19, 46, 27, 180))
+
+        # Deleted lines (-)
         self.del_fmt = QTextCharFormat()
-        self.del_fmt.setForeground(QColor("#e6edf3"))
+        self.del_fmt.setForeground(QColor("#f85149"))
+        self.del_fmt.setBackground(QColor(61, 23, 25, 180))
 
     def highlightBlock(self, text: str):
         if not self.is_diff_mode or not text:
             return
         if text.startswith("@@"):
             self.setFormat(0, len(text), self.chunk_fmt)
-        elif text.startswith("diff --git") or text.startswith("index ") or text.startswith("+++") or text.startswith("---"):
+        elif text.startswith(("diff --git", "index ", "+++", "---")):
             self.setFormat(0, len(text), self.hdr_fmt)
         elif text.startswith("+"):
             self.setFormat(0, len(text), self.add_fmt)
@@ -125,64 +129,42 @@ class DiffCodeEditor(QPlainTextEdit):
         self.highlighter.is_diff_mode = is_diff
         self.setPlainText(text)
         if is_diff:
-            self._parse_and_highlight_diff()
+            self._fast_parse_diff_metadata(text)
         else:
-            self.setExtraSelections([])
             self.line_meta = []
             self.line_number_area.update()
 
-    def _parse_and_highlight_diff(self):
-        lines = self.toPlainText().splitlines()
+    def _fast_parse_diff_metadata(self, text: str):
+        """Lightning-fast O(N) line number mapping without touching QTextCursor."""
+        lines = text.splitlines()
         self.line_meta = []
-
         old_no = 0
         new_no = 0
-        extra_selections = []
-
-        color_add_bg = QColor(19, 46, 27, 210)
-        color_del_bg = QColor(61, 23, 25, 210)
-        color_chunk_bg = QColor(14, 29, 46, 160)
-
-        block = self.document().firstBlock()
 
         for line in lines:
-            meta = {"type": "hdr", "num": None}
-            if line.startswith("@@"):
+            if not line:
+                self.line_meta.append({"type": "ctx", "num": None})
+                continue
+            first_char = line[0]
+            if first_char == "@" and line.startswith("@@"):
                 m = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
                 if m:
                     old_no = int(m.group(1))
                     new_no = int(m.group(2))
-                meta = {"type": "chunk", "num": None}
-                sel = QTextEdit.ExtraSelection()
-                sel.format.setBackground(color_chunk_bg)
-                sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-                sel.cursor = QTextCursor(block)
-                extra_selections.append(sel)
-            elif line.startswith("-") and not line.startswith("---"):
-                meta = {"type": "del", "num": old_no}
+                self.line_meta.append({"type": "chunk", "num": None})
+            elif first_char == "-" and not line.startswith("---"):
+                self.line_meta.append({"type": "del", "num": old_no})
                 old_no += 1
-                sel = QTextEdit.ExtraSelection()
-                sel.format.setBackground(color_del_bg)
-                sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-                sel.cursor = QTextCursor(block)
-                extra_selections.append(sel)
-            elif line.startswith("+") and not line.startswith("+++"):
-                meta = {"type": "add", "num": new_no}
+            elif first_char == "+" and not line.startswith("+++"):
+                self.line_meta.append({"type": "add", "num": new_no})
                 new_no += 1
-                sel = QTextEdit.ExtraSelection()
-                sel.format.setBackground(color_add_bg)
-                sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-                sel.cursor = QTextCursor(block)
-                extra_selections.append(sel)
-            elif line.startswith(" "):
-                meta = {"type": "ctx", "num": new_no}
+            elif first_char == " ":
+                self.line_meta.append({"type": "ctx", "num": new_no})
                 old_no += 1
                 new_no += 1
+            else:
+                self.line_meta.append({"type": "hdr", "num": None})
 
-            self.line_meta.append(meta)
-            block = block.next()
-
-        self.setExtraSelections(extra_selections)
         self.line_number_area.update()
 
     def line_number_area_paint_event(self, event):
@@ -432,7 +414,6 @@ class DiffViewer(QWidget):
         full_path = os.path.join(self.repo_path, self.current_rel_path)
         if self.view_mode == "file":
             try:
-                # Backup current on-disk content before overwriting so it can be reverted via toast
                 if os.path.exists(full_path):
                     with open(full_path, "r", encoding="utf-8", errors="replace") as f:
                         self._revert_backup_content = f.read()
@@ -445,7 +426,6 @@ class DiffViewer(QWidget):
                 self.dirty_badge.setText("Saved")
                 self.file_saved.emit(self.current_rel_path)
 
-                # Show toast notification with Revert action
                 self.toast.show_toast(
                     "File is edited. Do you want to revert your changes?",
                     action_text="Revert",
@@ -462,7 +442,6 @@ class DiffViewer(QWidget):
             )
 
     def _revert_saved_file(self):
-        """Reverts the file back to the state before the last save."""
         if not self.current_rel_path or not self.repo_path or self._revert_backup_content is None:
             return
         full_path = os.path.join(self.repo_path, self.current_rel_path)

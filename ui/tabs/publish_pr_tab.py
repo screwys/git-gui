@@ -49,101 +49,97 @@ class PublishPrTab(QWidget):
         root_layout.addWidget(self.main_splitter)
 
         # ----------------- Left Panel -----------------
-        # Vertical splitter between the expanding Changes list and PR settings
         self.left_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # 1. File List (Changes) - configured to expand and fill available height
+        # 1. Changes File List
         self.file_list = FileListWidget()
         self.left_splitter.addWidget(self.file_list)
 
-        # 2. Form Scroll Area - fits its natural height without vertical scrollbar by default
-        form_scroll = QScrollArea()
-        form_scroll.setWidgetResizable(True)
-        form_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        form_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        # 2. Form Scroll Area - fits its natural height (~240px) without vertical scrollbar
+        self.form_scroll = QScrollArea()
+        self.form_scroll.setWidgetResizable(True)
+        self.form_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.form_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         form_widget = QWidget()
         form_layout = QVBoxLayout(form_widget)
-        form_layout.setContentsMargins(0, 2, 4, 2)
-        form_layout.setSpacing(6)
+        form_layout.setContentsMargins(0, 0, 4, 0)
+        form_layout.setSpacing(4)
 
-        # Branch configuration group
+        # Branch configuration group (compact 1-row layout)
         branch_grp = QGroupBox("Branch Options")
         branch_layout = QVBoxLayout(branch_grp)
-        branch_layout.setContentsMargins(8, 6, 8, 6)
+        branch_layout.setContentsMargins(8, 4, 8, 4)
         branch_layout.setSpacing(4)
 
         h_branch = QHBoxLayout()
         h_branch.setSpacing(6)
         lbl_branch = QLabel("Branch:")
-        lbl_branch.setFixedWidth(50)
+        lbl_branch.setStyleSheet("color: #8b949e; font-size: 11px;")
         self.branch_input = QLineEdit()
         self.branch_input.setPlaceholderText("Derived from title, or current branch")
         h_branch.addWidget(lbl_branch)
-        h_branch.addWidget(self.branch_input)
-        branch_layout.addLayout(h_branch)
+        h_branch.addWidget(self.branch_input, 1)
 
-        h_base = QHBoxLayout()
-        h_base.setSpacing(6)
         lbl_base = QLabel("Base:")
-        lbl_base.setFixedWidth(50)
+        lbl_base.setStyleSheet("color: #8b949e; font-size: 11px;")
         self.base_input = QLineEdit(self.config.default_base_branch)
-        h_base.addWidget(lbl_base)
-        h_base.addWidget(self.base_input)
-        branch_layout.addLayout(h_base)
+        self.base_input.setFixedWidth(90)
+        h_branch.addWidget(lbl_base)
+        h_branch.addWidget(self.base_input)
+        branch_layout.addLayout(h_branch)
 
         form_layout.addWidget(branch_grp)
 
-        # PR Content group
+        # PR Content group (compact layout)
         pr_grp = QGroupBox("Pull Request Details")
         pr_layout = QVBoxLayout(pr_grp)
-        pr_layout.setContentsMargins(8, 6, 8, 6)
+        pr_layout.setContentsMargins(8, 4, 8, 4)
         pr_layout.setSpacing(4)
 
+        h_title_phase = QHBoxLayout()
+        h_title_phase.setSpacing(6)
         lbl_title = QLabel("Title:")
         lbl_title.setStyleSheet("color: #8b949e; font-size: 11px;")
-        pr_layout.addWidget(lbl_title)
-
         self.title_input = QLineEdit()
         self.title_input.setPlaceholderText("e.g. feat(ui): add modern PR and release GUI")
-        pr_layout.addWidget(self.title_input)
+        h_title_phase.addWidget(lbl_title)
+        h_title_phase.addWidget(self.title_input, 1)
 
-        lbl_body = QLabel("Description (optional):")
-        lbl_body.setStyleSheet("color: #8b949e; font-size: 11px; margin-top: 2px;")
-        pr_layout.addWidget(lbl_body)
-
-        self.body_input = QPlainTextEdit()
-        self.body_input.setFixedHeight(70)
-        self.body_input.setPlaceholderText("Markdown description of the pull request...")
-        pr_layout.addWidget(self.body_input)
-
-        h_phase = QHBoxLayout()
-        h_phase.setSpacing(6)
         lbl_phase = QLabel("Phase:")
-        lbl_phase.setFixedWidth(50)
         lbl_phase.setStyleSheet("color: #8b949e; font-size: 11px;")
         self.phase_input = QLineEdit()
         self.phase_input.setPlaceholderText("Defaults to TITLE")
-        h_phase.addWidget(lbl_phase)
-        h_phase.addWidget(self.phase_input)
-        pr_layout.addLayout(h_phase)
+        self.phase_input.setFixedWidth(110)
+        h_title_phase.addWidget(lbl_phase)
+        h_title_phase.addWidget(self.phase_input)
+        pr_layout.addLayout(h_title_phase)
+
+        self.body_input = QPlainTextEdit()
+        self.body_input.setFixedHeight(50)
+        self.body_input.setPlaceholderText("Description (optional markdown)...")
+        pr_layout.addWidget(self.body_input)
 
         form_layout.addWidget(pr_grp)
 
-        # Options group
+        # Options group (compact 1-row check layout)
         flags_grp = QGroupBox("Options")
         flags_layout = QVBoxLayout(flags_grp)
-        flags_layout.setContentsMargins(8, 6, 8, 6)
+        flags_layout.setContentsMargins(8, 4, 8, 4)
         flags_layout.setSpacing(3)
 
+        h_checks = QHBoxLayout()
+        h_checks.setSpacing(12)
         self.auto_merge_cb = QCheckBox("Squash auto-merge")
         self.auto_merge_cb.setChecked(self.config.default_auto_merge)
-        flags_layout.addWidget(self.auto_merge_cb)
+        h_checks.addWidget(self.auto_merge_cb)
 
-        self.wait_cb = QCheckBox("Wait for CI checks and merge (--wait)")
+        self.wait_cb = QCheckBox("Wait for CI checks (--wait)")
         self.wait_cb.setChecked(self.config.default_wait_ci)
-        flags_layout.addWidget(self.wait_cb)
+        h_checks.addWidget(self.wait_cb)
+        h_checks.addStretch()
+        flags_layout.addLayout(h_checks)
 
         h_i18n = QHBoxLayout()
         h_i18n.setSpacing(6)
@@ -154,20 +150,18 @@ class PublishPrTab(QWidget):
         self.i18n_combo.addItem("Include prepared .po files (--include-i18n-catalogs)", "include")
         self.i18n_combo.addItem("Sync and merge all .po catalogs (--sync-i18n-catalogs)", "sync")
         h_i18n.addWidget(lbl_i18n)
-        h_i18n.addWidget(self.i18n_combo)
+        h_i18n.addWidget(self.i18n_combo, 1)
         flags_layout.addLayout(h_i18n)
 
         form_layout.addWidget(flags_grp)
 
-        form_scroll.setWidget(form_widget)
-        self.left_splitter.addWidget(form_scroll)
+        self.form_scroll.setWidget(form_widget)
+        self.left_splitter.addWidget(self.form_scroll)
 
-        # Allow form to take exactly its natural height (~320px) without scrolling,
-        # with Changes list filling all remainder above it
-        natural_form_h = 320
+        # Stretch factors: Changes list grows (1), form stays at natural height (0)
         self.left_splitter.setStretchFactor(0, 1)
         self.left_splitter.setStretchFactor(1, 0)
-        self.left_splitter.setSizes([450, natural_form_h])
+        self.left_splitter.setSizes([500, 240])
 
         self.main_splitter.addWidget(self.left_splitter)
 
@@ -197,7 +191,6 @@ class PublishPrTab(QWidget):
 
         right_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # DiffViewer with editable capabilities and wrap config
         self.diff_viewer = DiffViewer(self.config, self.git_mgr.repo_path)
         self.diff_viewer.file_saved.connect(self._on_file_saved)
         right_splitter.addWidget(self.diff_viewer)
@@ -210,6 +203,13 @@ class PublishPrTab(QWidget):
 
         self.main_splitter.addWidget(right_widget)
         self.main_splitter.setSizes([380, 620])
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Ensure initial distribution gives full natural height to form so no scrollbar appears
+        total_h = self.left_splitter.height()
+        if total_h > 300:
+            self.left_splitter.setSizes([total_h - 240, 240])
 
     def _wire_signals(self):
         self.file_list.file_selected.connect(self._show_single_file_diff)
@@ -332,7 +332,6 @@ class PublishPrTab(QWidget):
         if partial_files:
             args.extend(selected_paths)
 
-        # Meaningful high-signal summary
         details = [
             ("Branch Target", f"{branch or '(derived)'} → {base_branch}"),
             ("PR Title", title or "(derived from branch or commit)"),
@@ -343,7 +342,6 @@ class PublishPrTab(QWidget):
         if i18n_choice != "none":
             details.append(("I18n Catalogs", self.i18n_combo.currentText()))
 
-        # Anchor small popup right under the Publish PR button
         popup = ConfirmPreviewDialog(
             title="Publish Pull Request",
             details=details,
@@ -355,7 +353,6 @@ class PublishPrTab(QWidget):
         )
         popup.show()
 
-        # Run local event loop until dismissed or confirmed
         while popup.isVisible():
             QApplication.processEvents()
 
