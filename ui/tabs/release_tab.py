@@ -152,6 +152,9 @@ class ReleaseTab(QWidget):
         self.btn_fetch_notes.setFixedHeight(22)
         self.btn_fetch_notes.setStyleSheet("font-size: 10px; padding: 1px 6px;")
         self.btn_fetch_notes.clicked.connect(self._fetch_notes_for_version)
+        fetch_sp = self.btn_fetch_notes.sizePolicy()
+        fetch_sp.setRetainSizeWhenHidden(True)
+        self.btn_fetch_notes.setSizePolicy(fetch_sp)
         self.btn_fetch_notes.setVisible(False)
         h_tag_info.addWidget(self.btn_fetch_notes)
 
