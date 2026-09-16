@@ -1,5 +1,6 @@
 import json
 import subprocess
+from datetime import datetime, timezone
 from typing import Optional, List, Dict
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QDesktopServices, QColor
@@ -16,6 +17,44 @@ from PyQt6.QtWidgets import (
 )
 from core.notifications import send_desktop_notification
 from core.state import StateManager
+
+
+def parse_iso_timestamp(ts_str: Optional[str]) -> Optional[datetime]:
+    if not ts_str:
+        return None
+    try:
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def format_check_duration(started_at: Optional[str], completed_at: Optional[str], conclusion: Optional[str]) -> str:
+    if conclusion == "SKIPPED":
+        return "—"
+
+    t_start = parse_iso_timestamp(started_at)
+    t_end = parse_iso_timestamp(completed_at)
+
+    if t_start and t_end:
+        secs = max(0, int((t_end - t_start).total_seconds()))
+        if secs < 60:
+            return f"{secs}s"
+        mins = secs // 60
+        rem_secs = secs % 60
+        if mins < 60:
+            return f"{mins}m {rem_secs}s"
+        hours = mins // 60
+        rem_mins = mins % 60
+        return f"{hours}h {rem_mins}m"
+    elif t_start:
+        now = datetime.now(timezone.utc)
+        secs = max(0, int((now - t_start).total_seconds()))
+        if secs < 60:
+            return f"{secs}s"
+        mins = secs // 60
+        rem_secs = secs % 60
+        return f"{mins}m {rem_secs}s"
+    return "—"
 
 
 class ChecksFetchWorker(QThread):
@@ -216,6 +255,8 @@ class PrChecksWidget(QWidget):
             status = item.get("status") or item.get("state") or "PENDING"
             conclusion = item.get("conclusion")
             url = item.get("detailsUrl") or item.get("targetUrl") or ""
+            started_at = item.get("startedAt")
+            completed_at = item.get("completedAt")
 
             is_completed = (status == "COMPLETED" or conclusion is not None or status == "SUCCESS")
             if is_completed:
@@ -234,11 +275,14 @@ class PrChecksWidget(QWidget):
                         urgency="critical",
                     )
 
+            duration_str = format_check_duration(started_at, completed_at, conclusion)
+
             checks.append({
                 "name": name,
                 "status": status,
                 "conclusion": conclusion,
                 "url": url,
+                "duration": duration_str,
                 "is_completed": is_completed,
                 "is_failure": is_failure,
             })
@@ -271,7 +315,7 @@ class PrChecksWidget(QWidget):
                 status_item.setForeground(QColor("#8b949e"))
             self.table.setItem(row, 1, status_item)
 
-            dur_item = QTableWidgetItem("Completed" if c["is_completed"] else "In progress")
+            dur_item = QTableWidgetItem(c["duration"])
             dur_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             dur_item.setForeground(QColor("#8b949e"))
             self.table.setItem(row, 2, dur_item)
