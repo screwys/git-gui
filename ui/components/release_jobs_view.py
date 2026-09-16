@@ -1,6 +1,8 @@
 import re
+import json
+import subprocess
 from typing import Dict, Optional, List
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QColor
 from PyQt6.QtWidgets import (
     QWidget,
@@ -13,6 +15,84 @@ from PyQt6.QtWidgets import (
     QLabel,
     QFrame,
 )
+from core.state import StateManager
+
+
+class ReleaseFetchWorker(QThread):
+    runs_fetched = pyqtSignal(dict)
+
+    def __init__(self, project_name: str, parent=None):
+        super().__init__(parent)
+        self.project_name = project_name
+
+    def run(self):
+        result = {}
+        repo = "screwys/Igloo" if self.project_name == "Igloo" else "screwys/Rufin"
+        try:
+            # 1. Fetch latest release
+            cmd_rel = ["gh", "release", "list", "--repo", repo, "--limit", "1"]
+            r1 = subprocess.run(cmd_rel, capture_output=True, text=True, timeout=10)
+            latest_tag = ""
+            if r1.returncode == 0 and r1.stdout.strip():
+                latest_tag = r1.stdout.strip().split()[0]
+                result["latest_tag"] = latest_tag
+                result["release_url"] = f"https://github.com/{repo}/releases/tag/{latest_tag}"
+
+            # 2. Fetch workflow runs matching latest tag
+            runs_map = {}
+            if self.project_name == "Igloo" and latest_tag:
+                cmd_runs = [
+                    "gh",
+                    "run",
+                    "list",
+                    "--repo",
+                    repo,
+                    "--limit",
+                    "15",
+                    "--json",
+                    "name,status,conclusion,url,headBranch",
+                ]
+                r2 = subprocess.run(cmd_runs, capture_output=True, text=True, timeout=10)
+                if r2.returncode == 0 and r2.stdout.strip():
+                    runs = json.loads(r2.stdout)
+                    for run in runs:
+                        if run.get("headBranch") == latest_tag or run.get("name") in (
+                            "Container Release",
+                            "Android Release APK",
+                            "Windows Release",
+                        ):
+                            name = run.get("name")
+                            if name == "Android Release APK":
+                                name = "Android Release"
+                            if name not in runs_map:
+                                runs_map[name] = run
+            elif self.project_name == "Rufin" and latest_tag:
+                cmd_runs = [
+                    "gh",
+                    "run",
+                    "list",
+                    "--repo",
+                    repo,
+                    "--event",
+                    "workflow_dispatch",
+                    "--limit",
+                    "20",
+                    "--json",
+                    "workflowName,status,conclusion,url,displayTitle",
+                ]
+                r2 = subprocess.run(cmd_runs, capture_output=True, text=True, timeout=10)
+                if r2.returncode == 0 and r2.stdout.strip():
+                    runs = json.loads(r2.stdout)
+                    for run in runs:
+                        if latest_tag in run.get("displayTitle", ""):
+                            wf = run.get("workflowName")
+                            if wf and wf not in runs_map:
+                                runs_map[wf] = run
+
+            result["runs_map"] = runs_map
+            self.runs_fetched.emit(result)
+        except Exception:
+            pass
 
 
 class ReleaseJobsWidget(QWidget):
@@ -21,13 +101,19 @@ class ReleaseJobsWidget(QWidget):
     def __init__(self, project_name: str = "Rufin", parent=None):
         super().__init__(parent)
         self.project_name = project_name
+        self.state_key = "igloo_release_state" if project_name == "Igloo" else "rufin_release_state"
         self.jobs: Dict[str, Dict[str, str]] = {}
         self.copr_url = self.DEFAULT_RUFIN_COPR
+        self.copr_title = "COPR Builds"
         self.pr_url = ""
         self.flathub_url = ""
         self.release_url = ""
+        self.release_tag = ""
+        self._fetch_worker: Optional[ReleaseFetchWorker] = None
+
         self._init_project_jobs()
         self._init_ui()
+        self._load_saved_state()
 
     def _init_project_jobs(self):
         if self.project_name == "Igloo":
@@ -67,7 +153,7 @@ class ReleaseJobsWidget(QWidget):
         h_links.addWidget(lbl_quick)
 
         if self.project_name == "Rufin":
-            self.btn_copr = QPushButton("COPR Builds")
+            self.btn_copr = QPushButton(self.copr_title)
             self.btn_copr.setFixedHeight(26)
             self.btn_copr.setStyleSheet("padding: 2px 10px; font-size: 11px;")
             self.btn_copr.clicked.connect(lambda: self._open_url(self.copr_url))
@@ -105,6 +191,14 @@ class ReleaseJobsWidget(QWidget):
         h_links.addWidget(self.btn_gh_rel)
 
         h_links.addStretch()
+
+        self.btn_fetch_latest = QPushButton("Sync Remote Status")
+        self.btn_fetch_latest.setFixedHeight(26)
+        self.btn_fetch_latest.setStyleSheet("padding: 2px 10px; font-size: 11px;")
+        self.btn_fetch_latest.setToolTip("Query GitHub for latest release tag and workflow status")
+        self.btn_fetch_latest.clicked.connect(self.sync_remote_status)
+        h_links.addWidget(self.btn_fetch_latest)
+
         layout.addWidget(links_box)
 
         # Workflows Table
@@ -181,19 +275,104 @@ class ReleaseJobsWidget(QWidget):
             item.setText("Idle")
             item.setForeground(QColor("#8b949e"))
 
+    def _save_current_state(self):
+        saved = {
+            "jobs": self.jobs,
+            "copr_url": self.copr_url,
+            "copr_title": self.copr_title,
+            "pr_url": self.pr_url,
+            "flathub_url": self.flathub_url,
+            "release_url": self.release_url,
+            "release_tag": self.release_tag,
+        }
+        StateManager.update(**{self.state_key: saved})
+
+    def _load_saved_state(self):
+        data = StateManager.get(self.state_key)
+        if not data or not isinstance(data, dict):
+            # Auto sync in background if no saved state
+            self.sync_remote_status()
+            return
+
+        if "jobs" in data and isinstance(data["jobs"], dict):
+            for k, v in data["jobs"].items():
+                if k in self.jobs and isinstance(v, dict):
+                    self.jobs[k] = v
+
+        if "copr_url" in data and data["copr_url"]:
+            self.copr_url = data["copr_url"]
+            self.copr_title = data.get("copr_title", "COPR Builds")
+            if self.btn_copr:
+                self.btn_copr.setText(self.copr_title)
+
+        if "pr_url" in data and data["pr_url"]:
+            self.pr_url = data["pr_url"]
+            if self.btn_pr:
+                self.btn_pr.setEnabled(True)
+
+        if "flathub_url" in data and data["flathub_url"]:
+            self.flathub_url = data["flathub_url"]
+            if self.btn_flathub:
+                self.btn_flathub.setEnabled(True)
+
+        if "release_url" in data and data["release_url"]:
+            self.release_url = data["release_url"]
+            self.release_tag = data.get("release_tag", "")
+            btn_title = f"Release ({self.release_tag})" if self.release_tag else "GitHub Release"
+            self.btn_gh_rel.setText(btn_title)
+            self.btn_gh_rel.setEnabled(True)
+
+        self._populate_table()
+
+    def sync_remote_status(self):
+        if self._fetch_worker and self._fetch_worker.isRunning():
+            return
+        self.btn_fetch_latest.setEnabled(False)
+        self._fetch_worker = ReleaseFetchWorker(self.project_name, self)
+        self._fetch_worker.runs_fetched.connect(self._on_remote_runs_fetched)
+        self._fetch_worker.finished.connect(lambda: self.btn_fetch_latest.setEnabled(True))
+        self._fetch_worker.start()
+
+    def _on_remote_runs_fetched(self, result: dict):
+        changed = False
+        if "release_url" in result and result["release_url"]:
+            self.release_url = result["release_url"]
+            self.release_tag = result.get("latest_tag", "")
+            btn_title = f"Release ({self.release_tag})" if self.release_tag else "GitHub Release"
+            self.btn_gh_rel.setText(btn_title)
+            self.btn_gh_rel.setEnabled(True)
+            changed = True
+
+        runs_map = result.get("runs_map", {})
+        for name, r in runs_map.items():
+            if name in self.jobs:
+                st = r.get("conclusion") or r.get("status") or "idle"
+                self.jobs[name]["status"] = st
+                self.jobs[name]["url"] = r.get("url", "")
+                self.jobs[name]["step"] = r.get("conclusion") or r.get("status") or "—"
+                changed = True
+
+        if changed:
+            self._populate_table()
+            self._save_current_state()
+
     def reset_state(self):
         for k in self.jobs:
             self.jobs[k] = {"status": "idle", "url": "", "step": "—"}
         self.copr_url = self.DEFAULT_RUFIN_COPR
+        self.copr_title = "COPR Builds"
         if self.btn_copr:
-            self.btn_copr.setText("COPR Builds")
+            self.btn_copr.setText(self.copr_title)
         if self.btn_pr:
             self.btn_pr.setEnabled(False)
         if self.btn_flathub:
             self.btn_flathub.setEnabled(False)
         self.release_url = ""
+        self.release_tag = ""
+        self.btn_gh_rel.setText("GitHub Release")
         self.btn_gh_rel.setEnabled(False)
         self._populate_table()
+        self._save_current_state()
 
     def process_output_chunk(self, text: str):
         changed = False
@@ -203,13 +382,17 @@ class ReleaseJobsWidget(QWidget):
         if copr_match and self.btn_copr:
             b_id = copr_match.group(1)
             self.copr_url = f"https://copr.fedorainfracloud.org/coprs/screwyy/rufin/build/{b_id}/"
-            self.btn_copr.setText(f"COPR Build #{b_id}")
+            self.copr_title = f"COPR Build #{b_id}"
+            self.btn_copr.setText(self.copr_title)
+            changed = True
 
         copr_id_match = re.search(r"COPR build (\d+):", text)
         if copr_id_match and self.btn_copr and "screwyy/rufin/build" not in self.copr_url:
             b_id = copr_id_match.group(1)
             self.copr_url = f"https://copr.fedorainfracloud.org/coprs/screwyy/rufin/build/{b_id}/"
-            self.btn_copr.setText(f"COPR Build #{b_id}")
+            self.copr_title = f"COPR Build #{b_id}"
+            self.btn_copr.setText(self.copr_title)
+            changed = True
 
         # Match PR URLs
         pr_match = re.search(r"https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)", text)
@@ -218,19 +401,23 @@ class ReleaseJobsWidget(QWidget):
             if "flathub" in full_url and self.btn_flathub:
                 self.flathub_url = full_url
                 self.btn_flathub.setEnabled(True)
+                changed = True
             elif self.btn_pr:
                 self.pr_url = full_url
                 self.btn_pr.setEnabled(True)
+                changed = True
 
         # Match GitHub Release URLs
         rel_match = re.search(r"https://github\.com/[^/\s]+/[^/\s]+/releases/tag/([^\s]+)", text)
         if rel_match:
             self.release_url = rel_match.group(0)
+            self.release_tag = rel_match.group(1)
+            self.btn_gh_rel.setText(f"Release ({self.release_tag})")
             self.btn_gh_rel.setEnabled(True)
+            changed = True
 
         # Match workflow triggers or runs
         for key in self.jobs.keys():
-            # e.g. "Started AUR: https://..." or "- AUR: https://..." or "container-release.yml"
             pattern = rf"(?:Started|Reusing|-)\s+{re.escape(key)}(?:\s+candidate\s+run)?:\s*(https://github\.com/[^\s]+/actions/runs/\d+)"
             m = re.search(pattern, text, re.IGNORECASE)
             if m:
@@ -287,3 +474,4 @@ class ReleaseJobsWidget(QWidget):
 
         if changed:
             self._populate_table()
+            self._save_current_state()

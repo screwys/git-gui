@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.config import AppConfig, ConfigManager
+from core.state import StateManager
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
 from ui.style import DARK_STYLESHEET
@@ -265,6 +266,10 @@ class RufinView(QWidget):
         self.tabs.addTab(self.publish_tab, "Publish PR")
         self.tabs.addTab(self.release_tab, "Release")
 
+        saved_tab = StateManager.get("rufin_subtab", "Publish PR")
+        self.tabs.setCurrentIndex(1 if saved_tab == "Release" else 0)
+        self.tabs.currentChanged.connect(lambda idx: StateManager.update(rufin_subtab="Release" if idx == 1 else "Publish PR"))
+
         layout.addWidget(self.tabs)
 
     def refresh(self):
@@ -289,6 +294,10 @@ class IglooView(QWidget):
 
         self.tabs.addTab(self.commit_tab, "Commit & Push")
         self.tabs.addTab(self.release_tab, "Release")
+
+        saved_tab = StateManager.get("igloo_subtab", "Commit & Push")
+        self.tabs.setCurrentIndex(1 if saved_tab == "Release" else 0)
+        self.tabs.currentChanged.connect(lambda idx: StateManager.update(igloo_subtab="Release" if idx == 1 else "Commit & Push"))
 
         layout.addWidget(self.tabs)
 
@@ -335,6 +344,8 @@ class MainWindow(QMainWindow):
 
         self.project_tabs.addTab(self.rufin_view, "Rufin")
         self.project_tabs.addTab(self.igloo_view, "Igloo")
+        saved_proj = StateManager.get("selected_project", "Rufin")
+        self.project_tabs.setCurrentIndex(1 if saved_proj == "Igloo" else 0)
         self.project_tabs.currentChanged.connect(self._on_project_changed)
 
         root_layout.addWidget(self.project_tabs)
@@ -378,6 +389,8 @@ class MainWindow(QMainWindow):
         return "Igloo" if self.project_tabs.currentIndex() == 1 else "Rufin"
 
     def _on_project_changed(self, index: int):
+        proj_name = "Igloo" if index == 1 else "Rufin"
+        StateManager.update(selected_project=proj_name)
         self.update_repo_display()
         self.refresh_active_repo()
 

@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from core.state import StateManager
 from ui.components.file_list import FileListWidget
 from ui.components.diff_viewer import DiffViewer
 from ui.components.terminal_view import TerminalWidget
@@ -51,7 +52,7 @@ class BranchPrDetectWorker(QThread):
                 "--state",
                 "open",
                 "--json",
-                "number,title,url",
+                "number,title,url,state",
             ]
             res = subprocess.run(
                 cmd,
@@ -68,6 +69,69 @@ class BranchPrDetectWorker(QThread):
             pass
 
 
+class LatestPrDetectWorker(QThread):
+    pr_found = pyqtSignal(dict)
+
+    def __init__(self, repo_path: str, parent=None):
+        super().__init__(parent)
+        self.repo_path = repo_path
+
+    def run(self):
+        try:
+            # First try author @me to get the user's latest PR
+            cmd = [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--author",
+                "@me",
+                "--limit",
+                "1",
+                "--json",
+                "number,title,url,state",
+            ]
+            res = subprocess.run(
+                cmd,
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                items = json.loads(res.stdout)
+                if items:
+                    self.pr_found.emit(items[0])
+                    return
+
+            # Fallback to general latest PR
+            cmd_all = [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--limit",
+                "1",
+                "--json",
+                "number,title,url,state",
+            ]
+            res_all = subprocess.run(
+                cmd_all,
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res_all.returncode == 0 and res_all.stdout.strip():
+                items = json.loads(res_all.stdout)
+                if items:
+                    self.pr_found.emit(items[0])
+        except Exception:
+            pass
+
+
 class PublishPrTab(QWidget):
     def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None):
         super().__init__(parent)
@@ -77,8 +141,11 @@ class PublishPrTab(QWidget):
         self.detected_pr_url = ""
         self.detected_pr_number = ""
         self._detect_worker: Optional[BranchPrDetectWorker] = None
+        self._latest_worker: Optional[LatestPrDetectWorker] = None
+
         self._init_ui()
         self._wire_signals()
+        self._restore_saved_pr()
         self.refresh()
 
     def _init_ui(self):
@@ -275,6 +342,18 @@ class PublishPrTab(QWidget):
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
         self.terminal.stop_requested.connect(self.runner.stop)
 
+    def _restore_saved_pr(self):
+        saved = StateManager.get("rufin_tracked_pr")
+        if saved and isinstance(saved, dict) and saved.get("number"):
+            self.detected_pr_number = str(saved["number"])
+            self.detected_pr_url = saved.get("url", "")
+            title = saved.get("title", "")
+            state = saved.get("state", "")
+            state_str = f" ({state.capitalize()})" if state else ""
+            self.pr_banner_lbl.setText(f"Pull Request #{self.detected_pr_number}{state_str}: {title}")
+            self.pr_banner.setVisible(True)
+            self.checks_view.set_pr(self.detected_pr_number, title=title, url=self.detected_pr_url, state=state)
+
     def _on_file_saved(self, rel_path: str):
         self.refresh()
         self._show_single_file_diff(rel_path)
@@ -292,7 +371,15 @@ class PublishPrTab(QWidget):
             self.detected_pr_number = pr_num
             self.pr_banner_lbl.setText(f"Pull Request #{pr_num}")
             self.pr_banner.setVisible(True)
-            self.checks_view.set_pr(pr_num, url=url)
+            self.checks_view.set_pr(pr_num, url=url, state="OPEN")
+            StateManager.update(
+                rufin_tracked_pr={
+                    "number": pr_num,
+                    "title": self.title_input.text().strip(),
+                    "url": url,
+                    "state": "OPEN",
+                }
+            )
 
     def _open_detected_pr(self):
         if self.detected_pr_url:
@@ -316,6 +403,13 @@ class PublishPrTab(QWidget):
             self._detect_worker.start()
         else:
             self.branch_input.setPlaceholderText("Derived from title (on main)")
+            # If no PR is currently tracked or banner is hidden, discover latest PR
+            if not self.detected_pr_number:
+                if self._latest_worker and self._latest_worker.isRunning():
+                    self._latest_worker.terminate()
+                self._latest_worker = LatestPrDetectWorker(self.git_mgr.repo_path, self)
+                self._latest_worker.pr_found.connect(self._on_open_pr_detected)
+                self._latest_worker.start()
 
         selected_paths = self.file_list.get_selected_paths()
         if len(selected_paths) == 1:
@@ -329,12 +423,22 @@ class PublishPrTab(QWidget):
         pr_num = str(pr_data.get("number", ""))
         title = pr_data.get("title", "")
         url = pr_data.get("url", "")
+        state = pr_data.get("state", "")
         if pr_num:
             self.detected_pr_number = pr_num
             self.detected_pr_url = url
-            self.pr_banner_lbl.setText(f"Pull Request #{pr_num}: {title}")
+            state_str = f" ({state.capitalize()})" if state else ""
+            self.pr_banner_lbl.setText(f"Pull Request #{pr_num}{state_str}: {title}")
             self.pr_banner.setVisible(True)
-            self.checks_view.set_pr(pr_num, title=title, url=url)
+            self.checks_view.set_pr(pr_num, title=title, url=url, state=state)
+            StateManager.update(
+                rufin_tracked_pr={
+                    "number": pr_num,
+                    "title": title,
+                    "url": url,
+                    "state": state,
+                }
+            )
 
     def _show_single_file_diff(self, path: str):
         diff_text = self.git_mgr.get_diff([path])

@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
 )
 from core.notifications import send_desktop_notification
+from core.state import StateManager
 
 
 class ChecksFetchWorker(QThread):
@@ -34,7 +35,7 @@ class ChecksFetchWorker(QThread):
                 "view",
                 str(self.pr_number),
                 "--json",
-                "number,title,url,statusCheckRollup",
+                "number,title,url,state,statusCheckRollup",
             ]
             res = subprocess.run(
                 cmd,
@@ -56,6 +57,7 @@ class PrChecksWidget(QWidget):
     """
     Displays real-time GitHub Actions checks for a Rufin PR.
     Polls check status periodically and sends desktop notifications if any check fails.
+    Stateful: persists tracked PR and updates state.
     """
 
     def __init__(self, repo_path: str = "", parent=None):
@@ -64,6 +66,7 @@ class PrChecksWidget(QWidget):
         self.pr_number: Optional[str] = None
         self.pr_title: str = ""
         self.pr_url: str = ""
+        self.pr_state: str = ""
         self.notified_failed_checks = set()
         self._worker: Optional[ChecksFetchWorker] = None
 
@@ -138,17 +141,21 @@ class PrChecksWidget(QWidget):
         )
         layout.addWidget(self.table)
 
-    def set_pr(self, pr_number: str, title: str = "", url: str = ""):
+    def set_pr(self, pr_number: str, title: str = "", url: str = "", state: str = ""):
         if self.pr_number != str(pr_number):
             self.notified_failed_checks.clear()
 
         self.pr_number = str(pr_number)
         self.pr_title = title
         self.pr_url = url
-        self.lbl_title.setText(f"PR #{self.pr_number}: {self.pr_title}" if self.pr_title else f"PR #{self.pr_number}")
+        self.pr_state = state
+
+        state_suffix = f" ({state.capitalize()})" if state else ""
+        self.lbl_title.setText(f"PR #{self.pr_number}{state_suffix}: {self.pr_title}" if self.pr_title else f"PR #{self.pr_number}{state_suffix}")
         self.btn_open_pr.setEnabled(bool(self.pr_url))
         self.refresh_checks()
-        self.poll_timer.start()
+        if not self.poll_timer.isActive() and (not state or state.upper() == "OPEN"):
+            self.poll_timer.start()
 
     def _open_pr(self):
         if self.pr_url:
@@ -166,16 +173,29 @@ class PrChecksWidget(QWidget):
         self._worker.start()
 
     def _on_fetch_error(self, err: str):
-        # Only log quietly, keep previous checks visible
         pass
 
     def _on_checks_received(self, data: dict):
         if not self.pr_title and data.get("title"):
             self.pr_title = data.get("title", "")
-            self.lbl_title.setText(f"PR #{self.pr_number}: {self.pr_title}")
         if not self.pr_url and data.get("url"):
             self.pr_url = data.get("url", "")
             self.btn_open_pr.setEnabled(True)
+        if data.get("state"):
+            self.pr_state = data.get("state", "")
+
+        state_suffix = f" ({self.pr_state.capitalize()})" if self.pr_state else ""
+        self.lbl_title.setText(f"PR #{self.pr_number}{state_suffix}: {self.pr_title}" if self.pr_title else f"PR #{self.pr_number}{state_suffix}")
+
+        # Persist updated tracked PR state
+        StateManager.update(
+            rufin_tracked_pr={
+                "number": str(self.pr_number),
+                "title": self.pr_title,
+                "url": self.pr_url,
+                "state": self.pr_state,
+            }
+        )
 
         checks_raw = data.get("statusCheckRollup", [])
         if not checks_raw:
@@ -203,13 +223,11 @@ class PrChecksWidget(QWidget):
             else:
                 has_running = True
 
-            # Determine failure
             is_failure = conclusion in ("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED") or status == "FAILURE"
             if is_failure:
                 has_failure = True
                 if name not in self.notified_failed_checks:
                     self.notified_failed_checks.add(name)
-                    # Trigger desktop notification
                     send_desktop_notification(
                         title="Rufin CI Check Failed",
                         body=f"Check '{name}' failed on PR #{self.pr_number}.",
@@ -225,28 +243,21 @@ class PrChecksWidget(QWidget):
                 "is_failure": is_failure,
             })
 
-        # Update table
         self.table.setRowCount(len(checks))
         for row, c in enumerate(checks):
             name_item = QTableWidgetItem(c["name"])
             name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             self.table.setItem(row, 0, name_item)
 
-            # Status pill
             status_text = "Pending"
-            pill_style = "color: #8b949e;"
             if c["is_failure"]:
                 status_text = "Failed"
-                pill_style = "color: #f85149; font-weight: bold;"
             elif c["conclusion"] == "SUCCESS" or c["status"] == "SUCCESS":
                 status_text = "Passed"
-                pill_style = "color: #3fb950; font-weight: bold;"
             elif c["conclusion"] == "SKIPPED":
                 status_text = "Skipped"
-                pill_style = "color: #6e7681;"
             elif c["status"] in ("IN_PROGRESS", "QUEUED"):
                 status_text = "Running"
-                pill_style = "color: #58a6ff; font-weight: bold;"
 
             status_item = QTableWidgetItem(status_text)
             status_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -265,7 +276,6 @@ class PrChecksWidget(QWidget):
             dur_item.setForeground(QColor("#8b949e"))
             self.table.setItem(row, 2, dur_item)
 
-            # Link button
             if c["url"]:
                 btn_link = QPushButton("Open Run")
                 btn_link.setFixedHeight(20)
@@ -276,12 +286,10 @@ class PrChecksWidget(QWidget):
             else:
                 self.table.setItem(row, 3, QTableWidgetItem(""))
 
-        # Update Progress Bar
         total = len(checks)
         pct = int((completed_count / total) * 100) if total > 0 else 0
         self.progress_bar.setValue(pct)
 
-        # Update overall status badge
         if has_failure:
             self.status_pill.setText("Checks Failed")
             self.status_pill.setStyleSheet(
