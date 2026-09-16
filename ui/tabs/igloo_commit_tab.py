@@ -29,7 +29,7 @@ class IglooCommitTab(QWidget):
     """
     Standard commit and push workflow tab for Igloo repository.
     Supports staging selected files, writing commit messages/descriptions,
-    amend, and atomic pushing to origin.
+    amend, and atomic pushing to origin (with pre-push skip option).
     """
 
     def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None):
@@ -94,16 +94,22 @@ class IglooCommitTab(QWidget):
         opts_layout.setSpacing(3)
 
         h_opts = QHBoxLayout()
-        h_opts.setSpacing(12)
+        h_opts.setSpacing(10)
         self.push_cb = QCheckBox("Push to origin upon commit")
         self.push_cb.setChecked(True)
         self.push_cb.toggled.connect(self._on_push_toggled)
         h_opts.addWidget(self.push_cb)
 
-        self.amend_cb = QCheckBox("Amend previous commit (--amend)")
+        self.amend_cb = QCheckBox("Amend (--amend)")
         self.amend_cb.setChecked(False)
         self.amend_cb.toggled.connect(self._on_amend_toggled)
         h_opts.addWidget(self.amend_cb)
+
+        self.skip_pre_push_cb = QCheckBox("Skip pre-push (--no-verify)")
+        self.skip_pre_push_cb.setChecked(False)
+        self.skip_pre_push_cb.setToolTip("Bypass git pre-push hook checks with --no-verify")
+        h_opts.addWidget(self.skip_pre_push_cb)
+
         h_opts.addStretch()
         opts_layout.addLayout(h_opts)
 
@@ -131,7 +137,7 @@ class IglooCommitTab(QWidget):
         self.diff_viewer.file_saved.connect(self._on_file_saved)
         right_splitter.addWidget(self.diff_viewer)
 
-        self.terminal = TerminalWidget()
+        self.terminal = TerminalWidget(repo_path=self.git_mgr.repo_path)
         right_splitter.addWidget(self.terminal)
 
         right_splitter.setSizes([380, 260])
@@ -154,8 +160,10 @@ class IglooCommitTab(QWidget):
     def _on_push_toggled(self, checked: bool):
         if checked:
             self.file_list.btn_publish.setText("Commit & Push")
+            self.skip_pre_push_cb.setEnabled(True)
         else:
             self.file_list.btn_publish.setText("Commit")
+            self.skip_pre_push_cb.setEnabled(False)
 
     def _on_amend_toggled(self, checked: bool):
         if checked and not self.summary_input.text().strip():
@@ -172,6 +180,7 @@ class IglooCommitTab(QWidget):
 
     def refresh(self):
         self.diff_viewer.repo_path = self.git_mgr.repo_path
+        self.terminal.repo_path = self.git_mgr.repo_path
         items = self.git_mgr.get_status_files()
         self.file_list.set_files(items)
 
@@ -213,6 +222,7 @@ class IglooCommitTab(QWidget):
         summary = self.summary_input.text().strip()
         desc = self.desc_input.toPlainText().strip()
         is_amend = self.amend_cb.isChecked()
+        skip_pre_push = self.skip_pre_push_cb.isChecked()
 
         if not summary and not is_amend:
             QMessageBox.warning(self, "Missing Summary", "Please enter a commit summary or title.")
@@ -239,6 +249,8 @@ class IglooCommitTab(QWidget):
             ("Amend", "Yes" if is_amend else "No"),
             ("Push to Origin", f"Yes (origin/{branch})" if will_push else "No (local commit only)"),
         ]
+        if will_push:
+            details.append(("Skip Pre-push", "Yes (--no-verify)" if skip_pre_push else "No"))
 
         action_name = "Commit & Push" if will_push else "Commit"
         popup = ConfirmPreviewDialog(
@@ -275,7 +287,10 @@ class IglooCommitTab(QWidget):
         commands.append(escaped_commit)
 
         if will_push:
-            commands.append(f"git push origin {shlex.quote(branch)}")
+            push_cmd = f"git push origin {shlex.quote(branch)}"
+            if skip_pre_push:
+                push_cmd = f"git push --no-verify origin {shlex.quote(branch)}"
+            commands.append(push_cmd)
 
         full_cmd = " && ".join(commands)
 

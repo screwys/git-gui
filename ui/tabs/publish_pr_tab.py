@@ -123,14 +123,20 @@ class PublishPrTab(QWidget):
         flags_layout.setSpacing(3)
 
         h_checks = QHBoxLayout()
-        h_checks.setSpacing(12)
+        h_checks.setSpacing(10)
         self.auto_merge_cb = QCheckBox("Squash auto-merge")
         self.auto_merge_cb.setChecked(self.config.default_auto_merge)
         h_checks.addWidget(self.auto_merge_cb)
 
-        self.wait_cb = QCheckBox("Wait for CI checks (--wait)")
+        self.wait_cb = QCheckBox("Wait CI checks (--wait)")
         self.wait_cb.setChecked(self.config.default_wait_ci)
         h_checks.addWidget(self.wait_cb)
+
+        self.skip_pre_push_cb = QCheckBox("Skip pre-push")
+        self.skip_pre_push_cb.setChecked(False)
+        self.skip_pre_push_cb.setToolTip("Skip local pre-push hook verification (RUFIN_SKIP_PRE_PUSH_HOOK=1)")
+        h_checks.addWidget(self.skip_pre_push_cb)
+
         h_checks.addStretch()
         flags_layout.addLayout(h_checks)
 
@@ -188,7 +194,7 @@ class PublishPrTab(QWidget):
         self.diff_viewer.file_saved.connect(self._on_file_saved)
         right_splitter.addWidget(self.diff_viewer)
 
-        self.terminal = TerminalWidget()
+        self.terminal = TerminalWidget(repo_path=self.git_mgr.repo_path)
         right_splitter.addWidget(self.terminal)
 
         right_splitter.setSizes([380, 260])
@@ -228,6 +234,7 @@ class PublishPrTab(QWidget):
 
     def refresh(self):
         self.diff_viewer.repo_path = self.git_mgr.repo_path
+        self.terminal.repo_path = self.git_mgr.repo_path
         items = self.git_mgr.get_status_files()
         self.file_list.set_files(items)
         curr_branch = self.git_mgr.get_current_branch()
@@ -281,6 +288,7 @@ class PublishPrTab(QWidget):
         body = self.body_input.toPlainText().strip()
         phase = self.phase_input.text().strip()
         title = self.title_input.text().strip()
+        skip_pre_push = self.skip_pre_push_cb.isChecked()
 
         selected_paths = self.file_list.get_selected_paths()
         all_paths = [i.path for i in self.file_list.items]
@@ -296,6 +304,9 @@ class PublishPrTab(QWidget):
         if body:
             args.extend(["--body", body])
             env_vars["RUFIN_ALLOW_PR_BODY"] = "1"
+
+        if skip_pre_push:
+            env_vars["RUFIN_SKIP_PRE_PUSH_HOOK"] = "1"
 
         if phase:
             args.extend(["--phase", phase])
@@ -324,6 +335,7 @@ class PublishPrTab(QWidget):
             ("Files Included", f"{len(selected_paths)} of {len(all_paths)} files" if partial_files else f"All {len(all_paths)} files"),
             ("Squash Merge", "Enabled" if self.auto_merge_cb.isChecked() else "Disabled"),
             ("Wait CI Checks", "Yes" if self.wait_cb.isChecked() else "No"),
+            ("Skip Pre-push", "Yes" if skip_pre_push else "No"),
         ]
         if i18n_choice != "none":
             details.append(("I18n Catalogs", self.i18n_combo.currentText()))
