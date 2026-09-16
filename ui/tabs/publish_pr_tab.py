@@ -1,7 +1,9 @@
 import os
 import re
-from typing import List
-from PyQt6.QtCore import Qt, QUrl
+import json
+import subprocess
+from typing import List, Optional
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget,
@@ -17,6 +19,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QMessageBox,
     QFrame,
+    QTabWidget,
     QApplication,
 )
 from core.config import AppConfig
@@ -25,7 +28,44 @@ from core.runner import ProcessRunner
 from ui.components.file_list import FileListWidget
 from ui.components.diff_viewer import DiffViewer
 from ui.components.terminal_view import TerminalWidget
+from ui.components.pr_checks_view import PrChecksWidget
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
+
+
+class BranchPrDetectWorker(QThread):
+    pr_found = pyqtSignal(dict)
+
+    def __init__(self, repo_path: str, branch: str, parent=None):
+        super().__init__(parent)
+        self.repo_path = repo_path
+        self.branch = branch
+
+    def run(self):
+        try:
+            cmd = [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                self.branch,
+                "--state",
+                "open",
+                "--json",
+                "number,title,url",
+            ]
+            res = subprocess.run(
+                cmd,
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                items = json.loads(res.stdout)
+                if items:
+                    self.pr_found.emit(items[0])
+        except Exception:
+            pass
 
 
 class PublishPrTab(QWidget):
@@ -35,6 +75,8 @@ class PublishPrTab(QWidget):
         self.config = config
         self.runner = ProcessRunner(self)
         self.detected_pr_url = ""
+        self.detected_pr_number = ""
+        self._detect_worker: Optional[BranchPrDetectWorker] = None
         self._init_ui()
         self._wire_signals()
         self.refresh()
@@ -180,24 +222,43 @@ class PublishPrTab(QWidget):
         h_banner.setContentsMargins(8, 2, 8, 2)
         self.pr_banner_lbl = QLabel("Pull Request opened:")
         self.pr_banner_lbl.setStyleSheet("color: #58a6ff; font-weight: 500;")
-        h_banner.addWidget(self.pr_banner_lbl)
-        h_banner.addStretch()
+        h_banner.addWidget(self.pr_banner_lbl, 1)
+
+        self.btn_view_checks = QPushButton("View Checks")
+        self.btn_view_checks.setFixedHeight(24)
+        self.btn_view_checks.setStyleSheet("font-size: 11px; padding: 1px 8px;")
+        self.btn_view_checks.clicked.connect(self._focus_checks_tab)
+        h_banner.addWidget(self.btn_view_checks)
+
         self.btn_open_pr = QPushButton("Open PR on GitHub")
         self.btn_open_pr.setFixedHeight(24)
+        self.btn_open_pr.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_open_pr.clicked.connect(self._open_detected_pr)
         h_banner.addWidget(self.btn_open_pr)
         right_layout.addWidget(self.pr_banner)
 
         right_splitter = QSplitter(Qt.Orientation.Vertical)
 
+        # Upper: Diff Viewer
         self.diff_viewer = DiffViewer(self.config, self.git_mgr.repo_path)
         self.diff_viewer.file_saved.connect(self._on_file_saved)
         right_splitter.addWidget(self.diff_viewer)
 
-        self.terminal = TerminalWidget(repo_path=self.git_mgr.repo_path)
-        right_splitter.addWidget(self.terminal)
+        # Lower: Tab widget with Checks & CI and Terminal Log
+        self.bottom_tabs = QTabWidget()
+        self.bottom_tabs.setStyleSheet(
+            "QTabWidget::tab-bar { alignment: left; } "
+            "QTabBar::tab { font-size: 11px; padding: 4px 12px; margin-right: 2px; }"
+        )
 
-        right_splitter.setSizes([380, 260])
+        self.checks_view = PrChecksWidget(repo_path=self.git_mgr.repo_path)
+        self.terminal = TerminalWidget(repo_path=self.git_mgr.repo_path)
+
+        self.bottom_tabs.addTab(self.checks_view, "PR Checks")
+        self.bottom_tabs.addTab(self.terminal, "Terminal Log")
+        right_splitter.addWidget(self.bottom_tabs)
+
+        right_splitter.setSizes([340, 300])
         right_layout.addWidget(right_splitter)
 
         self.main_splitter.addWidget(right_widget)
@@ -218,6 +279,9 @@ class PublishPrTab(QWidget):
         self.refresh()
         self._show_single_file_diff(rel_path)
 
+    def _focus_checks_tab(self):
+        self.bottom_tabs.setCurrentWidget(self.checks_view)
+
     def _on_output_received(self, text: str):
         self.terminal.append_output(text)
         m = re.search(r"https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)", text)
@@ -225,8 +289,10 @@ class PublishPrTab(QWidget):
             url = m.group(0)
             pr_num = m.group(1)
             self.detected_pr_url = url
+            self.detected_pr_number = pr_num
             self.pr_banner_lbl.setText(f"Pull Request #{pr_num}")
             self.pr_banner.setVisible(True)
+            self.checks_view.set_pr(pr_num, url=url)
 
     def _open_detected_pr(self):
         if self.detected_pr_url:
@@ -235,11 +301,19 @@ class PublishPrTab(QWidget):
     def refresh(self):
         self.diff_viewer.repo_path = self.git_mgr.repo_path
         self.terminal.repo_path = self.git_mgr.repo_path
+        self.checks_view.repo_path = self.git_mgr.repo_path
+
         items = self.git_mgr.get_status_files()
         self.file_list.set_files(items)
         curr_branch = self.git_mgr.get_current_branch()
         if curr_branch and curr_branch != "main":
             self.branch_input.setPlaceholderText(f"Current: {curr_branch}")
+            # Detect open PR for topic branch
+            if self._detect_worker and self._detect_worker.isRunning():
+                self._detect_worker.terminate()
+            self._detect_worker = BranchPrDetectWorker(self.git_mgr.repo_path, curr_branch, self)
+            self._detect_worker.pr_found.connect(self._on_open_pr_detected)
+            self._detect_worker.start()
         else:
             self.branch_input.setPlaceholderText("Derived from title (on main)")
 
@@ -250,6 +324,17 @@ class PublishPrTab(QWidget):
             self._show_multi_file_diff([i.path for i in items])
         else:
             self.diff_viewer.set_diff("", "Clean working tree")
+
+    def _on_open_pr_detected(self, pr_data: dict):
+        pr_num = str(pr_data.get("number", ""))
+        title = pr_data.get("title", "")
+        url = pr_data.get("url", "")
+        if pr_num:
+            self.detected_pr_number = pr_num
+            self.detected_pr_url = url
+            self.pr_banner_lbl.setText(f"Pull Request #{pr_num}: {title}")
+            self.pr_banner.setVisible(True)
+            self.checks_view.set_pr(pr_num, title=title, url=url)
 
     def _show_single_file_diff(self, path: str):
         diff_text = self.git_mgr.get_diff([path])
@@ -358,7 +443,9 @@ class PublishPrTab(QWidget):
             return
 
         self.detected_pr_url = ""
+        self.detected_pr_number = ""
         self.pr_banner.setVisible(False)
+        self.bottom_tabs.setCurrentWidget(self.terminal)
         self.terminal.clear_terminal()
         self.terminal.set_status("Publishing PR", "running")
         self.runner.start(script_path, args, cwd=self.git_mgr.repo_path, env_vars=env_vars)

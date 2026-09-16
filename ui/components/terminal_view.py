@@ -1,6 +1,7 @@
 import re
+import time
 from typing import Optional
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import (
     QFont,
     QColor,
@@ -19,6 +20,19 @@ from PyQt6.QtWidgets import (
     QTabWidget,
 )
 from core.runner import ProcessRunner
+
+
+def format_duration(seconds: float) -> str:
+    secs = max(0, int(seconds))
+    if secs < 60:
+        return f"{secs}s"
+    mins = secs // 60
+    rem_secs = secs % 60
+    if mins < 60:
+        return f"{mins}m {rem_secs}s"
+    hours = mins // 60
+    rem_mins = mins % 60
+    return f"{hours}h {rem_mins}m {rem_secs}s"
 
 
 class AnsiColorParser:
@@ -94,6 +108,20 @@ class TerminalWidget(QWidget):
         self.interactive_runner = ProcessRunner(self)
         self._history = []
         self._history_idx = 0
+
+        # Duration tracking for Task Output
+        self._task_start_time: Optional[float] = None
+        self._task_base_text = "Idle"
+        self._task_timer = QTimer(self)
+        self._task_timer.setInterval(1000)
+        self._task_timer.timeout.connect(self._on_task_timer_tick)
+
+        # Duration tracking for Shell
+        self._shell_start_time: Optional[float] = None
+        self._shell_timer = QTimer(self)
+        self._shell_timer.setInterval(1000)
+        self._shell_timer.timeout.connect(self._on_shell_timer_tick)
+
         self._init_ui()
         self._wire_interactive()
 
@@ -289,28 +317,54 @@ class TerminalWidget(QWidget):
             self.console.ensureCursorVisible()
 
     def set_status(self, text: str, state: str = "idle"):
-        self.status_badge.setText(text)
+        self._task_base_text = text
         if state == "running":
+            self._task_start_time = time.time()
+            self._task_timer.start()
+            self.status_badge.setText(f"{text} (0s)")
             self.status_badge.setStyleSheet(
                 "background-color: rgba(56, 139, 253, 0.15); color: #58a6ff; border: 1px solid rgba(56, 139, 253, 0.4); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
             )
             self.btn_stop.setEnabled(True)
             self.tabs.setCurrentIndex(0)
-        elif state == "success":
-            self.status_badge.setStyleSheet(
-                "background-color: rgba(46, 160, 67, 0.15); color: #3fb950; border: 1px solid rgba(46, 160, 67, 0.4); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
-            )
-            self.btn_stop.setEnabled(False)
-        elif state == "failed":
-            self.status_badge.setStyleSheet(
-                "background-color: rgba(248, 81, 73, 0.15); color: #f85149; border: 1px solid rgba(248, 81, 73, 0.4); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
-            )
-            self.btn_stop.setEnabled(False)
         else:
-            self.status_badge.setStyleSheet(
-                "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
-            )
+            self._task_timer.stop()
+            duration_suffix = ""
+            if self._task_start_time is not None:
+                elapsed = time.time() - self._task_start_time
+                self._task_start_time = None
+                duration_suffix = f" in {format_duration(elapsed)}"
+
+            display_text = f"{text}{duration_suffix}"
+            self.status_badge.setText(display_text)
+
+            if state == "success":
+                self.status_badge.setStyleSheet(
+                    "background-color: rgba(46, 160, 67, 0.15); color: #3fb950; border: 1px solid rgba(46, 160, 67, 0.4); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
+                )
+            elif state == "failed":
+                self.status_badge.setStyleSheet(
+                    "background-color: rgba(248, 81, 73, 0.15); color: #f85149; border: 1px solid rgba(248, 81, 73, 0.4); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
+                )
+            else:
+                self.status_badge.setStyleSheet(
+                    "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
+                )
             self.btn_stop.setEnabled(False)
+
+    def _on_task_timer_tick(self):
+        if self._task_start_time is not None:
+            elapsed = time.time() - self._task_start_time
+            dur = format_duration(elapsed)
+            if self._task_base_text.lower() == "running":
+                self.status_badge.setText(f"Running for {dur}")
+            else:
+                self.status_badge.setText(f"{self._task_base_text} ({dur})")
+
+    def _on_shell_timer_tick(self):
+        if self._shell_start_time is not None:
+            elapsed = time.time() - self._shell_start_time
+            self.shell_status_badge.setText(f"Running for {format_duration(elapsed)}")
 
     def clear_terminal(self):
         self.console.clear()
@@ -351,8 +405,10 @@ class TerminalWidget(QWidget):
         self.command_executed.emit(cmd)
 
     def _on_shell_started(self):
+        self._shell_start_time = time.time()
+        self._shell_timer.start()
         self.btn_shell_stop.setEnabled(True)
-        self.shell_status_badge.setText("Running")
+        self.shell_status_badge.setText("Running for 0s")
         self.shell_status_badge.setStyleSheet(
             "background-color: rgba(56, 139, 253, 0.15); color: #58a6ff; border: 1px solid rgba(56, 139, 253, 0.4); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
         )
@@ -365,11 +421,17 @@ class TerminalWidget(QWidget):
         self.shell_console.ensureCursorVisible()
 
     def _on_shell_finished(self, exit_code: int):
+        self._shell_timer.stop()
+        dur_str = ""
+        if self._shell_start_time is not None:
+            dur_str = f" in {format_duration(time.time() - self._shell_start_time)}"
+            self._shell_start_time = None
+
         self.btn_shell_stop.setEnabled(False)
         status_text = "Completed" if exit_code == 0 else f"Exit {exit_code}"
         color = "#3fb950" if exit_code == 0 else "#f85149"
         bg = "rgba(46, 160, 67, 0.15)" if exit_code == 0 else "rgba(248, 81, 73, 0.15)"
-        self.shell_status_badge.setText(status_text)
+        self.shell_status_badge.setText(f"{status_text}{dur_str}")
         self.shell_status_badge.setStyleSheet(
             f"background-color: {bg}; color: {color}; border: 1px solid {color}; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
         )
