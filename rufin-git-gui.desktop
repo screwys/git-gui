@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Rufin Git GUI
+Comment=Manage pull requests, releases, and background commands
+Exec=rufin-git-gui
+Icon=git-gui
+Terminal=false
+Categories=Development;RevisionControl;
+StartupWMClass=rufin-git-gui

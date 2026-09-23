@@ -15,14 +15,8 @@ for name in ("rufin-git-gui", "git-gui"):
 applications = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "applications"
 applications.mkdir(parents=True, exist_ok=True)
 launcher = str(root / "rufin-git-gui").replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$").replace("%", "%%")
-(applications / "rufin-git-gui.desktop").write_text(f'''[Desktop Entry]
-Type=Application
-Name=Rufin Git GUI
-Comment=Manage pull requests, releases, and background commands
-Exec="{launcher}"
-Icon={root / 'git-gui.svg'}
-Terminal=false
-Categories=Development;RevisionControl;
-StartupWMClass=rufin-git-gui
-''')
+entry = (root / "rufin-git-gui.desktop").read_text()
+entry = entry.replace("Exec=rufin-git-gui\n", f'Exec="{launcher}"\n')
+entry = entry.replace("Icon=git-gui\n", f"Icon={root / 'git-gui.svg'}\n")
+(applications / "rufin-git-gui.desktop").write_text(entry)
 print(f"Installed {applications / 'rufin-git-gui.desktop'}")

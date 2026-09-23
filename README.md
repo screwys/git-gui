@@ -54,6 +54,10 @@ To install or update the launcher for this checkout, run:
 python3 install-desktop.py
 ```
 
+The installer creates command links in `~/.local/bin` and installs the repository's
+`rufin-git-gui.desktop` entry in your application menu, with paths to this checkout and its icon.
+Run it again if you move the checkout. Python 3 and PyQt6 must be installed on the system.
+
 ## Background commands and recovery
 
 Enable **Settings > Close to tray** to keep notifications active when you close the window.
