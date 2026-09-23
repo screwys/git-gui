@@ -1,7 +1,7 @@
 import json
 import subprocess
 from datetime import datetime, timezone
-from typing import Optional, List, Dict
+from typing import Optional
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QDesktopServices, QColor
 from PyQt6.QtWidgets import (
@@ -58,7 +58,7 @@ def format_check_duration(started_at: Optional[str], completed_at: Optional[str]
 
 
 class ChecksFetchWorker(QThread):
-    finished = pyqtSignal(dict)
+    checks_fetched = pyqtSignal(dict)
     error = pyqtSignal(str)
 
     def __init__(self, repo_path: str, pr_number: str, parent=None):
@@ -85,7 +85,7 @@ class ChecksFetchWorker(QThread):
             )
             if res.returncode == 0 and res.stdout.strip():
                 data = json.loads(res.stdout)
-                self.finished.emit(data)
+                self.checks_fetched.emit(data)
             else:
                 self.error.emit(res.stderr.strip() or "No data returned")
         except Exception as e:
@@ -99,6 +99,8 @@ class PrChecksWidget(QWidget):
     Stateful: persists tracked PR and updates state.
     """
 
+    checks_updated = pyqtSignal(dict)
+
     def __init__(self, repo_path: str = "", parent=None):
         super().__init__(parent)
         self.repo_path = repo_path
@@ -107,7 +109,9 @@ class PrChecksWidget(QWidget):
         self.pr_url: str = ""
         self.pr_state: str = ""
         self.notified_failed_checks = set()
+        self._last_result = None
         self._worker: Optional[ChecksFetchWorker] = None
+        self._generation = 0
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(12000)  # poll every 12s
@@ -181,8 +185,10 @@ class PrChecksWidget(QWidget):
         layout.addWidget(self.table)
 
     def set_pr(self, pr_number: str, title: str = "", url: str = "", state: str = ""):
+        self._generation += 1
         if self.pr_number != str(pr_number):
             self.notified_failed_checks.clear()
+            self._last_result = None
 
         self.pr_number = str(pr_number)
         self.pr_title = title
@@ -207,14 +213,42 @@ class PrChecksWidget(QWidget):
             return
 
         self._worker = ChecksFetchWorker(self.repo_path, self.pr_number, self)
-        self._worker.finished.connect(self._on_checks_received)
+        self._worker.generation = self._generation
+        generation = self._generation
+        self._worker.checks_fetched.connect(
+            lambda data: self._on_checks_received(data) if generation == self._generation else None)
         self._worker.error.connect(self._on_fetch_error)
+        self._worker.finished.connect(self._release_worker)
         self._worker.start()
 
+    def _release_worker(self):
+        worker = self.sender()
+        if self._worker is worker:
+            self._worker = None
+        worker.deleteLater()
+        if (worker.pr_number != self.pr_number or worker.generation != self._generation) and self.pr_number:
+            QTimer.singleShot(0, self.refresh_checks)
+
     def _on_fetch_error(self, err: str):
-        pass
+        self.status_pill.setText("Status unavailable")
+        self.status_pill.setToolTip(err)
+
+    def clear_pr(self):
+        self.pr_number = None
+        self.poll_timer.stop()
+        self.table.setRowCount(0)
+        self.progress_bar.setValue(0)
+        self.lbl_title.setText("No pull request for this branch")
+        self.btn_open_pr.setEnabled(False)
+        self.status_pill.setText("No PR")
 
     def _on_checks_received(self, data: dict):
+        if str(data.get("number")) != self.pr_number:
+            return
+        self.status_pill.setToolTip("")
+        old_state = self.pr_state
+        if data.get("state") == "MERGED" and old_state == "OPEN":
+            send_desktop_notification(f"PR #{self.pr_number} merged", data.get("title", ""), urgency="normal")
         if not self.pr_title and data.get("title"):
             self.pr_title = data.get("title", "")
         if not self.pr_url and data.get("url"):
@@ -237,7 +271,10 @@ class PrChecksWidget(QWidget):
         )
 
         checks_raw = data.get("statusCheckRollup", [])
+        self.checks_updated.emit(data)
         if not checks_raw:
+            self.table.setRowCount(0)
+            self.progress_bar.setValue(0)
             self.status_pill.setText("No Checks Yet")
             self.status_pill.setStyleSheet(
                 "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; "
@@ -258,13 +295,13 @@ class PrChecksWidget(QWidget):
             started_at = item.get("startedAt")
             completed_at = item.get("completedAt")
 
-            is_completed = (status == "COMPLETED" or conclusion is not None or status == "SUCCESS")
+            is_completed = (status == "COMPLETED" or bool(conclusion) or status in ("SUCCESS", "FAILURE", "ERROR"))
             if is_completed:
                 completed_count += 1
             else:
                 has_running = True
 
-            is_failure = conclusion in ("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED") or status == "FAILURE"
+            is_failure = conclusion in ("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE") or status in ("FAILURE", "ERROR")
             if is_failure:
                 has_failure = True
                 if name not in self.notified_failed_checks:
@@ -274,6 +311,8 @@ class PrChecksWidget(QWidget):
                         body=f"Check '{name}' failed on PR #{self.pr_number}.",
                         urgency="critical",
                     )
+            else:
+                self.notified_failed_checks.discard(name)
 
             duration_str = format_check_duration(started_at, completed_at, conclusion)
 
@@ -334,6 +373,11 @@ class PrChecksWidget(QWidget):
         pct = int((completed_count / total) * 100) if total > 0 else 0
         self.progress_bar.setValue(pct)
 
+        result = "failure" if has_failure else "running" if has_running else "success"
+        if result == "success" and self._last_result in ("running", "failure"):
+            send_desktop_notification(f"PR #{self.pr_number}: checks passed", self.pr_title, urgency="normal")
+        self._last_result = result
+
         if has_failure:
             self.status_pill.setText("Checks Failed")
             self.status_pill.setStyleSheet(
@@ -352,5 +396,5 @@ class PrChecksWidget(QWidget):
                 "background-color: rgba(46, 160, 67, 0.15); color: #3fb950; border: 1px solid rgba(46, 160, 67, 0.4); "
                 "border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600;"
             )
-            # Stop polling once everything is done and passed
-            self.poll_timer.stop()
+            if self.pr_state in ("MERGED", "CLOSED"):
+                self.poll_timer.stop()

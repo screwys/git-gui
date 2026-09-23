@@ -1,8 +1,8 @@
 import re
 import json
 import subprocess
-from typing import Dict, Optional, List
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
+from typing import Dict, Optional
+from PyQt6.QtCore import Qt, QUrl, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QColor
 from PyQt6.QtWidgets import (
     QWidget,
@@ -14,93 +14,70 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QLabel,
     QFrame,
+    QComboBox,
 )
 from core.state import StateManager
+from core.notifications import send_desktop_notification
 
 
 class ReleaseFetchWorker(QThread):
     runs_fetched = pyqtSignal(dict)
+    error = pyqtSignal(str)
 
-    def __init__(self, project_name: str, parent=None):
+    def __init__(self, repo_path: str, tag: str, parent=None):
         super().__init__(parent)
-        self.project_name = project_name
+        self.repo_path = repo_path
+        self.tag = tag
+
+    def query(self, *args):
+        result = subprocess.run(["gh", *args], cwd=self.repo_path,
+                                capture_output=True, text=True, timeout=20)
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or "GitHub returned no data")
+        return json.loads(result.stdout)
 
     def run(self):
-        result = {}
-        repo = "screwys/Igloo" if self.project_name == "Igloo" else "screwys/Rufin"
         try:
-            # 1. Fetch latest release
-            cmd_rel = ["gh", "release", "list", "--repo", repo, "--limit", "1"]
-            r1 = subprocess.run(cmd_rel, capture_output=True, text=True, timeout=10)
-            latest_tag = ""
-            if r1.returncode == 0 and r1.stdout.strip():
-                latest_tag = r1.stdout.strip().split()[0]
-                result["latest_tag"] = latest_tag
-                result["release_url"] = f"https://github.com/{repo}/releases/tag/{latest_tag}"
-
-            # 2. Fetch workflow runs matching latest tag
+            repo = self.query("repo", "view", "--json", "url")["url"]
+            releases = self.query("release", "list", "--limit", "30", "--json", "tagName,isDraft,name")
+            prs = self.query("pr", "list", "--state", "open", "--limit", "100",
+                             "--json", "headRefName,url,title")
+            prep = {pr["headRefName"].removeprefix("release/"): pr for pr in prs
+                    if pr["headRefName"].startswith("release/")}
+            tags = list(dict.fromkeys([*prep, *(r["tagName"] for r in releases)]))
+            tag = self.tag or next(iter(tags), "")
+            runs = self.query("run", "list", "--limit", "100", "--json",
+                              "workflowName,status,conclusion,url,displayTitle,headBranch") if tag else []
             runs_map = {}
-            if self.project_name == "Igloo" and latest_tag:
-                cmd_runs = [
-                    "gh",
-                    "run",
-                    "list",
-                    "--repo",
-                    repo,
-                    "--limit",
-                    "15",
-                    "--json",
-                    "name,status,conclusion,url,headBranch",
-                ]
-                r2 = subprocess.run(cmd_runs, capture_output=True, text=True, timeout=10)
-                if r2.returncode == 0 and r2.stdout.strip():
-                    runs = json.loads(r2.stdout)
-                    for run in runs:
-                        if run.get("headBranch") == latest_tag or run.get("name") in (
-                            "Container Release",
-                            "Android Release APK",
-                            "Windows Release",
-                        ):
-                            name = run.get("name")
-                            if name == "Android Release APK":
-                                name = "Android Release"
-                            if name not in runs_map:
-                                runs_map[name] = run
-            elif self.project_name == "Rufin" and latest_tag:
-                cmd_runs = [
-                    "gh",
-                    "run",
-                    "list",
-                    "--repo",
-                    repo,
-                    "--event",
-                    "workflow_dispatch",
-                    "--limit",
-                    "20",
-                    "--json",
-                    "workflowName,status,conclusion,url,displayTitle",
-                ]
-                r2 = subprocess.run(cmd_runs, capture_output=True, text=True, timeout=10)
-                if r2.returncode == 0 and r2.stdout.strip():
-                    runs = json.loads(r2.stdout)
-                    for run in runs:
-                        if latest_tag in run.get("displayTitle", ""):
-                            wf = run.get("workflowName")
-                            if wf and wf not in runs_map:
-                                runs_map[wf] = run
-
-            result["runs_map"] = runs_map
-            self.runs_fetched.emit(result)
-        except Exception:
-            pass
+            for run in runs:
+                title_tags = re.findall(r"v?\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?", run["displayTitle"])
+                if run["headBranch"] != tag and tag not in title_tags:
+                    continue
+                name = {"Android Release APK": "Android Release", "Release": "Release Gate"}.get(
+                    run["workflowName"], run["workflowName"])
+                runs_map.setdefault(name, run)
+            release = next((r for r in releases if r["tagName"] == tag), None)
+            self.runs_fetched.emit({"latest_tag": tag, "tags": tags,
+                "release_url": f"{repo}/releases/tag/{tag}" if release else "",
+                "is_draft": release["isDraft"] if release else None,
+                "pr_url": prep.get(tag, {}).get("url", ""), "runs_map": runs_map})
+        except Exception as error:
+            self.error.emit(str(error))
 
 
 class ReleaseJobsWidget(QWidget):
+    workflow_started = pyqtSignal()
+    local_work_started = pyqtSignal()
+    remote_status_ready = pyqtSignal()
     DEFAULT_RUFIN_COPR = "https://copr.fedorainfracloud.org/coprs/screwyy/rufin/"
 
-    def __init__(self, project_name: str = "Rufin", parent=None):
+    def __init__(self, project_name: str = "Rufin", parent=None, repo_path=""):
         super().__init__(parent)
         self.project_name = project_name
+        self.repo_path = repo_path
+        self.selected_tag = ""
+        self._remote_runs = {}
+        self._output_pending = ""
         self.state_key = "igloo_release_state" if project_name == "Igloo" else "rufin_release_state"
         self.jobs: Dict[str, Dict[str, str]] = {}
         self.copr_url = self.DEFAULT_RUFIN_COPR
@@ -114,6 +91,11 @@ class ReleaseJobsWidget(QWidget):
         self._init_project_jobs()
         self._init_ui()
         self._load_saved_state()
+        self.poll_timer = QTimer(self)
+        self.poll_timer.setInterval(15000)
+        self.poll_timer.timeout.connect(self.sync_remote_status)
+        self.poll_timer.start()
+        QTimer.singleShot(0, self.sync_remote_status)
 
     def _init_project_jobs(self):
         if self.project_name == "Igloo":
@@ -138,6 +120,17 @@ class ReleaseJobsWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(10)
+
+        targets = QHBoxLayout()
+        targets.addWidget(QLabel("Release:"))
+        self.tag_picker = QComboBox()
+        self.tag_picker.setMinimumContentsLength(12)
+        self.tag_picker.activated.connect(self._select_tag)
+        targets.addWidget(self.tag_picker)
+        self.sync_label = QLabel("Checking GitHub...")
+        self.sync_label.setWordWrap(True)
+        targets.addWidget(self.sync_label, 1)
+        layout.addLayout(targets)
 
         # Quick Links Bar
         links_box = QFrame()
@@ -262,17 +255,17 @@ class ReleaseJobsWidget(QWidget):
 
     def _apply_status_style(self, item: QTableWidgetItem, status: str):
         st = status.lower()
-        if st in ("success", "passed", "completed"):
+        if st in ("success", "passed"):
             item.setText("Passed")
             item.setForeground(QColor("#3fb950"))
-        elif st in ("running", "in_progress"):
+        elif st in ("running", "in_progress", "queued", "waiting", "pending"):
             item.setText("Running")
             item.setForeground(QColor("#58a6ff"))
         elif st in ("failure", "failed"):
             item.setText("Failed")
             item.setForeground(QColor("#f85149"))
         else:
-            item.setText("Idle")
+            item.setText(status.replace("_", " ").capitalize())
             item.setForeground(QColor("#8b949e"))
 
     def _save_current_state(self):
@@ -290,8 +283,6 @@ class ReleaseJobsWidget(QWidget):
     def _load_saved_state(self):
         data = StateManager.get(self.state_key)
         if not data or not isinstance(data, dict):
-            # Auto sync in background if no saved state
-            self.sync_remote_status()
             return
 
         if "jobs" in data and isinstance(data["jobs"], dict):
@@ -328,33 +319,68 @@ class ReleaseJobsWidget(QWidget):
         if self._fetch_worker and self._fetch_worker.isRunning():
             return
         self.btn_fetch_latest.setEnabled(False)
-        self._fetch_worker = ReleaseFetchWorker(self.project_name, self)
+        self.sync_label.setText("Checking GitHub...")
+        self._fetch_worker = ReleaseFetchWorker(self.repo_path, self.selected_tag, self)
+        self._fetch_worker.error.connect(lambda error: self.sync_label.setText(f"Status unavailable: {error}"))
         self._fetch_worker.runs_fetched.connect(self._on_remote_runs_fetched)
         self._fetch_worker.finished.connect(lambda: self.btn_fetch_latest.setEnabled(True))
+        self._fetch_worker.finished.connect(self._release_worker)
         self._fetch_worker.start()
 
+    def _release_worker(self):
+        worker = self.sender()
+        if self._fetch_worker is worker:
+            self._fetch_worker = None
+        worker.deleteLater()
+        if worker.tag != self.selected_tag:
+            QTimer.singleShot(0, self.sync_remote_status)
+
+    def _select_tag(self, index):
+        self.track_version(self.tag_picker.itemText(index))
+
+    def track_version(self, tag):
+        self.selected_tag = tag
+        self.sync_remote_status()
+
     def _on_remote_runs_fetched(self, result: dict):
-        changed = False
-        if "release_url" in result and result["release_url"]:
-            self.release_url = result["release_url"]
-            self.release_tag = result.get("latest_tag", "")
-            btn_title = f"Release ({self.release_tag})" if self.release_tag else "GitHub Release"
-            self.btn_gh_rel.setText(btn_title)
-            self.btn_gh_rel.setEnabled(True)
-            changed = True
+        if self.selected_tag and result["latest_tag"] != self.selected_tag:
+            return
+        tag = result["latest_tag"]
+        if tag != self.release_tag:
+            self.reset_state()
+        self.release_tag = tag
+        self.tag_picker.blockSignals(True)
+        self.tag_picker.clear()
+        self.tag_picker.addItems(list(dict.fromkeys(([tag] if tag else []) + result["tags"])))
+        self.tag_picker.setCurrentText(tag)
+        self.tag_picker.blockSignals(False)
+        self.release_url = result["release_url"]
+        self.btn_gh_rel.setText(f"Release ({tag})" if tag else "GitHub Release")
+        self.btn_gh_rel.setEnabled(bool(self.release_url))
+        if result["pr_url"]:
+            self.pr_url = result["pr_url"]
+        if self.btn_pr:
+            self.btn_pr.setEnabled(bool(self.pr_url))
+        state = "Draft release" if result["is_draft"] else "Published release" if self.release_url else "Release preparation" if tag else "No releases found"
+        self.sync_label.setText(f"{state}. Updated from GitHub.")
+        for name in self.jobs:
+            run = result["runs_map"].get(name)
+            if run:
+                previous = self._remote_runs.get(run["url"])
+                conclusion = run.get("conclusion")
+                if previous is not None and previous != conclusion and conclusion:
+                    send_desktop_notification(f"{self.project_name} {tag}: {name}",
+                        f"Workflow {conclusion.replace('_', ' ')}",
+                        urgency="normal" if conclusion in ("success", "skipped", "neutral") else "critical")
+                self._remote_runs[run["url"]] = conclusion
+            self.jobs[name] = {"status": run.get("conclusion") or run["status"],
+                               "url": run["url"], "step": run.get("conclusion") or run["status"]} if run else {
+                                   "status": "unknown", "url": "", "step": "No matching recent run"}
+        self._populate_table()
+        self._save_current_state()
 
-        runs_map = result.get("runs_map", {})
-        for name, r in runs_map.items():
-            if name in self.jobs:
-                st = r.get("conclusion") or r.get("status") or "idle"
-                self.jobs[name]["status"] = st
-                self.jobs[name]["url"] = r.get("url", "")
-                self.jobs[name]["step"] = r.get("conclusion") or r.get("status") or "—"
-                changed = True
-
-        if changed:
-            self._populate_table()
-            self._save_current_state()
+        if result["runs_map"]:
+            self.remote_status_ready.emit()
 
     def reset_state(self):
         for k in self.jobs:
@@ -367,6 +393,8 @@ class ReleaseJobsWidget(QWidget):
             self.btn_pr.setEnabled(False)
         if self.btn_flathub:
             self.btn_flathub.setEnabled(False)
+        self.pr_url = ""
+        self.flathub_url = ""
         self.release_url = ""
         self.release_tag = ""
         self.btn_gh_rel.setText("GitHub Release")
@@ -375,6 +403,11 @@ class ReleaseJobsWidget(QWidget):
         self._save_current_state()
 
     def process_output_chunk(self, text: str):
+        self._output_pending += text
+        if "\n" not in self._output_pending:
+            return
+        text, self._output_pending = self._output_pending.rsplit("\n", 1)
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
         changed = False
 
         # Match COPR build logs (Rufin)
@@ -475,3 +508,12 @@ class ReleaseJobsWidget(QWidget):
         if changed:
             self._populate_table()
             self._save_current_state()
+
+        for line in text.splitlines():
+            if "actions/runs/" in line and re.match(r"(?:Started |Reusing |Following replacement |- )", line):
+                self.workflow_started.emit()
+            elif line.strip() in (
+                "All draft candidate workflows completed successfully.",
+                "All package-manager publication workflows completed successfully.",
+            ):
+                self.local_work_started.emit()

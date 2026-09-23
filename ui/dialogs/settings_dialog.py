@@ -154,6 +154,11 @@ class SettingsDialog(QDialog):
         self.wrap_diff_cb.toggled.connect(self._auto_save)
         defaults_layout.addWidget(self.wrap_diff_cb)
 
+        self.close_to_tray_cb = QCheckBox("Close to tray and keep background notifications active")
+        self.close_to_tray_cb.setToolTip("Quit from the tray menu to exit. Running commands continue after Quit.")
+        self.close_to_tray_cb.toggled.connect(self._auto_save)
+        defaults_layout.addWidget(self.close_to_tray_cb)
+
         layout.addWidget(defaults_grp)
 
         layout.addStretch()
@@ -203,6 +208,7 @@ class SettingsDialog(QDialog):
         self.auto_merge_cb.blockSignals(True)
         self.wait_ci_cb.blockSignals(True)
         self.wrap_diff_cb.blockSignals(True)
+        self.close_to_tray_cb.blockSignals(True)
 
         self.rufin_path_edit.setText(self.config.rufin_repo_path)
         self.igloo_path_edit.setText(self.config.igloo_repo_path)
@@ -212,6 +218,7 @@ class SettingsDialog(QDialog):
         self.auto_merge_cb.setChecked(self.config.default_auto_merge)
         self.wait_ci_cb.setChecked(self.config.default_wait_ci)
         self.wrap_diff_cb.setChecked(self.config.wrap_diff)
+        self.close_to_tray_cb.setChecked(self.config.close_to_tray)
 
         self.rufin_path_edit.blockSignals(False)
         self.igloo_path_edit.blockSignals(False)
@@ -221,6 +228,7 @@ class SettingsDialog(QDialog):
         self.auto_merge_cb.blockSignals(False)
         self.wait_ci_cb.blockSignals(False)
         self.wrap_diff_cb.blockSignals(False)
+        self.close_to_tray_cb.blockSignals(False)
 
     def _reset_defaults(self):
         default = AppConfig()
@@ -232,6 +240,7 @@ class SettingsDialog(QDialog):
         self.auto_merge_cb.setChecked(default.default_auto_merge)
         self.wait_ci_cb.setChecked(default.default_wait_ci)
         self.wrap_diff_cb.setChecked(default.wrap_diff)
+        self.close_to_tray_cb.setChecked(default.close_to_tray)
         self._auto_save()
 
     def _auto_save(self):
@@ -257,6 +266,7 @@ class SettingsDialog(QDialog):
         self.config.default_auto_merge = self.auto_merge_cb.isChecked()
         self.config.default_wait_ci = self.wait_ci_cb.isChecked()
         self.config.wrap_diff = self.wrap_diff_cb.isChecked()
+        self.config.close_to_tray = self.close_to_tray_cb.isChecked()
 
         ConfigManager.save(self.config)
 

@@ -73,6 +73,20 @@ class GitManager:
         branches = [b.strip() for b in out.splitlines() if b.strip()]
         return current, branches
 
+    def get_pr_draft(self, branch: str) -> Dict[str, str]:
+        draft = {}
+        for field in ("title", "body"):
+            code, out, _ = self._run_git([
+                "config", "--local", "--get", f"branch.{branch}.rufin-pr-{field}"
+            ])
+            if code == 0:
+                draft[field] = out.removesuffix("\n")
+        return draft
+
+    def get_commit_subject(self) -> str:
+        code, out, _ = self._run_git(["log", "-1", "--format=%s"])
+        return out.strip() if code == 0 else ""
+
     def get_latest_tag(self) -> str:
         code, out, _ = self._run_git(["describe", "--tags", "--abbrev=0"])
         if code == 0 and out.strip():
@@ -86,6 +100,25 @@ class GitManager:
     def pull(self) -> Tuple[int, str]:
         code, out, err = self._run_git(["pull", "--ff-only"])
         return code, (out + err).strip()
+
+    @staticmethod
+    def _is_binary(stream) -> bool:
+        # Git uses a NUL in the first 8000 bytes to detect binary content.
+        sample = stream.read(8000)
+        stream.seek(0)
+        return b"\0" in sample
+
+    @classmethod
+    def _count_text_lines(cls, path: str) -> int:
+        with open(path, "rb") as stream:
+            if cls._is_binary(stream):
+                return 0
+            count = 0
+            last = b""
+            while chunk := stream.read(64 * 1024):
+                count += chunk.count(b"\n")
+                last = chunk[-1:]
+            return count + int(bool(last) and last != b"\n")
 
     def get_status_files(self) -> List[GitFileItem]:
         code, out, _ = self._run_git(["status", "--porcelain=v1", "-uall"])
@@ -130,8 +163,7 @@ class GitManager:
                 full_p = os.path.join(self.repo_path, path)
                 if os.path.isfile(full_p):
                     try:
-                        with open(full_p, "rb") as f:
-                            additions = sum(1 for _ in f)
+                        additions = self._count_text_lines(full_p)
                     except Exception:
                         additions = 0
 
@@ -156,6 +188,14 @@ class GitManager:
             if not os.path.isfile(full):
                 continue
             try:
+                with open(full, "rb") as f:
+                    if self._is_binary(f):
+                        chunks.append(
+                            f"diff --git a/{rel} b/{rel}\n"
+                            "new file mode 100644\n"
+                            f"Binary files /dev/null and b/{rel} differ"
+                        )
+                        continue
                 with open(full, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
                 chunk = [

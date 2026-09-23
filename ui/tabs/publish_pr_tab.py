@@ -19,12 +19,11 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QMessageBox,
     QFrame,
-    QTabWidget,
-    QApplication,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from ui.components.activity_tabs import ActivityTabs
 from core.state import StateManager
 from ui.components.file_list import FileListWidget
 from ui.components.diff_viewer import DiffViewer
@@ -50,9 +49,11 @@ class BranchPrDetectWorker(QThread):
                 "--head",
                 self.branch,
                 "--state",
-                "open",
+                "all",
+                "--limit",
+                "1",
                 "--json",
-                "number,title,url,state",
+                "number,title,body,url,state",
             ]
             res = subprocess.run(
                 cmd,
@@ -63,8 +64,7 @@ class BranchPrDetectWorker(QThread):
             )
             if res.returncode == 0 and res.stdout.strip():
                 items = json.loads(res.stdout)
-                if items:
-                    self.pr_found.emit(items[0])
+                self.pr_found.emit(items[0] if items else {})
         except Exception:
             pass
 
@@ -142,9 +142,15 @@ class PublishPrTab(QWidget):
         self.detected_pr_number = ""
         self._detect_worker: Optional[BranchPrDetectWorker] = None
         self._latest_worker: Optional[LatestPrDetectWorker] = None
+        self._form_context = None
+        self._submitted_title = ""
+        self._submitted_body = ""
+        self._output_pending = ""
+        self._published_pr = ""
 
         self._init_ui()
         self._wire_signals()
+        self.terminal.bind_runner(self.runner, self.git_mgr.repo_path, "publish", self.config.resolve_publish_script(self.git_mgr.repo_path))
         self._restore_saved_pr()
         self.refresh()
 
@@ -202,10 +208,16 @@ class PublishPrTab(QWidget):
 
         h_title_phase = QHBoxLayout()
         h_title_phase.setSpacing(6)
-        lbl_title = QLabel("Title:")
+        self.pr_title_label = QLabel()
+        self.pr_title_label.setWordWrap(True)
+        self.pr_title_label.hide()
+        pr_layout.addWidget(self.pr_title_label)
+
+        lbl_title = QLabel("Commit:")
         lbl_title.setStyleSheet("color: #8b949e; font-size: 11px;")
         self.title_input = QLineEdit()
         self.title_input.setPlaceholderText("e.g. feat(ui): add modern PR and release GUI")
+        self.title_input.setToolTip("The first commit names the PR. Follow-up commits keep the PR title. Leave empty to retry existing commits.")
         h_title_phase.addWidget(lbl_title)
         h_title_phase.addWidget(self.title_input, 1)
 
@@ -312,7 +324,7 @@ class PublishPrTab(QWidget):
         right_splitter.addWidget(self.diff_viewer)
 
         # Lower: Tab widget with Checks & CI and Terminal Log
-        self.bottom_tabs = QTabWidget()
+        self.bottom_tabs = ActivityTabs()
         self.bottom_tabs.setStyleSheet(
             "QTabWidget::tab-bar { alignment: left; } "
             "QTabBar::tab { font-size: 11px; padding: 4px 12px; margin-right: 2px; }"
@@ -332,6 +344,13 @@ class PublishPrTab(QWidget):
         self.main_splitter.setSizes([380, 620])
 
     def _wire_signals(self):
+        self.runner.started.connect(self._on_process_started)
+        self.runner.restored.connect(self._on_process_restored)
+        self.runner.error_occurred.connect(lambda message: self.bottom_tabs.show_activity("failed", self.terminal))
+        self.checks_view.checks_updated.connect(self._focus_remote_checks)
+        self.runner.started.connect(lambda: self.file_list.btn_publish.setEnabled(False))
+        self.runner.restored.connect(lambda record: self.file_list.btn_publish.setEnabled(not record["running"]))
+        self.runner.finished.connect(lambda code: self.file_list.btn_publish.setEnabled(True))
         self.file_list.file_selected.connect(self._show_single_file_diff)
         self.file_list.view_diff_requested.connect(self._show_multi_file_diff)
         self.file_list.publish_requested.connect(self.run_publish)
@@ -341,6 +360,7 @@ class PublishPrTab(QWidget):
         self.runner.finished.connect(self._on_process_finished)
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
         self.terminal.stop_requested.connect(self.runner.stop)
+        self.branch_input.editingFinished.connect(self.refresh)
 
     def _restore_saved_pr(self):
         saved = StateManager.get("rufin_tracked_pr")
@@ -361,12 +381,36 @@ class PublishPrTab(QWidget):
     def _focus_checks_tab(self):
         self.bottom_tabs.setCurrentWidget(self.checks_view)
 
+    def _on_process_started(self):
+        self._published_pr = ""
+        self._output_pending = ""
+        self.bottom_tabs.show_activity("local", self.terminal, force=True)
+
+    def _on_process_restored(self, record):
+        if record["running"]:
+            self.bottom_tabs.show_activity("local", self.terminal)
+        elif record.get("exit_code") != 0 or record.get("stopped"):
+            self.bottom_tabs.show_activity("failed", self.terminal)
+
+    def _focus_remote_checks(self, data):
+        if not data.get("statusCheckRollup") or self.bottom_tabs.activity == "failed":
+            return
+        if self.runner.is_running and self._published_pr != str(data["number"]):
+            return
+        self.bottom_tabs.show_activity("remote", self.checks_view)
+
     def _on_output_received(self, text: str):
         self.terminal.append_output(text)
+        self._output_pending += text
+        if "\n" not in self._output_pending:
+            return
+        text, self._output_pending = self._output_pending.rsplit("\n", 1)
         m = re.search(r"https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)", text)
         if m:
             url = m.group(0)
             pr_num = m.group(1)
+            if re.search(rf"(?m)^(?:Published PR #\d+: )?{re.escape(url)}\s*$", text):
+                self._published_pr = pr_num
             self.detected_pr_url = url
             self.detected_pr_number = pr_num
             self.pr_banner_lbl.setText(f"Pull Request #{pr_num}")
@@ -375,7 +419,7 @@ class PublishPrTab(QWidget):
             StateManager.update(
                 rufin_tracked_pr={
                     "number": pr_num,
-                    "title": self.title_input.text().strip(),
+                    "title": self.pr_title_label.text().removeprefix("PR: ") or self.title_input.text().strip(),
                     "url": url,
                     "state": "OPEN",
                 }
@@ -392,24 +436,19 @@ class PublishPrTab(QWidget):
 
         items = self.git_mgr.get_status_files()
         self.file_list.set_files(items)
-        curr_branch = self.git_mgr.get_current_branch()
-        if curr_branch and curr_branch != "main":
-            self.branch_input.setPlaceholderText(f"Current: {curr_branch}")
-            # Detect open PR for topic branch
-            if self._detect_worker and self._detect_worker.isRunning():
-                self._detect_worker.terminate()
-            self._detect_worker = BranchPrDetectWorker(self.git_mgr.repo_path, curr_branch, self)
-            self._detect_worker.pr_found.connect(self._on_open_pr_detected)
-            self._detect_worker.start()
-        else:
-            self.branch_input.setPlaceholderText("Derived from title (on main)")
-            # If no PR is currently tracked or banner is hidden, discover latest PR
-            if not self.detected_pr_number:
-                if self._latest_worker and self._latest_worker.isRunning():
-                    self._latest_worker.terminate()
-                self._latest_worker = LatestPrDetectWorker(self.git_mgr.repo_path, self)
-                self._latest_worker.pr_found.connect(self._on_open_pr_detected)
-                self._latest_worker.start()
+        curr_branch = self.branch_input.text().strip() or self.git_mgr.get_current_branch()
+        context = (self.git_mgr.repo_path, curr_branch)
+        if context != self._form_context and not self.body_input.document().isModified():
+            self.body_input.clear()
+            self.body_input.document().setModified(False)
+        self._form_context = context
+        draft = self.git_mgr.get_pr_draft(curr_branch)
+        self.pr_title_label.setText(f"PR: {draft['title']}" if draft.get("title") else "")
+        self.pr_title_label.setVisible(bool(draft.get("title")))
+        if "body" in draft and not self.body_input.document().isModified():
+            self.body_input.setPlainText(draft["body"])
+            self.body_input.document().setModified(False)
+        self._detect_pr(curr_branch)
 
         selected_paths = self.file_list.get_selected_paths()
         if len(selected_paths) == 1:
@@ -419,11 +458,63 @@ class PublishPrTab(QWidget):
         else:
             self.diff_viewer.set_diff("", "Clean working tree")
 
-    def _on_open_pr_detected(self, pr_data: dict):
+    def _detect_pr(self, curr_branch):
+        if curr_branch and curr_branch != (self.base_input.text().strip() or self.config.default_base_branch):
+            self.branch_input.setPlaceholderText(f"Current: {curr_branch}")
+            # Detect open PR for topic branch
+            if not self._detect_worker or not self._detect_worker.isRunning():
+                self._detect_worker = BranchPrDetectWorker(self.git_mgr.repo_path, curr_branch, self)
+                context = self._form_context
+                self._detect_worker.context = context
+                self._detect_worker.pr_found.connect(lambda data, context=context: self._on_open_pr_detected(data, context))
+                self._detect_worker.finished.connect(self._release_detect_worker)
+                self._detect_worker.start()
+        else:
+            self.branch_input.setPlaceholderText("Derived from title (on main)")
+            # Saved selection is a hint; discover current work on every refresh.
+            if not self._latest_worker or not self._latest_worker.isRunning():
+                self._latest_worker = LatestPrDetectWorker(self.git_mgr.repo_path, self)
+                context = self._form_context
+                self._latest_worker.context = context
+                self._latest_worker.pr_found.connect(lambda data, context=context: self._on_latest_pr_detected(data, context))
+                self._latest_worker.finished.connect(self._release_detect_worker)
+                self._latest_worker.start()
+
+    def _on_latest_pr_detected(self, data, context):
+        if context == self._form_context:
+            self._on_open_pr_detected(data)
+
+    def _release_detect_worker(self):
+        worker = self.sender()
+        if self._detect_worker is worker:
+            self._detect_worker = None
+        if self._latest_worker is worker:
+            self._latest_worker = None
+        worker.deleteLater()
+        if worker.context != self._form_context:
+            self._detect_pr(self._form_context[1])
+
+    def _on_open_pr_detected(self, pr_data: dict, context=None):
+        if context is not None and context != self._form_context:
+            return
+        if not pr_data:
+            self.detected_pr_number = ""
+            self.detected_pr_url = ""
+            self.pr_banner.hide()
+            self.checks_view.clear_pr()
+            StateManager.update(rufin_tracked_pr=None)
+            return
         pr_num = str(pr_data.get("number", ""))
         title = pr_data.get("title", "")
         url = pr_data.get("url", "")
         state = pr_data.get("state", "")
+        if context is not None:
+            self.pr_title_label.setText(f"PR: {title}")
+            self.pr_title_label.setVisible(True)
+            draft = self.git_mgr.get_pr_draft(context[1])
+            if "body" not in draft and not self.body_input.document().isModified():
+                self.body_input.setPlainText(pr_data.get("body", ""))
+                self.body_input.document().setModified(False)
         if pr_num:
             self.detected_pr_number = pr_num
             self.detected_pr_url = url
@@ -474,7 +565,7 @@ class PublishPrTab(QWidget):
 
         base_branch = self.base_input.text().strip() or self.config.default_base_branch
         branch = self.branch_input.text().strip()
-        body = self.body_input.toPlainText().strip()
+        body = self.body_input.toPlainText()
         phase = self.phase_input.text().strip()
         title = self.title_input.text().strip()
         skip_pre_push = self.skip_pre_push_cb.isChecked()
@@ -482,6 +573,9 @@ class PublishPrTab(QWidget):
         selected_paths = self.file_list.get_selected_paths()
         all_paths = [i.path for i in self.file_list.items]
         partial_files = bool(selected_paths and len(selected_paths) < len(all_paths))
+        if all_paths and not title:
+            QMessageBox.warning(self, "Commit Subject", "Enter a subject for the changes being committed.")
+            return
 
         args = []
         if base_branch:
@@ -490,7 +584,7 @@ class PublishPrTab(QWidget):
             args.extend(["--branch", branch])
 
         env_vars = {}
-        if body:
+        if self.body_input.document().isModified():
             args.extend(["--body", body])
             env_vars["RUFIN_ALLOW_PR_BODY"] = "1"
 
@@ -512,7 +606,7 @@ class PublishPrTab(QWidget):
         elif i18n_choice == "sync":
             args.append("--sync-i18n-catalogs")
 
-        if title:
+        if title and (all_paths or not self.pr_title_label.text()):
             args.append(title)
 
         if partial_files:
@@ -520,7 +614,8 @@ class PublishPrTab(QWidget):
 
         details = [
             ("Branch Target", f"{branch or '(derived)'} → {base_branch}"),
-            ("PR Title", title or "(derived from branch or commit)"),
+            ("PR Title", self.pr_title_label.text().removeprefix("PR: ") or title or "(saved draft or existing PR)"),
+            ("Commit", title if all_paths else "Retry existing commits"),
             ("Files Included", f"{len(selected_paths)} of {len(all_paths)} files" if partial_files else f"All {len(all_paths)} files"),
             ("Squash Merge", "Enabled" if self.auto_merge_cb.isChecked() else "Disabled"),
             ("Wait CI Checks", "Yes" if self.wait_cb.isChecked() else "No"),
@@ -538,12 +633,7 @@ class PublishPrTab(QWidget):
             anchor_widget=self.file_list.btn_publish,
             parent=self,
         )
-        popup.show()
-
-        while popup.isVisible():
-            QApplication.processEvents()
-
-        if not popup.confirmed:
+        if not popup.exec():
             return
 
         self.detected_pr_url = ""
@@ -552,9 +642,25 @@ class PublishPrTab(QWidget):
         self.bottom_tabs.setCurrentWidget(self.terminal)
         self.terminal.clear_terminal()
         self.terminal.set_status("Publishing PR", "running")
+        self._submitted_title = title if all_paths else ""
+        self._submitted_body = body
         self.runner.start(script_path, args, cwd=self.git_mgr.repo_path, env_vars=env_vars)
 
     def _on_process_finished(self, exit_code: int):
+        if exit_code != 0 or self.runner.record.get("stopped"):
+            self.bottom_tabs.show_activity("failed", self.terminal)
+        else:
+            self.checks_view.refresh_checks()
         status = "success" if exit_code == 0 else "failed"
         self.terminal.set_status("Completed" if exit_code == 0 else f"Exit {exit_code}", status)
-        self.refresh()
+        draft = self.git_mgr.get_pr_draft(self.branch_input.text().strip() or self.git_mgr.get_current_branch())
+        body = self.body_input.toPlainText()
+        if (exit_code == 0 and body == self._submitted_body) or draft.get("body") == body:
+            self.body_input.document().setModified(False)
+        if self._submitted_title == self.title_input.text().strip() and (exit_code == 0 or self.git_mgr.get_commit_subject() == self._submitted_title):
+            self.title_input.clear()
+        if exit_code == 0 and body == self._submitted_body:
+            self.body_input.clear()
+            self.body_input.document().setModified(False)
+        if self.window().isVisible():
+            self.refresh()

@@ -2,9 +2,9 @@
 import sys
 import os
 import subprocess
-from typing import List, Optional
-from PyQt6.QtCore import Qt, QPointF, QSize
-from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QPen
+from typing import List
+from PyQt6.QtCore import Qt, QPointF, QSize, QRectF, QTimer, QThread
+from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QPen, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -18,12 +18,17 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QMessageBox,
     QFrame,
+    QSystemTrayIcon,
+    QMenu,
+    QDockWidget,
 )
 
 from core.config import AppConfig, ConfigManager
 from core.state import StateManager
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from core.instance import AppInstance
+from ui.components.terminal_view import TerminalWidget
 from ui.style import DARK_STYLESHEET
 from ui.tabs.publish_pr_tab import PublishPrTab
 from ui.tabs.release_tab import ReleaseTab
@@ -94,7 +99,7 @@ class TitlebarButton(QAbstractButton):
         elif self.role == "maximize":
             side = 4.0
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(cx - side, cy - side, side * 2, side * 2, 1.0, 1.0)
+            painter.drawRoundedRect(QRectF(cx - side, cy - side, side * 2, side * 2), 1.0, 1.0)
 
 
 class DraggableTopBar(QWidget):
@@ -316,9 +321,66 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._wire_signals()
         self.update_repo_display()
+        self._quitting = False
+        self.tray = QSystemTrayIcon(self.windowIcon(), self)
+        self.tray.setToolTip("Rufin Git GUI")
+        menu = QMenu(self)
+        menu.addAction("Open Git GUI", self.present)
+        menu.addSeparator()
+        menu.addAction("Quit", self.quit_app)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(lambda reason: self.present() if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick) else None)
+        self.tray.messageClicked.connect(self.present)
+        self.tray.show()
+        self.quit_timer = QTimer(self)
+        self.quit_timer.setInterval(100)
+        self.quit_timer.timeout.connect(self._finish_quit)
+
+    def present(self):
+        self._quitting = False
+        self.quit_timer.stop()
+        self.showNormal() if self.isMinimized() else self.show()
+        self.raise_()
+        self.activateWindow()
+        self._set_monitor_interval(False)
+        self.refresh_active_repo()
+
+    def _set_monitor_interval(self, background):
+        checks = self.rufin_view.publish_tab.checks_view
+        checks.poll_timer.setInterval(60000 if background else 12000)
+        if checks.pr_number and checks.pr_state == "OPEN":
+            checks.poll_timer.start()
+        for view in (self.rufin_view, self.igloo_view):
+            view.release_tab.jobs_view.poll_timer.setInterval(60000 if background else 15000)
+            view.release_tab.jobs_view.poll_timer.start()
+
+    def closeEvent(self, event):
+        event.ignore()
+        if self.config.close_to_tray and QSystemTrayIcon.isSystemTrayAvailable():
+            self.hide()
+            self._set_monitor_interval(True)
+        else:
+            self.quit_app()
+
+    def quit_app(self):
+        self._quitting = True
+        self.hide()
+        # Read-only GitHub workers finish naturally before their Qt owners are destroyed.
+        self.rufin_view.publish_tab.checks_view.poll_timer.stop()
+        for view in (self.rufin_view, self.igloo_view):
+            view.release_tab.jobs_view.poll_timer.stop()
+        self.quit_timer.start()
+        self._finish_quit()
+
+    def _finish_quit(self):
+        if self._quitting and not any(worker.isRunning() for worker in self.findChildren(QThread)):
+            self.tray.hide()
+            QApplication.instance().quit()
 
     def _init_ui(self):
-        self.setWindowTitle("Git GUI")
+        self.setWindowTitle("Rufin Git GUI")
+        self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "git-gui.svg")))
         self.resize(1200, 780)
         self.setMinimumSize(880, 560)
 
@@ -354,29 +416,41 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
+        self.git_terminal = TerminalWidget()
+        self.git_dock = QDockWidget("Git commands", self)
+        self.git_dock.setWidget(self.git_terminal)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.git_dock)
+        self.git_dock.hide()
+        self.git_terminal.stop_requested.connect(self.runner.stop)
+        self.git_terminal.bind_runner(self.runner, self.rufin_git_mgr.repo_path, "git-tools")
 
     def _wire_signals(self):
+        self.runner.restored.connect(
+            lambda record: self.git_dock.show()
+            if record["running"] or record.get("exit_code") != 0 else None)
         self.runner.output_received.connect(self._on_runner_output)
         self.runner.started.connect(lambda: self.status_bar.showMessage("Running task...", 3000))
         self.runner.finished.connect(self._on_runner_finished)
 
     def _on_runner_output(self, text: str):
-        # Route just output to Igloo commit tab terminal
-        self.igloo_view.commit_tab.terminal.append_output(text)
+        self.git_terminal.append_output(text)
 
     def _on_runner_finished(self, exit_code: int):
         status = "success" if exit_code == 0 else "failed"
-        self.igloo_view.commit_tab.terminal.set_status("Completed" if exit_code == 0 else f"Exit {exit_code}", status)
+        self.git_terminal.set_status("Completed" if exit_code == 0 else f"Exit {exit_code}", status)
+        if self.isVisible():
+            self.refresh_active_repo()
         self.status_bar.showMessage(f"Task completed (Exit {exit_code}).", 3000)
 
     def run_igloo_just(self, command: str):
-        if self.runner.is_running:
-            QMessageBox.warning(self, "Running", "A command is already executing.")
+        tab = self.igloo_view.commit_tab
+        if tab.runner.is_running:
+            QMessageBox.warning(self, "Running", "An Igloo command is already executing.")
             return
-        self.igloo_view.commit_tab.terminal.clear_terminal()
-        self.igloo_view.commit_tab.terminal.set_status(f"just {command}", "running")
-        self.status_bar.showMessage(f"Executing: just {command}...")
-        self.runner.start("just", [command], cwd=self.igloo_git_mgr.repo_path)
+        self.project_tabs.setCurrentWidget(self.igloo_view)
+        self.igloo_view.tabs.setCurrentWidget(tab)
+        tab.terminal.clear_terminal()
+        tab.runner.start("just", [command], cwd=self.igloo_git_mgr.repo_path)
 
     @property
     def active_git_mgr(self) -> GitManager:
@@ -409,6 +483,10 @@ class MainWindow(QMainWindow):
         self.igloo_view.config = self.config
         self.rufin_view.publish_tab.diff_viewer.config = self.config
         self.igloo_view.commit_tab.diff_viewer.config = self.config
+        self.rufin_view.release_tab.jobs_view.repo_path = self.config.rufin_repo_path
+        self.igloo_view.release_tab.jobs_view.repo_path = self.config.igloo_repo_path
+        self.rufin_view.publish_tab.runner.program = self.config.resolve_publish_script()
+        self.rufin_view.release_tab.runner.program = self.config.resolve_release_script()
 
         self.update_repo_display()
         self.refresh_active_repo()
@@ -442,42 +520,41 @@ class MainWindow(QMainWindow):
             self.igloo_view.refresh()
         else:
             self.rufin_view.refresh()
+        view = self.igloo_view if self.project_tabs.currentIndex() == 1 else self.rufin_view
+        for tab in (view.tabs.widget(0), view.release_tab):
+            tab.runner.attach(self.active_git_mgr.repo_path, tab.runner.key, tab.runner.program)
+        view.release_tab.jobs_view.sync_remote_status()
         self.status_bar.showMessage(f"Refreshed {self.active_repo_name} repository state.", 3000)
 
     def _do_fetch(self):
-        mgr = self.active_git_mgr
-        name = self.active_repo_name
-        self.status_bar.showMessage(f"Fetching {name} from origin...")
-        self.top_bar.btn_fetch.setEnabled(False)
-        code, msg = self.active_git_mgr.fetch()
-        self.top_bar.btn_fetch.setEnabled(True)
-        if code == 0:
-            self.status_bar.showMessage(f"Fetch completed for {name}.", 4000)
-            self.refresh_active_repo()
-        else:
-            QMessageBox.warning(self, "Fetch Failed", f"Git fetch failed for {name}:\n{msg}")
-            self.status_bar.showMessage("Fetch failed.", 4000)
+        self._run_git_command(["fetch", "--prune", "origin"])
 
     def _do_pull(self):
-        mgr = self.active_git_mgr
-        name = self.active_repo_name
-        self.status_bar.showMessage(f"Pulling {name} latest changes...")
-        self.top_bar.btn_pull.setEnabled(False)
-        code, msg = self.active_git_mgr.pull()
-        self.top_bar.btn_pull.setEnabled(True)
-        if code == 0:
-            self.status_bar.showMessage(f"Pull completed for {name}.", 4000)
-            self.refresh_active_repo()
-        else:
-            QMessageBox.warning(self, "Pull Failed", f"Git pull failed for {name}:\n{msg}")
-            self.status_bar.showMessage("Pull failed.", 4000)
+        self._run_git_command(["pull", "--ff-only"])
+
+    def _run_git_command(self, args):
+        if self.runner.is_running:
+            self.git_dock.show()
+            return
+        self.git_terminal.repo_path = self.active_git_mgr.repo_path
+        self.git_terminal.clear_terminal()
+        self.git_terminal.set_status("Running", "running")
+        self.git_dock.show()
+        self.runner.start("git", args, cwd=self.active_git_mgr.repo_path)
 
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("Rufin Git GUI")
+    app.setDesktopFileName("rufin-git-gui")
+    app.setQuitOnLastWindowClosed(False)
+    instance = AppInstance()
+    if not instance.acquire():
+        return
     app.setStyleSheet(DARK_STYLESHEET)
 
     window = MainWindow()
+    instance.on_activation(window.present)
     window.show()
     sys.exit(app.exec())
 

@@ -1,12 +1,11 @@
 from typing import List, Tuple, Optional
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QEventLoop
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QFrame,
     QPlainTextEdit,
 )
 
@@ -32,6 +31,7 @@ class ConfirmPreviewDialog(QWidget):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.confirmed = False
+        self._loop = None
         self.setFixedWidth(380)
 
         self.setStyleSheet(
@@ -134,6 +134,20 @@ class ConfirmPreviewDialog(QWidget):
     def _on_confirm(self):
         self.confirmed = True
         self.close()
+
+    def exec(self):
+        self._loop = QEventLoop(self)
+        self.show()
+        self._loop.exec()
+        self._loop.deleteLater()
+        self._loop = None
+        self.deleteLater()
+        return self.confirmed
+
+    def hideEvent(self, event):
+        if self._loop:
+            self._loop.quit()
+        super().hideEvent(event)
 
     def _position_near(self, widget: QWidget):
         pt = widget.mapToGlobal(QPoint(0, widget.height() + 4))

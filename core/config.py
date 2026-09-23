@@ -15,6 +15,7 @@ class AppConfig:
     default_auto_merge: bool = True
     default_wait_ci: bool = False
     wrap_diff: bool = True
+    close_to_tray: bool = False
 
     def resolve_publish_script(self, current_repo: Optional[str] = None) -> str:
         repo = current_repo or self.rufin_repo_path

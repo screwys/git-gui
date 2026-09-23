@@ -1,4 +1,3 @@
-import os
 import shlex
 from typing import List
 from PyQt6.QtCore import Qt
@@ -11,10 +10,8 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QCheckBox,
-    QPushButton,
     QGroupBox,
     QMessageBox,
-    QApplication,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
@@ -39,6 +36,7 @@ class IglooCommitTab(QWidget):
         self.runner = ProcessRunner(self)
         self._init_ui()
         self._wire_signals()
+        self.terminal.bind_runner(self.runner, self.git_mgr.repo_path, "commit", None)
         self.refresh()
 
     def _init_ui(self):
@@ -147,6 +145,9 @@ class IglooCommitTab(QWidget):
         self.main_splitter.setSizes([380, 620])
 
     def _wire_signals(self):
+        self.runner.started.connect(lambda: self.file_list.btn_publish.setEnabled(False))
+        self.runner.restored.connect(lambda record: self.file_list.btn_publish.setEnabled(not record["running"]))
+        self.runner.finished.connect(lambda code: self.file_list.btn_publish.setEnabled(True))
         self.file_list.file_selected.connect(self._show_single_file_diff)
         self.file_list.view_diff_requested.connect(self._show_multi_file_diff)
         self.file_list.publish_requested.connect(self.run_commit_and_push)
@@ -262,12 +263,7 @@ class IglooCommitTab(QWidget):
             anchor_widget=self.file_list.btn_publish,
             parent=self,
         )
-        popup.show()
-
-        while popup.isVisible():
-            QApplication.processEvents()
-
-        if not popup.confirmed:
+        if not popup.exec():
             return
 
         commands = []
@@ -305,4 +301,5 @@ class IglooCommitTab(QWidget):
             self.summary_input.clear()
             self.desc_input.clear()
             self.amend_cb.setChecked(False)
-        self.refresh()
+        if self.window().isVisible():
+            self.refresh()

@@ -1,6 +1,4 @@
-import os
 import re
-from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget,
@@ -14,13 +12,12 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QButtonGroup,
     QGroupBox,
-    QTabWidget,
     QMessageBox,
-    QApplication,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from ui.components.activity_tabs import ActivityTabs
 from ui.components.terminal_view import TerminalWidget
 from ui.components.release_jobs_view import ReleaseJobsWidget
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
@@ -42,6 +39,7 @@ class IglooReleaseTab(QWidget):
         self.current_bump = "patch"
         self._init_ui()
         self._wire_signals()
+        self.terminal.bind_runner(self.runner, self.git_mgr.repo_path, "release", None)
         self.refresh()
 
     def _init_ui(self):
@@ -189,8 +187,8 @@ class IglooReleaseTab(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        self.output_tabs = QTabWidget()
-        self.jobs_view = ReleaseJobsWidget(project_name="Igloo")
+        self.output_tabs = ActivityTabs()
+        self.jobs_view = ReleaseJobsWidget(project_name="Igloo", repo_path=self.git_mgr.repo_path)
         self.terminal = TerminalWidget(repo_path=self.git_mgr.repo_path)
 
         self.output_tabs.addTab(self.jobs_view, "Jobs and Progress")
@@ -201,6 +199,17 @@ class IglooReleaseTab(QWidget):
         splitter.setSizes([420, 640])
 
     def _wire_signals(self):
+        self.runner.started.connect(self._on_process_started)
+        self.runner.restored.connect(self._on_activity_restored)
+        self.runner.error_occurred.connect(lambda message: self.output_tabs.show_activity("failed", self.terminal))
+        self.jobs_view.workflow_started.connect(self._focus_workflow)
+        self.jobs_view.local_work_started.connect(
+            lambda: self.output_tabs.show_activity("local", self.terminal)
+            if self.runner.is_running else None)
+        self.jobs_view.remote_status_ready.connect(self._focus_remote_jobs)
+        self.runner.started.connect(lambda: self.btn_release.setEnabled(False))
+        self.runner.restored.connect(lambda record: self.btn_release.setEnabled(not record["running"]))
+        self.runner.finished.connect(lambda code: self.btn_release.setEnabled(True))
         self.btn_patch.clicked.connect(lambda: self._set_bump("patch"))
         self.btn_minor.clicked.connect(lambda: self._set_bump("minor"))
         self.btn_major.clicked.connect(lambda: self._set_bump("major"))
@@ -219,6 +228,24 @@ class IglooReleaseTab(QWidget):
     def _on_output_received(self, text: str):
         self.terminal.append_output(text)
         self.jobs_view.process_output_chunk(text)
+
+    def _on_process_started(self):
+        self.output_tabs.show_activity("local", self.terminal, force=True)
+
+    def _on_activity_restored(self, record):
+        if record["running"]:
+            if self.output_tabs.activity != "remote":
+                self.output_tabs.show_activity("local", self.terminal)
+        elif record.get("exit_code") != 0 or record.get("stopped"):
+            self.output_tabs.show_activity("failed", self.terminal)
+
+    def _focus_workflow(self):
+        if self.output_tabs.activity != "failed":
+            self.output_tabs.show_activity("remote", self.jobs_view)
+
+    def _focus_remote_jobs(self):
+        if not self.runner.is_running or self.output_tabs.activity == "remote":
+            self._focus_workflow()
 
     def refresh(self):
         self.terminal.repo_path = self.git_mgr.repo_path
@@ -278,18 +305,13 @@ class IglooReleaseTab(QWidget):
             anchor_widget=self.btn_release,
             parent=self,
         )
-        popup.show()
-
-        while popup.isVisible():
-            QApplication.processEvents()
-
-        if not popup.confirmed:
+        if not popup.exec():
             return
 
         self.jobs_view.reset_state()
         self.terminal.clear_terminal()
         self.terminal.set_status(f"Running {version}", "running")
-        self.output_tabs.setCurrentWidget(self.jobs_view)
+        self.output_tabs.show_activity("local", self.terminal, force=True)
 
         # Delegate directly to just recipe as documented in AGENTS.md:
         # just release <patch|minor|major> "<user summary>"
@@ -301,6 +323,11 @@ class IglooReleaseTab(QWidget):
         self.runner.start("just", args, cwd=self.git_mgr.repo_path)
 
     def _on_process_finished(self, exit_code: int):
+        if exit_code != 0 or self.runner.record.get("stopped"):
+            self.output_tabs.show_activity("failed", self.terminal)
+        else:
+            self.jobs_view.sync_remote_status()
         status = "success" if exit_code == 0 else "failed"
         self.terminal.set_status("Completed" if exit_code == 0 else f"Exit {exit_code}", status)
-        self.refresh()
+        if self.window().isVisible():
+            self.refresh()

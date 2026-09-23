@@ -1,5 +1,6 @@
 import re
 import time
+from datetime import datetime
 from typing import Optional
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import (
@@ -18,8 +19,13 @@ from PyQt6.QtWidgets import (
     QLabel,
     QCheckBox,
     QTabWidget,
+    QDialog,
+    QComboBox,
 )
 from core.runner import ProcessRunner
+from core.jobs import jobs_root, records, job_running
+from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QDesktopServices
 
 
 def format_duration(seconds: float) -> str:
@@ -181,6 +187,11 @@ class TerminalWidget(QWidget):
         self.btn_clear.clicked.connect(self.clear_terminal)
         header.addWidget(self.btn_clear)
 
+        self.btn_history = QPushButton("History")
+        self.btn_history.setToolTip("View earlier commands, logs, and exit status")
+        self.btn_history.clicked.connect(self._show_history)
+        header.addWidget(self.btn_history)
+
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setFixedHeight(22)
         self.btn_stop.setStyleSheet(
@@ -196,6 +207,7 @@ class TerminalWidget(QWidget):
         # Output console (Wrap by default)
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
+        self.console.setMaximumBlockCount(10000)
         font = QFont("monospace", 10)
         font.setStyleHint(QFont.StyleHint.Monospace)
         self.console.setFont(font)
@@ -256,6 +268,7 @@ class TerminalWidget(QWidget):
         # Shell Console
         self.shell_console = QPlainTextEdit()
         self.shell_console.setReadOnly(True)
+        self.shell_console.setMaximumBlockCount(10000)
         self.shell_console.setFont(font)
         self.shell_console.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.shell_console.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -297,6 +310,75 @@ class TerminalWidget(QWidget):
         self.interactive_runner.finished.connect(self._on_shell_finished)
         self.interactive_runner.error_occurred.connect(lambda msg: self._on_shell_output(f"\n[Error: {msg}]\n"))
 
+    def bind_runner(self, runner, cwd, key, program=None):
+        self.repo_path = cwd
+        self.runner = runner
+        runner.key = key
+        runner.program = program
+        self.interactive_runner.key = key + "-shell"
+        runner.restored.connect(self._restore_task)
+        runner.error_occurred.connect(lambda message: self.append_output(f"\n[ERROR] {message}\n"))
+        self.interactive_runner.restored.connect(self._restore_shell)
+        QTimer.singleShot(0, lambda: runner.attach(cwd, key, program))
+        QTimer.singleShot(0, lambda: self.interactive_runner.attach(cwd, key + "-shell"))
+
+    def _show_history(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Command history")
+        dialog.resize(850, 550)
+        layout = QVBoxLayout(dialog)
+        picker = QComboBox()
+        log = QPlainTextEdit()
+        log.setReadOnly(True)
+        log.setMaximumBlockCount(10000)
+        layout.addWidget(picker)
+        layout.addWidget(log)
+        entries = records(self.repo_path, self.runner.key) + records(self.repo_path, self.runner.key + "-shell")
+        entries.sort(key=lambda entry: entry[1]["started_at"], reverse=True)
+        for path, record in entries:
+            started = datetime.fromtimestamp(record["started_at"]).strftime("%Y-%m-%d %H:%M")
+            status = "Running" if job_running(record) else "Stopped" if record.get("stopped") else f"Exit {record['exit_code']}" if "exit_code" in record else "Exit unknown"
+            picker.addItem(f"{started} | {status} | {' '.join(record['command'])}", str(path))
+        def select(index):
+            if index < 0:
+                return
+            path, _ = entries[index]
+            output = path.with_name("output.log")
+            if output.exists():
+                with output.open("rb") as stream:
+                    stream.seek(max(0, output.stat().st_size - 1024 * 1024))
+                    log.setPlainText(stream.read().decode("utf-8", "replace"))
+            else:
+                log.setPlainText("No output recorded.")
+        picker.currentIndexChanged.connect(select)
+        select(picker.currentIndex())
+        folder = QPushButton("Open saved log files")
+        folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(jobs_root()))))
+        layout.addWidget(folder)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _restore_task(self, record):
+        if record["running"]:
+            self.set_status("Observing helper" if record.get("external") else "Running", "running")
+            self._task_start_time = record.get("started_at")
+            self.btn_stop.setEnabled(not record.get("external", False))
+        else:
+            code = record.get("exit_code")
+            text = "Stopped" if record.get("stopped") else "Completed" if code == 0 else f"Exit {code}"
+            if code is None:
+                text = "Ended, exit status unknown"
+            self.set_status(text, "success" if code == 0 else "failed")
+
+    def _restore_shell(self, record):
+        if record["running"]:
+            self._on_shell_started()
+            if self.runner.is_running:
+                self.tabs.setCurrentIndex(0)
+            self._shell_start_time = record.get("started_at")
+        else:
+            self._on_shell_finished(record.get("exit_code", -1))
+
     def _toggle_wrap(self, enabled: bool):
         mode = QPlainTextEdit.LineWrapMode.WidgetWidth if enabled else QPlainTextEdit.LineWrapMode.NoWrap
         self.console.setLineWrapMode(mode)
@@ -317,6 +399,10 @@ class TerminalWidget(QWidget):
             self.console.ensureCursorVisible()
 
     def set_status(self, text: str, state: str = "idle"):
+        if state != "running" and hasattr(self, "runner") and self.runner.record.get("stopped"):
+            text, state = "Stopped", "idle"
+        if text == "Exit -1":
+            text = "Ended, exit status unknown"
         self._task_base_text = text
         if state == "running":
             self._task_start_time = time.time()
@@ -405,6 +491,7 @@ class TerminalWidget(QWidget):
         self.command_executed.emit(cmd)
 
     def _on_shell_started(self):
+        self.tabs.setCurrentIndex(1)
         self._shell_start_time = time.time()
         self._shell_timer.start()
         self.btn_shell_stop.setEnabled(True)

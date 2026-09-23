@@ -1,6 +1,5 @@
 import os
 import re
-from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget,
@@ -14,14 +13,12 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QButtonGroup,
     QGroupBox,
-    QTabWidget,
     QMessageBox,
-    QFrame,
-    QApplication,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from ui.components.activity_tabs import ActivityTabs
 from ui.components.terminal_view import TerminalWidget
 from ui.components.release_jobs_view import ReleaseJobsWidget
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
@@ -36,6 +33,7 @@ class ReleaseTab(QWidget):
         self.current_mode = "new"
         self._init_ui()
         self._wire_signals()
+        self.terminal.bind_runner(self.runner, self.git_mgr.repo_path, "release", self.config.resolve_release_script(self.git_mgr.repo_path))
         self.refresh()
 
     def _init_ui(self):
@@ -150,6 +148,11 @@ class ReleaseTab(QWidget):
         h_tag_info.addWidget(self.latest_tag_lbl)
         h_tag_info.addStretch()
 
+        self.btn_resume_selected = QPushButton("Resume selected release")
+        self.btn_resume_selected.setToolTip("Use the version selected in Jobs and Progress")
+        self.btn_resume_selected.clicked.connect(self._resume_selected)
+        h_tag_info.addWidget(self.btn_resume_selected)
+
         self.btn_fetch_notes = QPushButton("Fetch Tag Notes")
         self.btn_fetch_notes.setFixedHeight(22)
         self.btn_fetch_notes.setStyleSheet("font-size: 10px; padding: 1px 6px;")
@@ -223,8 +226,8 @@ class ReleaseTab(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        self.output_tabs = QTabWidget()
-        self.jobs_view = ReleaseJobsWidget()
+        self.output_tabs = ActivityTabs()
+        self.jobs_view = ReleaseJobsWidget(repo_path=self.git_mgr.repo_path)
         self.terminal = TerminalWidget()
 
         self.output_tabs.addTab(self.jobs_view, "Jobs and Progress")
@@ -235,6 +238,18 @@ class ReleaseTab(QWidget):
         splitter.setSizes([420, 640])
 
     def _wire_signals(self):
+        self.runner.started.connect(self._on_process_started)
+        self.runner.restored.connect(self._on_activity_restored)
+        self.runner.error_occurred.connect(lambda message: self.output_tabs.show_activity("failed", self.terminal))
+        self.jobs_view.workflow_started.connect(self._focus_workflow)
+        self.jobs_view.local_work_started.connect(
+            lambda: self.output_tabs.show_activity("local", self.terminal)
+            if self.runner.is_running else None)
+        self.jobs_view.remote_status_ready.connect(self._focus_remote_jobs)
+        self.runner.started.connect(lambda: self.btn_release.setEnabled(False))
+        self.runner.restored.connect(lambda record: self.btn_release.setEnabled(not record["running"]))
+        self.runner.restored.connect(self._restore_release)
+        self.runner.finished.connect(lambda code: self.btn_release.setEnabled(True))
         self.btn_mode_new.clicked.connect(lambda: self._set_mode("new"))
         self.btn_mode_replace.clicked.connect(lambda: self._set_mode("replace"))
         self.btn_mode_resume.clicked.connect(lambda: self._set_mode("resume"))
@@ -244,6 +259,24 @@ class ReleaseTab(QWidget):
         self.runner.finished.connect(self._on_process_finished)
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
         self.terminal.stop_requested.connect(self.runner.stop)
+
+    def _restore_release(self, record):
+        if not record["running"] and record.get("exit_code") == 0:
+            return
+        args = record["command"]
+        for index, arg in enumerate(args):
+            if re.fullmatch(r"v?\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?", arg):
+                self.version_input.setText(arg)
+                mode = "resume" if "--resume-after-prep" in args else "replace" if "--replace" in args else "new"
+                self._set_mode(mode)
+                self.push_cb.setChecked("--push" in args or mode == "resume")
+                self.dry_run_cb.setChecked("--dry-run" in args)
+                self.skip_flathub_cb.setChecked("--skip-flathub" in args)
+                self.skip_gh_release_cb.setChecked("--skip-github-release" in args)
+                if mode != "resume" and index + 1 < len(args):
+                    self.summary_input.setPlainText(args[index + 1])
+                self.jobs_view.track_version(arg)
+                break
 
     def _set_mode(self, mode: str):
         self.current_mode = mode
@@ -295,6 +328,24 @@ class ReleaseTab(QWidget):
         self.terminal.append_output(text)
         self.jobs_view.process_output_chunk(text)
 
+    def _on_process_started(self):
+        self.output_tabs.show_activity("local", self.terminal, force=True)
+
+    def _on_activity_restored(self, record):
+        if record["running"]:
+            if self.output_tabs.activity != "remote":
+                self.output_tabs.show_activity("local", self.terminal)
+        elif record.get("exit_code") != 0 or record.get("stopped"):
+            self.output_tabs.show_activity("failed", self.terminal)
+
+    def _focus_workflow(self):
+        if self.output_tabs.activity != "failed":
+            self.output_tabs.show_activity("remote", self.jobs_view)
+
+    def _focus_remote_jobs(self):
+        if not self.runner.is_running or self.output_tabs.activity == "remote":
+            self._focus_workflow()
+
     def refresh(self):
         latest = self.git_mgr.get_latest_tag()
         self.latest_tag_lbl.setText(f"Latest tag: {latest}")
@@ -308,6 +359,11 @@ class ReleaseTab(QWidget):
             self.version_input.setText(f"v{major}.{minor}.{patch + 1}")
         else:
             self.version_input.setText("v0.1.0")
+
+    def _resume_selected(self):
+        if self.jobs_view.release_tag:
+            self.version_input.setText(self.jobs_view.release_tag)
+            self._set_mode("resume")
 
     def _bump_version(self, bump_type: str):
         v = self.version_input.text().strip()
@@ -392,25 +448,26 @@ class ReleaseTab(QWidget):
             details=details,
             preview_text=summary if (mode != "resume" and summary) else None,
             preview_text_label="Release Notes Preview:",
-            action_button_text=f"Confirm Release",
+            action_button_text="Confirm Release",
             anchor_widget=self.btn_release,
             parent=self,
         )
-        popup.show()
-
-        while popup.isVisible():
-            QApplication.processEvents()
-
-        if not popup.confirmed:
+        if not popup.exec():
             return
 
         self.jobs_view.reset_state()
         self.terminal.clear_terminal()
         self.terminal.set_status(f"Running {version}", "running")
-        self.output_tabs.setCurrentWidget(self.jobs_view)
+        self.output_tabs.show_activity("local", self.terminal, force=True)
         self.runner.start(script_path, args, cwd=self.git_mgr.repo_path)
+        self.jobs_view.track_version(version)
 
     def _on_process_finished(self, exit_code: int):
+        if exit_code != 0 or self.runner.record.get("stopped"):
+            self.output_tabs.show_activity("failed", self.terminal)
+        else:
+            self.jobs_view.sync_remote_status()
         status = "success" if exit_code == 0 else "failed"
         self.terminal.set_status("Completed" if exit_code == 0 else f"Exit {exit_code}", status)
-        self.refresh()
+        if self.window().isVisible():
+            self.refresh()
