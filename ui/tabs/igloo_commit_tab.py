@@ -1,4 +1,6 @@
 import shlex
+import sys
+from pathlib import Path
 from typing import List
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -19,6 +21,7 @@ from core.runner import ProcessRunner
 from ui.components.file_list import FileListWidget
 from ui.components.diff_viewer import DiffViewer
 from ui.components.terminal_view import TerminalWidget
+from ui.components.commit_draft import CommitDraft
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
 
 
@@ -82,6 +85,8 @@ class IglooCommitTab(QWidget):
         self.desc_input.setFixedHeight(45)
         self.desc_input.setPlaceholderText("Extended description (optional markdown)...")
         commit_layout.addWidget(self.desc_input)
+        self.commit_draft = CommitDraft(self.summary_input, self.desc_input, self._draft_diff)
+        commit_layout.addWidget(self.commit_draft)
 
         form_layout.addWidget(commit_grp)
 
@@ -160,13 +165,14 @@ class IglooCommitTab(QWidget):
 
     def _on_push_toggled(self, checked: bool):
         if checked:
-            self.file_list.btn_publish.setText("Commit & Push")
+            self.file_list.btn_publish.setText("Commit & Push" if self.file_list.items or self.amend_cb.isChecked() else "Push")
             self.skip_pre_push_cb.setEnabled(True)
         else:
             self.file_list.btn_publish.setText("Commit")
             self.skip_pre_push_cb.setEnabled(False)
 
     def _on_amend_toggled(self, checked: bool):
+        self._on_push_toggled(self.push_cb.isChecked())
         if checked and not self.summary_input.text().strip():
             code, out, _ = self.git_mgr._run_git(["log", "-1", "--pretty=%B"])
             if code == 0 and out.strip():
@@ -184,6 +190,7 @@ class IglooCommitTab(QWidget):
         self.terminal.repo_path = self.git_mgr.repo_path
         items = self.git_mgr.get_status_files()
         self.file_list.set_files(items)
+        self._on_push_toggled(self.push_cb.isChecked())
 
         selected_paths = self.file_list.get_selected_paths()
         if len(selected_paths) == 1:
@@ -199,6 +206,10 @@ class IglooCommitTab(QWidget):
         adds = item.additions if item else 0
         dels = item.deletions if item else 0
         self.diff_viewer.set_diff(diff_text, path, adds, dels, rel_path=path)
+
+    def _draft_diff(self):
+        paths = self.file_list.get_selected_paths()
+        return self.git_mgr.get_diff(paths) if paths else ""
 
     def _show_multi_file_diff(self, paths: List[str]):
         selected_items = [i for i in self.file_list.items if i.path in paths]
@@ -225,18 +236,20 @@ class IglooCommitTab(QWidget):
         is_amend = self.amend_cb.isChecked()
         skip_pre_push = self.skip_pre_push_cb.isChecked()
 
-        if not summary and not is_amend:
+        selected_paths = self.file_list.get_selected_paths()
+        all_paths = [i.path for i in self.file_list.items]
+        will_push = self.push_cb.isChecked()
+        create_commit = bool(selected_paths) or is_amend
+
+        if create_commit and not summary and not is_amend:
             QMessageBox.warning(self, "Missing Summary", "Please enter a commit summary or title.")
             return
 
-        selected_paths = self.file_list.get_selected_paths()
-        all_paths = [i.path for i in self.file_list.items]
-        if not selected_paths and not is_amend:
+        if not create_commit and (all_paths or not will_push):
             QMessageBox.warning(self, "No Files Selected", "Please select at least one file to commit.")
             return
 
         branch = self.git_mgr.get_current_branch()
-        will_push = self.push_cb.isChecked()
 
         if summary and desc:
             full_msg = f"{summary}\n\n{desc}"
@@ -245,7 +258,7 @@ class IglooCommitTab(QWidget):
 
         details = [
             ("Current Branch", branch),
-            ("Commit Title", summary or "(keep existing)"),
+            ("Commit Title", (summary or "(keep existing)") if create_commit else "Push existing commits"),
             ("Files Included", f"{len(selected_paths)} of {len(all_paths)} files" if len(selected_paths) < len(all_paths) else f"All {len(all_paths)} files"),
             ("Amend", "Yes" if is_amend else "No"),
             ("Push to Origin", f"Yes (origin/{branch})" if will_push else "No (local commit only)"),
@@ -253,11 +266,11 @@ class IglooCommitTab(QWidget):
         if will_push:
             details.append(("Skip Pre-push", "Yes (--no-verify)" if skip_pre_push else "No"))
 
-        action_name = "Commit & Push" if will_push else "Commit"
+        action_name = "Commit & Push" if will_push and create_commit else "Push" if will_push else "Commit"
         popup = ConfirmPreviewDialog(
             title=f"Igloo {action_name}",
             details=details,
-            preview_text=desc if desc else None,
+            preview_text=desc if create_commit and desc else None,
             preview_text_label="Extended Description:",
             action_button_text=action_name,
             anchor_widget=self.file_list.btn_publish,
@@ -270,7 +283,7 @@ class IglooCommitTab(QWidget):
         if selected_paths:
             escaped_files = " ".join(shlex.quote(p) for p in selected_paths)
             commands.append(f"git add -- {escaped_files}")
-        else:
+        elif is_amend:
             commands.append("git add -A")
 
         commit_args = ["git", "commit"]
@@ -278,15 +291,19 @@ class IglooCommitTab(QWidget):
             commit_args.append("--amend")
         if full_msg:
             commit_args.extend(["-m", full_msg])
+        elif is_amend:
+            commit_args.append("--no-edit")
 
         escaped_commit = " ".join(shlex.quote(a) for a in commit_args)
-        commands.append(escaped_commit)
+        if create_commit:
+            commands.append(escaped_commit)
 
         if will_push:
-            push_cmd = f"git push origin {shlex.quote(branch)}"
+            helper = Path(__file__).resolve().parents[2] / "core" / "push.py"
+            push_args = [sys.executable, str(helper), branch]
             if skip_pre_push:
-                push_cmd = f"git push --no-verify origin {shlex.quote(branch)}"
-            commands.append(push_cmd)
+                push_args.append("--skip-hook")
+            commands.append(shlex.join(push_args))
 
         full_cmd = " && ".join(commands)
 

@@ -60,6 +60,18 @@ Run it again if you move the checkout. Python 3 and PyQt6 must be installed on t
 
 ## Background commands and recovery
 
+Igloo's **Commit & Push** fetches remote changes and rebases local commits before pushing.
+Other working-tree edits are kept through Git's autostash. If conflicts occur, resolve or abort
+the rebase before retrying. On a clean working tree, **Push** retries existing commits without
+requiring a new message or creating another commit. The pre-push skip option still applies.
+
+In either commit form, click **Fill with Codex** to fill the subject and description from the
+selected diff. Both fields remain editable before confirmation. Click it again to request another
+draft, or use **Cancel** during generation. This uses `codex exec` with `gpt-6-luna`, low reasoning,
+and your existing Codex login.
+Install Codex CLI and run `codex login` first. It makes no background generation requests and
+keeps edits made while generation is running. Release notes remain manually written.
+
 Enable **Settings > Close to tray** to keep notifications active when you close the window.
 Use **Open Git GUI** in the tray menu, or launch the app again, to show the same window.
 **Quit** exits the GUI. If the desktop has no system tray, closing the window also exits the GUI.

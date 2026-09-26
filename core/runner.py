@@ -63,9 +63,15 @@ class ProcessRunner(QObject):
             return
         if old_record:
             self.output_received.emit("\n[ATTACHED TO ANOTHER COMMAND]\n")
+        self._is_running = job_running(self.record)
+        self.reload_output()
+
+    def reload_output(self):
+        """Replay saved output without restarting the command."""
+        if not self.record:
+            return
         self._offset = 0
         self._decoder.reset()
-        self._is_running = job_running(self.record)
         self.output_received.emit(f"$ {shlex.join(self.record['command'])}\n")
         if self.record.get("external"):
             self.output_received.emit("[OBSERVING] Helper started outside this session. Its output and exit code are unavailable.\n")

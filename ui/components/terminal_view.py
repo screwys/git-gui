@@ -187,7 +187,16 @@ class TerminalWidget(QWidget):
         self.btn_clear.clicked.connect(self.clear_terminal)
         header.addWidget(self.btn_clear)
 
+        self.btn_reload = QPushButton("Reload log")
+        self.btn_reload.setFixedHeight(22)
+        self.btn_reload.setStyleSheet("font-size: 11px; padding: 1px 8px;")
+        self.btn_reload.setToolTip("Restore saved output without running the command again")
+        self.btn_reload.clicked.connect(self._reload_log)
+        header.addWidget(self.btn_reload)
+
         self.btn_history = QPushButton("History")
+        self.btn_history.setFixedHeight(22)
+        self.btn_history.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_history.setToolTip("View earlier commands, logs, and exit status")
         self.btn_history.clicked.connect(self._show_history)
         header.addWidget(self.btn_history)
@@ -196,7 +205,8 @@ class TerminalWidget(QWidget):
         self.btn_stop.setFixedHeight(22)
         self.btn_stop.setStyleSheet(
             "QPushButton { background-color: #3d1719; border: 1px solid #f85149; color: #ff7b72; font-size: 11px; padding: 1px 8px; font-weight: bold; } "
-            "QPushButton:hover { background-color: #da3633; color: white; }"
+            "QPushButton:enabled:hover { background-color: #da3633; color: white; } "
+            "QPushButton:disabled { background-color: #21262d; border-color: #30363d; color: #6e7681; }"
         )
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.stop_requested.emit)
@@ -257,7 +267,8 @@ class TerminalWidget(QWidget):
         self.btn_shell_stop.setFixedHeight(22)
         self.btn_shell_stop.setStyleSheet(
             "QPushButton { background-color: #3d1719; border: 1px solid #f85149; color: #ff7b72; font-size: 11px; padding: 1px 8px; font-weight: bold; } "
-            "QPushButton:hover { background-color: #da3633; color: white; }"
+            "QPushButton:enabled:hover { background-color: #da3633; color: white; } "
+            "QPushButton:disabled { background-color: #21262d; border-color: #30363d; color: #6e7681; }"
         )
         self.btn_shell_stop.setEnabled(False)
         self.btn_shell_stop.clicked.connect(self.interactive_runner.stop)
@@ -399,6 +410,7 @@ class TerminalWidget(QWidget):
             self.console.ensureCursorVisible()
 
     def set_status(self, text: str, state: str = "idle"):
+        self.status_badge.show()
         if state != "running" and hasattr(self, "runner") and self.runner.record.get("stopped"):
             text, state = "Stopped", "idle"
         if text == "Exit -1":
@@ -454,6 +466,13 @@ class TerminalWidget(QWidget):
 
     def clear_terminal(self):
         self.console.clear()
+        if not self._task_timer.isActive():
+            self.status_badge.clear()
+            self.status_badge.hide()
+
+    def _reload_log(self):
+        self.console.clear()
+        self.runner.reload_output()
 
     def _copy_all(self):
         self.console.selectAll()

@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from ui.components.commit_draft import CommitDraft
 from ui.components.activity_tabs import ActivityTabs
 from core.state import StateManager
 from ui.components.file_list import FileListWidget
@@ -234,6 +235,8 @@ class PublishPrTab(QWidget):
         self.body_input.setFixedHeight(45)
         self.body_input.setPlaceholderText("Description (optional markdown)...")
         pr_layout.addWidget(self.body_input)
+        self.commit_draft = CommitDraft(self.title_input, self.body_input, self._draft_diff)
+        pr_layout.addWidget(self.commit_draft)
 
         form_layout.addWidget(pr_grp)
 
@@ -537,6 +540,10 @@ class PublishPrTab(QWidget):
         adds = item.additions if item else 0
         dels = item.deletions if item else 0
         self.diff_viewer.set_diff(diff_text, path, adds, dels, rel_path=path)
+
+    def _draft_diff(self):
+        paths = self.file_list.get_selected_paths()
+        return self.git_mgr.get_diff(paths) if paths else ""
 
     def _show_multi_file_diff(self, paths: List[str]):
         selected_items = [i for i in self.file_list.items if i.path in paths]
