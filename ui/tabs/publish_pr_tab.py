@@ -3,7 +3,7 @@ import re
 import json
 import subprocess
 from typing import List, Optional
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget,
@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from core.notifications import send_desktop_notification
 from ui.components.commit_draft import CommitDraft
 from ui.components.activity_tabs import ActivityTabs
 from core.state import StateManager
@@ -32,6 +33,7 @@ from ui.components.diff_viewer import DiffViewer
 from ui.components.terminal_view import TerminalWidget
 from ui.components.pr_checks_view import PrChecksWidget
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
+from ui.tabs.release_tab import ActivePrsFetchWorker, PrPollWorker
 
 
 class BranchPrDetectWorker(QThread):
@@ -149,6 +151,17 @@ class PublishPrTab(QWidget):
         self._submitted_body = ""
         self._output_pending = ""
         self._published_pr = ""
+        self._is_waiting_for_pr = False
+        self._waiting_pr_num = ""
+        self._waiting_script_path = ""
+        self._waiting_args = []
+        self._waiting_env_vars = {}
+        self._waiting_pending = {}
+        self._pr_poll_timer = QTimer(self)
+        self._pr_poll_timer.setInterval(10000)
+        self._pr_poll_timer.timeout.connect(self._poll_waiting_pr)
+        self._pr_poll_worker = None
+        self._active_prs_worker = None
 
         self._init_ui()
         self._wire_signals()
@@ -266,6 +279,31 @@ class PublishPrTab(QWidget):
         h_checks.addStretch()
         flags_layout.addLayout(h_checks)
 
+        # Thin row: Publish after PR merges
+        h_pr_row = QHBoxLayout()
+        h_pr_row.setSpacing(6)
+
+        self.wait_pr_cb = QCheckBox("Publish after PR merges:")
+        self.wait_pr_cb.setStyleSheet("font-size: 11px;")
+        self.wait_pr_cb.toggled.connect(self._on_wait_pr_toggled)
+        h_pr_row.addWidget(self.wait_pr_cb)
+
+        self.pr_combo = QComboBox()
+        self.pr_combo.setEditable(True)
+        self.pr_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.pr_combo.lineEdit().setPlaceholderText("PR #")
+        self.pr_combo.setMinimumWidth(85)
+        self.pr_combo.setMaximumWidth(150)
+        self.pr_combo.currentTextChanged.connect(self._on_pr_text_changed)
+        h_pr_row.addWidget(self.pr_combo)
+
+        self.wait_pr_status_lbl = QLabel("")
+        self.wait_pr_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
+        h_pr_row.addWidget(self.wait_pr_status_lbl)
+
+        h_pr_row.addStretch()
+        flags_layout.addLayout(h_pr_row)
+
         h_i18n = QHBoxLayout()
         h_i18n.setSpacing(6)
         lbl_i18n = QLabel("Catalogs:")
@@ -379,6 +417,7 @@ class PublishPrTab(QWidget):
         self.wait_cb.toggled.connect(self._update_publish_button)
         self.skip_pre_push_cb.toggled.connect(self._update_publish_button)
         self.i18n_combo.currentIndexChanged.connect(self._update_publish_button)
+        self.wait_pr_cb.toggled.connect(self._update_publish_button)
 
     def _restore_saved_pr(self):
         saved = StateManager.get("rufin_tracked_pr")
@@ -442,6 +481,9 @@ class PublishPrTab(QWidget):
             self.i18n_combo.setCurrentIndex(index)
 
     def _publish_button_clicked(self):
+        if self._is_waiting_for_pr:
+            self._cancel_pr_wait()
+            return
         pending = StateManager.get("rufin_publish_pending") or {}
         if pending.get("repo_path") == self.git_mgr.repo_path and pending.get("job_id") == (self.runner.path.parent.name if self.runner.path else None):
             if self._pending_form_matches(pending):
@@ -451,9 +493,79 @@ class PublishPrTab(QWidget):
         else:
             self.run_publish()
 
+    def _get_selected_pr_number(self) -> Optional[str]:
+        text = self.pr_combo.currentText().strip()
+        if not text:
+            return None
+        idx = self.pr_combo.currentIndex()
+        if idx >= 0 and self.pr_combo.itemText(idx) == text:
+            data = self.pr_combo.itemData(idx)
+            if data:
+                return str(data)
+        m = re.search(r"/pull/(\d+)", text)
+        if m:
+            return m.group(1)
+        m = re.search(r"(?:^|[#\s])(\d+)\b", text)
+        if m:
+            return m.group(1)
+        return None
+
+    def _on_wait_pr_toggled(self, checked: bool):
+        self._update_publish_button()
+
+    def _on_pr_text_changed(self, text: str):
+        pr_num = self._get_selected_pr_number()
+        if pr_num and not self.wait_pr_cb.isChecked():
+            self.wait_pr_cb.setChecked(True)
+        elif not text.strip() and self.wait_pr_cb.isChecked():
+            self.wait_pr_cb.setChecked(False)
+        self._update_publish_button()
+
+    def _fetch_active_prs(self):
+        if self._active_prs_worker and self._active_prs_worker.isRunning():
+            return
+        self._active_prs_worker = ActivePrsFetchWorker(self.git_mgr.repo_path, self)
+        self._active_prs_worker.prs_fetched.connect(self._on_active_prs_fetched)
+        self._active_prs_worker.start()
+
+    def _on_active_prs_fetched(self, prs: list):
+        current_num = self._get_selected_pr_number()
+        current_text = self.pr_combo.currentText().strip()
+
+        self.pr_combo.blockSignals(True)
+        self.pr_combo.clear()
+
+        selected_index = -1
+        for i, pr in enumerate(prs):
+            num = str(pr.get("number", ""))
+            title = pr.get("title", "")
+            display = f"#{num} - {title}" if title else f"#{num}"
+            self.pr_combo.addItem(display, userData=num)
+            if current_num and current_num == num:
+                selected_index = i
+
+        if selected_index >= 0:
+            self.pr_combo.setCurrentIndex(selected_index)
+        elif current_text:
+            self.pr_combo.setEditText(current_text)
+        else:
+            self.pr_combo.setEditText("")
+            self.pr_combo.setCurrentIndex(-1)
+
+        self.pr_combo.blockSignals(False)
+        self._update_publish_button()
+
     def _update_publish_button(self, *_args):
+        if self._is_waiting_for_pr:
+            self.file_list.btn_publish.setText(f"Cancel (PR #{self._waiting_pr_num})")
+            return
         if self.runner.is_running:
             self.file_list.btn_publish.setText("Publishing…")
+            return
+        pr_num = self._get_selected_pr_number()
+        waiting = self.wait_pr_cb.isChecked() and bool(pr_num)
+        if waiting:
+            self.file_list.btn_publish.setText(f"Publish after PR #{pr_num} merges")
             return
         pending = StateManager.get("rufin_publish_pending") or {}
         is_saved_retry = (
@@ -592,6 +704,7 @@ class PublishPrTab(QWidget):
             self.body_input.document().setModified(False)
         self._detect_pr(curr_branch)
         self._update_publish_button()
+        self._fetch_active_prs()
 
         selected_paths = self.file_list.get_selected_paths()
         if len(selected_paths) == 1:
@@ -697,6 +810,10 @@ class PublishPrTab(QWidget):
             self.diff_viewer.set_diff(diff_text, f"{len(paths)} files selected", adds, dels, rel_path=None)
 
     def run_publish(self):
+        if self._is_waiting_for_pr:
+            self._cancel_pr_wait()
+            return
+
         if self.runner.is_running:
             QMessageBox.warning(self, "Running", "A script is already running.")
             return
@@ -723,6 +840,17 @@ class PublishPrTab(QWidget):
         if all_paths and not title:
             QMessageBox.warning(self, "Commit Subject", "Enter a subject for the changes being committed.")
             return
+
+        pr_num = None
+        if self.wait_pr_cb.isChecked():
+            pr_num = self._get_selected_pr_number()
+            if not pr_num:
+                QMessageBox.warning(
+                    self,
+                    "Missing PR Number",
+                    "Please enter or select a PR number to wait for, or uncheck 'Publish after PR merges'.",
+                )
+                return
 
         args = []
         if base_branch:
@@ -766,10 +894,14 @@ class PublishPrTab(QWidget):
             ("PR Title", self.pr_title_label.text().removeprefix("PR: ") or title or "(saved draft or existing PR)"),
             ("Commit", title if all_paths else "Retry existing commits"),
             ("Files Included", f"{len(selected_paths)} of {len(all_paths)} files" if partial_files else f"All {len(all_paths)} files"),
+        ]
+        if pr_num:
+            details.append(("Wait for PR", f"#{pr_num} (auto-publish when merged)"))
+        details.extend([
             ("Squash Merge", "Enabled" if self.auto_merge_cb.isChecked() else "Disabled"),
             ("Wait CI Checks", "Yes" if self.wait_cb.isChecked() else "No"),
             ("Skip Pre-push", "Yes" if skip_pre_push else "No"),
-        ]
+        ])
         if i18n_choice != "none":
             details.append(("I18n Catalogs", self.i18n_combo.currentText()))
 
@@ -803,7 +935,80 @@ class PublishPrTab(QWidget):
             "head_before": subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.git_mgr.repo_path,
                                            capture_output=True, text=True, check=False).stdout.strip(),
         }
-        self._start_publish_job(script_path, args, env_vars, pending)
+        if pr_num:
+            self._start_waiting_for_pr(pr_num, script_path, args, env_vars, pending)
+        else:
+            self._start_publish_job(script_path, args, env_vars, pending)
+
+    def _start_waiting_for_pr(self, pr_num: str, script_path: str, args: list, env_vars: dict, pending: dict):
+        self._is_waiting_for_pr = True
+        self._waiting_pr_num = pr_num
+        self._waiting_script_path = script_path
+        self._waiting_args = args
+        self._waiting_env_vars = env_vars
+        self._waiting_pending = pending
+
+        self.file_list.btn_publish.setEnabled(True)
+        self._update_publish_button()
+        self.wait_pr_status_lbl.setText(f"Waiting for #{pr_num}...")
+        self.wait_pr_status_lbl.setStyleSheet("color: #e3b341; font-size: 11px;")
+
+        self.bottom_tabs.setCurrentWidget(self.terminal)
+        self.terminal.clear_terminal()
+        self.terminal.set_status(f"Waiting for PR #{pr_num}", "running")
+        self.terminal.append_output(f"[*] Publish scheduled: will run automatically once PR #{pr_num} merges.\n")
+        self.terminal.append_output(f"[*] Polling GitHub PR #{pr_num}...\n")
+        self.bottom_tabs.show_activity("local", self.terminal, force=True)
+
+        self._pr_poll_timer.start(10000)
+        self._poll_waiting_pr()
+
+    def _poll_waiting_pr(self):
+        if not self._is_waiting_for_pr:
+            return
+        if self._pr_poll_worker and self._pr_poll_worker.isRunning():
+            return
+        self._pr_poll_worker = PrPollWorker(self.git_mgr.repo_path, self._waiting_pr_num, self)
+        self._pr_poll_worker.pr_status_fetched.connect(self._on_pr_status_fetched)
+        self._pr_poll_worker.start()
+
+    def _on_pr_status_fetched(self, data: dict):
+        if not self._is_waiting_for_pr:
+            return
+        state = (data.get("state") or "").upper()
+        pr_num = self._waiting_pr_num
+
+        if state == "MERGED":
+            self._pr_poll_timer.stop()
+            self._is_waiting_for_pr = False
+            self.wait_pr_status_lbl.setText(f"PR #{pr_num} merged!")
+            self.wait_pr_status_lbl.setStyleSheet("color: #3fb950; font-size: 11px;")
+            self.terminal.append_output(f"\n[+] PR #{pr_num} has merged! Publishing PR now...\n\n")
+            send_desktop_notification("PR Merged", f"PR #{pr_num} merged. Publishing PR...")
+            self._start_publish_job(self._waiting_script_path, self._waiting_args, self._waiting_env_vars, self._waiting_pending)
+        elif state == "CLOSED":
+            self._pr_poll_timer.stop()
+            self._is_waiting_for_pr = False
+            self.wait_pr_status_lbl.setText(f"PR #{pr_num} closed without merge")
+            self.wait_pr_status_lbl.setStyleSheet("color: #f85149; font-size: 11px;")
+            self.terminal.append_output(f"\n[!] PR #{pr_num} was closed without being merged. Publish aborted.\n")
+            self.terminal.set_status(f"PR #{pr_num} Closed", "failed")
+            self._update_publish_button()
+            send_desktop_notification("Publish Aborted", f"PR #{pr_num} was closed without merging.")
+        else:
+            self.wait_pr_status_lbl.setText(f"PR #{pr_num} is OPEN (waiting)")
+            self.wait_pr_status_lbl.setStyleSheet("color: #e3b341; font-size: 11px;")
+            self.terminal.append_output(f"[*] PR #{pr_num} is {state}. Polling again in 10s...\n")
+
+    def _cancel_pr_wait(self):
+        self._pr_poll_timer.stop()
+        self._is_waiting_for_pr = False
+        self.wait_pr_status_lbl.setText("Wait cancelled")
+        self.wait_pr_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
+        if self._waiting_pr_num:
+            self.terminal.append_output(f"\n[!] Cancelled waiting for PR #{self._waiting_pr_num}.\n")
+        self.terminal.set_status("Cancelled", "normal")
+        self._update_publish_button()
 
     def _on_process_finished(self, exit_code: int):
         if exit_code != 0 or self.runner.record.get("stopped"):
@@ -824,5 +1029,6 @@ class PublishPrTab(QWidget):
             if body == self._submitted_body:
                 self.body_input.clear()
                 self.body_input.document().setModified(False)
+        self._update_publish_button()
         if self.window().isVisible():
             self.refresh()
