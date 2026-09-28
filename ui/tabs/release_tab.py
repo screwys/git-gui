@@ -2,6 +2,7 @@ import os
 import re
 import json
 import subprocess
+import threading
 from typing import Optional
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -694,6 +695,10 @@ class ReleaseTab(QWidget):
         if not popup.exec():
             return
 
+        if mode == "replace":
+            self.terminal.append_output(f"[*] Cancelling in-progress CI runs for {version}...\n")
+            self._cancel_ci_runs(version)
+
         if pr_num:
             if self.runner.is_running:
                 self.terminal.append_output("[*] Stopping running script to wait for PR...\n")
@@ -701,6 +706,21 @@ class ReleaseTab(QWidget):
             self._start_waiting_for_pr(pr_num, script_path, args, version)
         else:
             self._stop_and_run(lambda: self._start_release_process(script_path, args, version))
+
+    def _cancel_ci_runs(self, version: str):
+        def _cancel():
+            try:
+                res = subprocess.run(
+                    ["gh", "run", "list", "--limit", "50", "--json", "databaseId,displayTitle,status",
+                     "--jq", f'.[] | select((.displayTitle == "Stage {version}" or .displayTitle == "{version}") and .status != "completed") | .databaseId'],
+                    cwd=self.git_mgr.repo_path, capture_output=True, text=True, timeout=10
+                )
+                if res.returncode == 0:
+                    for run_id in res.stdout.split():
+                        subprocess.run(["gh", "run", "cancel", run_id], cwd=self.git_mgr.repo_path, timeout=5)
+            except Exception:
+                pass
+        threading.Thread(target=_cancel, daemon=True).start()
 
     def _stop_and_run(self, callback):
         if not self.runner.is_running:
@@ -770,6 +790,8 @@ class ReleaseTab(QWidget):
             self.terminal.append_output(f"\n[+] PR #{pr_num} has merged! Starting release {version}...\n\n")
             send_desktop_notification("PR Merged", f"PR #{pr_num} merged. Starting release {version}...")
             self._update_button_label()
+            if self.current_mode == "replace":
+                self._cancel_ci_runs(version)
             self._stop_and_run(lambda: self._start_release_process(
                 self._waiting_script_path, self._waiting_args, self._waiting_version
             ))
