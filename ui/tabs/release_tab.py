@@ -1,6 +1,9 @@
 import os
 import re
-from PyQt6.QtCore import Qt
+import json
+import subprocess
+from typing import Optional
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -10,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QCheckBox,
+    QComboBox,
     QPushButton,
     QButtonGroup,
     QGroupBox,
@@ -18,10 +22,92 @@ from PyQt6.QtWidgets import (
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from core.notifications import send_desktop_notification
 from ui.components.activity_tabs import ActivityTabs
 from ui.components.terminal_view import TerminalWidget
 from ui.components.release_jobs_view import ReleaseJobsWidget
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
+
+
+def get_repo_owner_name(repo_path: str) -> Optional[str]:
+    try:
+        p = subprocess.run(
+            ["git", "-C", repo_path, "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        m = re.search(r"github\.com[:/]([^/]+/[^/\s]+?)(?:\.git)?$", p.stdout.strip())
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+class ActivePrsFetchWorker(QThread):
+    prs_fetched = pyqtSignal(list)
+
+    def __init__(self, repo_path: str, parent=None):
+        super().__init__(parent)
+        self.repo_path = repo_path
+
+    def run(self):
+        try:
+            cmd = [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "30",
+                "--json",
+                "number,title",
+            ]
+            repo = get_repo_owner_name(self.repo_path)
+            if repo:
+                cmd.extend(["--repo", repo])
+            res = subprocess.run(
+                cmd,
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                self.prs_fetched.emit(json.loads(res.stdout))
+            else:
+                self.prs_fetched.emit([])
+        except Exception:
+            self.prs_fetched.emit([])
+
+
+class PrPollWorker(QThread):
+    pr_status_fetched = pyqtSignal(dict)
+
+    def __init__(self, repo_path: str, pr_number: str, parent=None):
+        super().__init__(parent)
+        self.repo_path = repo_path
+        self.pr_number = pr_number
+
+    def run(self):
+        try:
+            cmd = ["gh", "pr", "view", str(self.pr_number), "--json", "number,title,state"]
+            repo = get_repo_owner_name(self.repo_path)
+            if repo:
+                cmd.extend(["--repo", repo])
+            res = subprocess.run(
+                cmd,
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                self.pr_status_fetched.emit(json.loads(res.stdout))
+        except Exception:
+            pass
 
 
 class ReleaseTab(QWidget):
@@ -31,6 +117,16 @@ class ReleaseTab(QWidget):
         self.config = config
         self.runner = ProcessRunner(self)
         self.current_mode = "new"
+        self._is_waiting_for_pr = False
+        self._waiting_pr_num = ""
+        self._waiting_script_path = ""
+        self._waiting_args = []
+        self._waiting_version = ""
+        self._pr_poll_timer = QTimer(self)
+        self._pr_poll_timer.setInterval(12000)
+        self._pr_poll_timer.timeout.connect(self._poll_waiting_pr)
+        self._pr_poll_worker = None
+        self._active_prs_worker = None
         self._init_ui()
         self._wire_signals()
         self.terminal.bind_runner(self.runner, self.git_mgr.repo_path, "release", self.config.resolve_release_script(self.git_mgr.repo_path))
@@ -148,11 +244,6 @@ class ReleaseTab(QWidget):
         h_tag_info.addWidget(self.latest_tag_lbl)
         h_tag_info.addStretch()
 
-        self.btn_resume_selected = QPushButton("Resume selected release")
-        self.btn_resume_selected.setToolTip("Use the version selected in Jobs and Progress")
-        self.btn_resume_selected.clicked.connect(self._resume_selected)
-        h_tag_info.addWidget(self.btn_resume_selected)
-
         self.btn_fetch_notes = QPushButton("Fetch Tag Notes")
         self.btn_fetch_notes.setFixedHeight(22)
         self.btn_fetch_notes.setStyleSheet("font-size: 10px; padding: 1px 6px;")
@@ -164,6 +255,39 @@ class ReleaseTab(QWidget):
         h_tag_info.addWidget(self.btn_fetch_notes)
 
         ver_layout.addLayout(h_tag_info)
+
+        # Thin row: Release after PR merges + Resume selected release
+        h_pr_row = QHBoxLayout()
+        h_pr_row.setSpacing(6)
+
+        self.wait_pr_cb = QCheckBox("Release after PR merges:")
+        self.wait_pr_cb.setStyleSheet("font-size: 11px;")
+        self.wait_pr_cb.toggled.connect(self._on_wait_pr_toggled)
+        h_pr_row.addWidget(self.wait_pr_cb)
+
+        self.pr_combo = QComboBox()
+        self.pr_combo.setEditable(True)
+        self.pr_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.pr_combo.lineEdit().setPlaceholderText("PR #")
+        self.pr_combo.setMinimumWidth(85)
+        self.pr_combo.setMaximumWidth(150)
+        self.pr_combo.currentTextChanged.connect(self._on_pr_text_changed)
+        h_pr_row.addWidget(self.pr_combo)
+
+        self.wait_pr_status_lbl = QLabel("")
+        self.wait_pr_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
+        h_pr_row.addWidget(self.wait_pr_status_lbl)
+
+        h_pr_row.addStretch()
+
+        self.btn_resume_selected = QPushButton("Resume selected release")
+        self.btn_resume_selected.setToolTip("Use the version selected in Jobs and Progress")
+        self.btn_resume_selected.setFixedHeight(24)
+        self.btn_resume_selected.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.btn_resume_selected.clicked.connect(self._resume_selected)
+        h_pr_row.addWidget(self.btn_resume_selected)
+
+        ver_layout.addLayout(h_pr_row)
 
         left_layout.addWidget(ver_grp, 0)
 
@@ -250,6 +374,7 @@ class ReleaseTab(QWidget):
         self.runner.restored.connect(lambda record: self.btn_release.setEnabled(not record["running"]))
         self.runner.restored.connect(self._restore_release)
         self.runner.finished.connect(lambda code: self.btn_release.setEnabled(True))
+        self.runner.finished.connect(lambda code: self._update_button_label())
         self.btn_mode_new.clicked.connect(lambda: self._set_mode("new"))
         self.btn_mode_replace.clicked.connect(lambda: self._set_mode("replace"))
         self.btn_mode_resume.clicked.connect(lambda: self._set_mode("resume"))
@@ -288,7 +413,6 @@ class ReleaseTab(QWidget):
             self.btn_fetch_notes.setVisible(False)
             self.push_cb.setEnabled(True)
             self.dry_run_cb.setEnabled(True)
-            self.btn_release.setText("Start Release")
         elif mode == "replace":
             self.btn_mode_replace.setChecked(True)
             self.mode_hint_lbl.setText("Replaces existing tag. You can reuse or modify the tag's release notes below.")
@@ -297,7 +421,6 @@ class ReleaseTab(QWidget):
             self.btn_fetch_notes.setVisible(True)
             self.push_cb.setEnabled(True)
             self.dry_run_cb.setEnabled(True)
-            self.btn_release.setText("Replace & Release")
             self._fetch_notes_for_version()
         elif mode == "resume":
             self.btn_mode_resume.setChecked(True)
@@ -307,7 +430,7 @@ class ReleaseTab(QWidget):
             self.btn_fetch_notes.setVisible(False)
             self.push_cb.setEnabled(False)
             self.dry_run_cb.setEnabled(False)
-            self.btn_release.setText("Resume Release")
+        self._update_button_label()
 
     def _on_version_changed(self):
         if self.current_mode == "replace":
@@ -346,11 +469,89 @@ class ReleaseTab(QWidget):
         if not self.runner.is_running or self.output_tabs.activity == "remote":
             self._focus_workflow()
 
+    def _get_selected_pr_number(self) -> Optional[str]:
+        text = self.pr_combo.currentText().strip()
+        if not text:
+            return None
+        idx = self.pr_combo.currentIndex()
+        if idx >= 0 and self.pr_combo.itemText(idx) == text:
+            data = self.pr_combo.itemData(idx)
+            if data:
+                return str(data)
+        m = re.search(r"/pull/(\d+)", text)
+        if m:
+            return m.group(1)
+        m = re.search(r"(?:^|[#\s])(\d+)\b", text)
+        if m:
+            return m.group(1)
+        return None
+
+    def _update_button_label(self):
+        if self._is_waiting_for_pr:
+            self.btn_release.setText(f"Cancel Waiting (PR #{self._waiting_pr_num})")
+            return
+
+        pr_num = self._get_selected_pr_number()
+        waiting = self.wait_pr_cb.isChecked() and bool(pr_num)
+
+        if self.current_mode == "resume":
+            self.btn_release.setText(f"Resume after PR #{pr_num} merges" if waiting else "Resume Release")
+        elif self.current_mode == "replace":
+            self.btn_release.setText(f"Replace after PR #{pr_num} merges" if waiting else "Replace & Release")
+        else:
+            self.btn_release.setText(f"Release after PR #{pr_num} merges" if waiting else "Start Release")
+
+    def _on_wait_pr_toggled(self, checked: bool):
+        self._update_button_label()
+
+    def _on_pr_text_changed(self, text: str):
+        pr_num = self._get_selected_pr_number()
+        if pr_num and not self.wait_pr_cb.isChecked():
+            self.wait_pr_cb.setChecked(True)
+        elif not text.strip() and self.wait_pr_cb.isChecked():
+            self.wait_pr_cb.setChecked(False)
+        self._update_button_label()
+
+    def _fetch_active_prs(self):
+        if self._active_prs_worker and self._active_prs_worker.isRunning():
+            return
+        self._active_prs_worker = ActivePrsFetchWorker(self.git_mgr.repo_path, self)
+        self._active_prs_worker.prs_fetched.connect(self._on_active_prs_fetched)
+        self._active_prs_worker.start()
+
+    def _on_active_prs_fetched(self, prs: list):
+        current_num = self._get_selected_pr_number()
+        current_text = self.pr_combo.currentText().strip()
+
+        self.pr_combo.blockSignals(True)
+        self.pr_combo.clear()
+
+        selected_index = -1
+        for i, pr in enumerate(prs):
+            num = str(pr.get("number", ""))
+            title = pr.get("title", "")
+            display = f"#{num} - {title}" if title else f"#{num}"
+            self.pr_combo.addItem(display, userData=num)
+            if current_num and current_num == num:
+                selected_index = i
+
+        if selected_index >= 0:
+            self.pr_combo.setCurrentIndex(selected_index)
+        elif current_text:
+            self.pr_combo.setEditText(current_text)
+        else:
+            self.pr_combo.setEditText("")
+            self.pr_combo.setCurrentIndex(-1)
+
+        self.pr_combo.blockSignals(False)
+        self._update_button_label()
+
     def refresh(self):
         latest = self.git_mgr.get_latest_tag()
         self.latest_tag_lbl.setText(f"Latest tag: {latest}")
         if not self.version_input.text().strip():
             self._suggest_next(latest)
+        self._fetch_active_prs()
 
     def _suggest_next(self, current_tag: str):
         match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", current_tag)
@@ -364,6 +565,13 @@ class ReleaseTab(QWidget):
         if self.jobs_view.release_tag:
             self.version_input.setText(self.jobs_view.release_tag)
             self._set_mode("resume")
+        if getattr(self.jobs_view, "pr_url", None):
+            m = re.search(r"/pull/(\d+)", self.jobs_view.pr_url)
+            if m:
+                pr_num = m.group(1)
+                self.pr_combo.setEditText(f"#{pr_num}")
+                self.wait_pr_cb.setChecked(True)
+                self._update_button_label()
 
     def _bump_version(self, bump_type: str):
         v = self.version_input.text().strip()
@@ -378,6 +586,10 @@ class ReleaseTab(QWidget):
             self.version_input.setText(f"v{major}.{minor}.{patch}")
 
     def run_release(self):
+        if self._is_waiting_for_pr:
+            self._cancel_pr_wait()
+            return
+
         if self.runner.is_running:
             QMessageBox.warning(self, "Running", "A script is already running.")
             return
@@ -402,6 +614,17 @@ class ReleaseTab(QWidget):
         if mode == "new" and not summary:
             QMessageBox.warning(self, "Missing Summary", "Please enter a release summary / notes.")
             return
+
+        pr_num = None
+        if self.wait_pr_cb.isChecked():
+            pr_num = self._get_selected_pr_number()
+            if not pr_num:
+                QMessageBox.warning(
+                    self,
+                    "Missing PR Number",
+                    "Please enter or select a PR number to wait for, or uncheck 'Release after PR merges'.",
+                )
+                return
 
         args = []
 
@@ -434,8 +657,11 @@ class ReleaseTab(QWidget):
         details = [
             ("Release Mode", mode_label),
             ("Target Version", version),
-            ("Push Remote", "Yes" if (mode == "resume" or self.push_cb.isChecked()) else "No"),
         ]
+        if pr_num:
+            details.append(("Wait for PR", f"#{pr_num} (auto-start when merged)"))
+        details.append(("Push Remote", "Yes" if (mode == "resume" or self.push_cb.isChecked()) else "No"))
+
         if self.dry_run_cb.isChecked() and mode != "resume":
             details.append(("Dry Run", "Yes"))
         if self.skip_flathub_cb.isChecked():
@@ -455,12 +681,87 @@ class ReleaseTab(QWidget):
         if not popup.exec():
             return
 
+        if pr_num:
+            self._start_waiting_for_pr(pr_num, script_path, args, version)
+        else:
+            self._start_release_process(script_path, args, version)
+
+    def _start_release_process(self, script_path: str, args: list, version: str):
         self.jobs_view.reset_state()
         self.terminal.clear_terminal()
         self.terminal.set_status(f"Running {version}", "running")
         self.output_tabs.show_activity("local", self.terminal, force=True)
         self.runner.start(script_path, args, cwd=self.git_mgr.repo_path)
         self.jobs_view.track_version(version)
+
+    def _start_waiting_for_pr(self, pr_num: str, script_path: str, args: list, version: str):
+        self._is_waiting_for_pr = True
+        self._waiting_pr_num = pr_num
+        self._waiting_script_path = script_path
+        self._waiting_args = args
+        self._waiting_version = version
+
+        self.btn_release.setEnabled(True)
+        self._update_button_label()
+        self.wait_pr_status_lbl.setText(f"Waiting for #{pr_num}...")
+        self.wait_pr_status_lbl.setStyleSheet("color: #e3b341; font-size: 11px;")
+
+        self.terminal.clear_terminal()
+        self.terminal.set_status(f"Waiting for PR #{pr_num}", "running")
+        self.terminal.append_output(f"[*] Release scheduled for {version}.\n")
+        self.terminal.append_output(f"[*] Polling GitHub PR #{pr_num}... Release will start automatically once merged.\n")
+        self.output_tabs.show_activity("local", self.terminal, force=True)
+
+        self._pr_poll_timer.start(10000)
+        self._poll_waiting_pr()
+
+    def _poll_waiting_pr(self):
+        if not self._is_waiting_for_pr:
+            return
+        if self._pr_poll_worker and self._pr_poll_worker.isRunning():
+            return
+        self._pr_poll_worker = PrPollWorker(self.git_mgr.repo_path, self._waiting_pr_num, self)
+        self._pr_poll_worker.pr_status_fetched.connect(self._on_pr_status_fetched)
+        self._pr_poll_worker.start()
+
+    def _on_pr_status_fetched(self, data: dict):
+        if not self._is_waiting_for_pr:
+            return
+        state = (data.get("state") or "").upper()
+        pr_num = self._waiting_pr_num
+        version = self._waiting_version
+
+        if state == "MERGED":
+            self._pr_poll_timer.stop()
+            self._is_waiting_for_pr = False
+            self.wait_pr_status_lbl.setText(f"PR #{pr_num} merged!")
+            self.wait_pr_status_lbl.setStyleSheet("color: #3fb950; font-size: 11px;")
+            self.terminal.append_output(f"\n[+] PR #{pr_num} has merged! Starting release {version}...\n\n")
+            send_desktop_notification("PR Merged", f"PR #{pr_num} merged. Starting release {version}...")
+            self._start_release_process(self._waiting_script_path, self._waiting_args, self._waiting_version)
+        elif state == "CLOSED":
+            self._pr_poll_timer.stop()
+            self._is_waiting_for_pr = False
+            self.wait_pr_status_lbl.setText(f"PR #{pr_num} closed without merge")
+            self.wait_pr_status_lbl.setStyleSheet("color: #f85149; font-size: 11px;")
+            self.terminal.append_output(f"\n[!] PR #{pr_num} was closed without being merged. Release aborted.\n")
+            self.terminal.set_status(f"PR #{pr_num} Closed", "failed")
+            self._update_button_label()
+            send_desktop_notification("Release Aborted", f"PR #{pr_num} was closed without merging.")
+        else:
+            self.wait_pr_status_lbl.setText(f"PR #{pr_num} is OPEN (waiting)")
+            self.wait_pr_status_lbl.setStyleSheet("color: #e3b341; font-size: 11px;")
+            self.terminal.append_output(f"[*] PR #{pr_num} is {state}. Polling again in 10s...\n")
+
+    def _cancel_pr_wait(self):
+        self._pr_poll_timer.stop()
+        self._is_waiting_for_pr = False
+        self.wait_pr_status_lbl.setText("Wait cancelled")
+        self.wait_pr_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
+        if self._waiting_pr_num:
+            self.terminal.append_output(f"\n[!] Cancelled waiting for PR #{self._waiting_pr_num}.\n")
+        self.terminal.set_status("Cancelled", "normal")
+        self._update_button_label()
 
     def _on_process_finished(self, exit_code: int):
         if exit_code != 0 or self.runner.record.get("stopped"):
@@ -469,5 +770,6 @@ class ReleaseTab(QWidget):
             self.jobs_view.sync_remote_status()
         status = "success" if exit_code == 0 else "failed"
         self.terminal.set_status("Completed" if exit_code == 0 else f"Exit {exit_code}", status)
+        self._update_button_label()
         if self.window().isVisible():
             self.refresh()
