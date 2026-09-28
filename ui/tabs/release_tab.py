@@ -370,10 +370,9 @@ class ReleaseTab(QWidget):
             lambda: self.output_tabs.show_activity("local", self.terminal)
             if self.runner.is_running else None)
         self.jobs_view.remote_status_ready.connect(self._focus_remote_jobs)
-        self.runner.started.connect(lambda: self.btn_release.setEnabled(False))
-        self.runner.restored.connect(lambda record: self.btn_release.setEnabled(not record["running"]))
+        self.runner.started.connect(self._update_button_label)
         self.runner.restored.connect(self._restore_release)
-        self.runner.finished.connect(lambda code: self.btn_release.setEnabled(True))
+        self.runner.restored.connect(lambda record: self._update_button_label())
         self.runner.finished.connect(lambda code: self._update_button_label())
         self.btn_mode_new.clicked.connect(lambda: self._set_mode("new"))
         self.btn_mode_replace.clicked.connect(lambda: self._set_mode("replace"))
@@ -489,6 +488,7 @@ class ReleaseTab(QWidget):
     def _update_button_label(self):
         if self._is_waiting_for_pr:
             self.btn_release.setText(f"Cancel Waiting (PR #{self._waiting_pr_num})")
+            self.btn_release.setEnabled(True)
             return
 
         pr_num = self._get_selected_pr_number()
@@ -500,6 +500,11 @@ class ReleaseTab(QWidget):
             self.btn_release.setText(f"Replace after PR #{pr_num} merges" if waiting else "Replace & Release")
         else:
             self.btn_release.setText(f"Release after PR #{pr_num} merges" if waiting else "Start Release")
+
+        if self.runner.is_running and not waiting and self.current_mode != "replace":
+            self.btn_release.setEnabled(False)
+        else:
+            self.btn_release.setEnabled(True)
 
     def _on_wait_pr_toggled(self, checked: bool):
         self._update_button_label()
@@ -590,9 +595,28 @@ class ReleaseTab(QWidget):
             self._cancel_pr_wait()
             return
 
-        if self.runner.is_running:
-            QMessageBox.warning(self, "Running", "A script is already running.")
-            return
+        pr_num = None
+        if self.wait_pr_cb.isChecked():
+            pr_num = self._get_selected_pr_number()
+            if not pr_num:
+                QMessageBox.warning(
+                    self,
+                    "Missing PR Number",
+                    "Please enter or select a PR number to wait for, or uncheck 'Release after PR merges'.",
+                )
+                return
+
+        if self.runner.is_running and not pr_num:
+            action_desc = "replace" if self.current_mode == "replace" else "restart"
+            reply = QMessageBox.question(
+                self,
+                "Release in Progress",
+                f"A release script is currently running. Do you want to stop it and {action_desc} the release?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         script_path = self.config.resolve_release_script(self.git_mgr.repo_path)
         if not os.path.exists(script_path):
@@ -614,17 +638,6 @@ class ReleaseTab(QWidget):
         if mode == "new" and not summary:
             QMessageBox.warning(self, "Missing Summary", "Please enter a release summary / notes.")
             return
-
-        pr_num = None
-        if self.wait_pr_cb.isChecked():
-            pr_num = self._get_selected_pr_number()
-            if not pr_num:
-                QMessageBox.warning(
-                    self,
-                    "Missing PR Number",
-                    "Please enter or select a PR number to wait for, or uncheck 'Release after PR merges'.",
-                )
-                return
 
         args = []
 
@@ -682,9 +695,27 @@ class ReleaseTab(QWidget):
             return
 
         if pr_num:
+            if self.runner.is_running:
+                self.terminal.append_output("[*] Stopping running script to wait for PR...\n")
+                self.runner.stop()
             self._start_waiting_for_pr(pr_num, script_path, args, version)
         else:
-            self._start_release_process(script_path, args, version)
+            self._stop_and_run(lambda: self._start_release_process(script_path, args, version))
+
+    def _stop_and_run(self, callback):
+        if not self.runner.is_running:
+            callback()
+            return
+
+        def _on_finished(code):
+            try:
+                self.runner.finished.disconnect(_on_finished)
+            except (TypeError, RuntimeError):
+                pass
+            callback()
+
+        self.runner.finished.connect(_on_finished)
+        self.runner.stop()
 
     def _start_release_process(self, script_path: str, args: list, version: str):
         self.jobs_view.reset_state()
@@ -738,7 +769,10 @@ class ReleaseTab(QWidget):
             self.wait_pr_status_lbl.setStyleSheet("color: #3fb950; font-size: 11px;")
             self.terminal.append_output(f"\n[+] PR #{pr_num} has merged! Starting release {version}...\n\n")
             send_desktop_notification("PR Merged", f"PR #{pr_num} merged. Starting release {version}...")
-            self._start_release_process(self._waiting_script_path, self._waiting_args, self._waiting_version)
+            self._update_button_label()
+            self._stop_and_run(lambda: self._start_release_process(
+                self._waiting_script_path, self._waiting_args, self._waiting_version
+            ))
         elif state == "CLOSED":
             self._pr_poll_timer.stop()
             self._is_waiting_for_pr = False
@@ -764,6 +798,9 @@ class ReleaseTab(QWidget):
         self._update_button_label()
 
     def _on_process_finished(self, exit_code: int):
+        if self._is_waiting_for_pr:
+            self._update_button_label()
+            return
         if exit_code != 0 or self.runner.record.get("stopped"):
             self.output_tabs.show_activity("failed", self.terminal)
         else:

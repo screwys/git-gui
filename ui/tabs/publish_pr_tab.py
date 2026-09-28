@@ -395,9 +395,9 @@ class PublishPrTab(QWidget):
         self.runner.restored.connect(self._on_process_restored)
         self.runner.error_occurred.connect(lambda message: self.bottom_tabs.show_activity("failed", self.terminal))
         self.checks_view.checks_updated.connect(self._focus_remote_checks)
-        self.runner.started.connect(lambda: self.file_list.btn_publish.setEnabled(False))
-        self.runner.restored.connect(lambda record: self.file_list.btn_publish.setEnabled(not record["running"]))
-        self.runner.finished.connect(lambda code: self.file_list.btn_publish.setEnabled(True))
+        self.runner.started.connect(self._update_publish_button)
+        self.runner.restored.connect(lambda record: self._update_publish_button())
+        self.runner.finished.connect(lambda code: self._update_publish_button())
         self.file_list.file_selected.connect(self._show_single_file_diff)
         self.file_list.view_diff_requested.connect(self._show_multi_file_diff)
         self.file_list.publish_requested.connect(self._publish_button_clicked)
@@ -558,15 +558,22 @@ class PublishPrTab(QWidget):
     def _update_publish_button(self, *_args):
         if self._is_waiting_for_pr:
             self.file_list.btn_publish.setText(f"Cancel (PR #{self._waiting_pr_num})")
+            self.file_list.btn_publish.setEnabled(True)
             return
-        if self.runner.is_running:
-            self.file_list.btn_publish.setText("Publishing…")
-            return
+
         pr_num = self._get_selected_pr_number()
         waiting = self.wait_pr_cb.isChecked() and bool(pr_num)
         if waiting:
             self.file_list.btn_publish.setText(f"Publish after PR #{pr_num} merges")
+            self.file_list.btn_publish.setEnabled(True)
             return
+
+        if self.runner.is_running:
+            self.file_list.btn_publish.setText("Publishing…")
+            self.file_list.btn_publish.setEnabled(False)
+            return
+
+        self.file_list.btn_publish.setEnabled(True)
         pending = StateManager.get("rufin_publish_pending") or {}
         is_saved_retry = (
             pending.get("repo_path") == self.git_mgr.repo_path
@@ -814,9 +821,27 @@ class PublishPrTab(QWidget):
             self._cancel_pr_wait()
             return
 
-        if self.runner.is_running:
-            QMessageBox.warning(self, "Running", "A script is already running.")
-            return
+        pr_num = None
+        if self.wait_pr_cb.isChecked():
+            pr_num = self._get_selected_pr_number()
+            if not pr_num:
+                QMessageBox.warning(
+                    self,
+                    "Missing PR Number",
+                    "Please enter or select a PR number to wait for, or uncheck 'Publish after PR merges'.",
+                )
+                return
+
+        if self.runner.is_running and not pr_num:
+            reply = QMessageBox.question(
+                self,
+                "Publish in Progress",
+                "A publish script is currently running. Do you want to stop it and start publishing?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         script_path = self.config.resolve_publish_script(self.git_mgr.repo_path)
         if not os.path.exists(script_path):
@@ -840,17 +865,6 @@ class PublishPrTab(QWidget):
         if all_paths and not title:
             QMessageBox.warning(self, "Commit Subject", "Enter a subject for the changes being committed.")
             return
-
-        pr_num = None
-        if self.wait_pr_cb.isChecked():
-            pr_num = self._get_selected_pr_number()
-            if not pr_num:
-                QMessageBox.warning(
-                    self,
-                    "Missing PR Number",
-                    "Please enter or select a PR number to wait for, or uncheck 'Publish after PR merges'.",
-                )
-                return
 
         args = []
         if base_branch:
@@ -936,9 +950,27 @@ class PublishPrTab(QWidget):
                                            capture_output=True, text=True, check=False).stdout.strip(),
         }
         if pr_num:
+            if self.runner.is_running:
+                self.terminal.append_output("[*] Stopping running script to wait for PR...\n")
+                self.runner.stop()
             self._start_waiting_for_pr(pr_num, script_path, args, env_vars, pending)
         else:
-            self._start_publish_job(script_path, args, env_vars, pending)
+            self._stop_and_run(lambda: self._start_publish_job(script_path, args, env_vars, pending))
+
+    def _stop_and_run(self, callback):
+        if not self.runner.is_running:
+            callback()
+            return
+
+        def _on_finished(code):
+            try:
+                self.runner.finished.disconnect(_on_finished)
+            except (TypeError, RuntimeError):
+                pass
+            callback()
+
+        self.runner.finished.connect(_on_finished)
+        self.runner.stop()
 
     def _start_waiting_for_pr(self, pr_num: str, script_path: str, args: list, env_vars: dict, pending: dict):
         self._is_waiting_for_pr = True
@@ -985,7 +1017,10 @@ class PublishPrTab(QWidget):
             self.wait_pr_status_lbl.setStyleSheet("color: #3fb950; font-size: 11px;")
             self.terminal.append_output(f"\n[+] PR #{pr_num} has merged! Publishing PR now...\n\n")
             send_desktop_notification("PR Merged", f"PR #{pr_num} merged. Publishing PR...")
-            self._start_publish_job(self._waiting_script_path, self._waiting_args, self._waiting_env_vars, self._waiting_pending)
+            self._update_publish_button()
+            self._stop_and_run(lambda: self._start_publish_job(
+                self._waiting_script_path, self._waiting_args, self._waiting_env_vars, self._waiting_pending
+            ))
         elif state == "CLOSED":
             self._pr_poll_timer.stop()
             self._is_waiting_for_pr = False
@@ -1011,6 +1046,9 @@ class PublishPrTab(QWidget):
         self._update_publish_button()
 
     def _on_process_finished(self, exit_code: int):
+        if self._is_waiting_for_pr:
+            self._update_publish_button()
+            return
         if exit_code != 0 or self.runner.record.get("stopped"):
             self.bottom_tabs.show_activity("failed", self.terminal)
         else:
