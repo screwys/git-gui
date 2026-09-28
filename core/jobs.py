@@ -34,6 +34,16 @@ def is_alive(record):
     return bool(identity and process_identity(record["pid"]) == identity)
 
 
+def is_stopped(record):
+    if not is_alive(record):
+        return False
+    try:
+        fields = Path(f"/proc/{record['pid']}/stat").read_text().rsplit(")", 1)[1].split()
+        return fields[0] in ("T", "t")
+    except (OSError, IndexError):
+        return False
+
+
 def job_running(record):
     return "exit_code" not in record and (is_alive(record) or is_alive(record.get("child", {})))
 

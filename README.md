@@ -78,8 +78,11 @@ Use **Open Git GUI** in the tray menu, or launch the app again, to show the same
 
 Commands started by the app run in a separate Linux process session. Closing the window, quitting,
 or restarting the GUI does not cancel them. Reopening attaches to running commands and restores
-their saved output and exit status. **Stop** terminates the command's process group, including child
-processes. Notifications require the GUI to remain open or in the tray.
+their saved output and exit status. **Cancel** terminates the command's process group, including child
+processes. **Pause** freezes the running command, and **Resume** continues it from the same point.
+Cancelled PR runs keep their form and branch details; **Resume PR** retries the saved publish step,
+using an existing commit when the original run already created one. Notifications require the GUI to
+remain open or in the tray.
 
 **History** shows earlier commands and their recorded results. Logs and command records live in
 `$XDG_STATE_HOME/rufin-git-gui/jobs`, or `~/.local/state/rufin-git-gui/jobs` by default. The terminal
@@ -90,9 +93,10 @@ as observed processes. Their unsaved output and exit codes cannot be recovered, 
 button is disabled. A disappeared process without a recorded result is reported as unknown.
 
 On startup and refresh, PR discovery queries the repository instead of keeping an old selection.
-Release monitoring reads GitHub release tags, drafts, release preparation PRs, and matching workflow
-runs. Select a release in **Jobs and Progress** to inspect it. **Resume selected release** fills the
-release form for that version; the usual confirmation is still required before execution.
+Release monitoring reads GitHub release tags, drafts, release preparation PRs, the matching Flathub
+PR state, and workflow runs. Select a release in **Jobs and Progress** to inspect it. **Resume
+selected release** fills the release form for that version; the usual confirmation is still required
+before execution.
 Remote request failures remain visible, and unmatched workflow results are marked unknown.
 
 Output tabs follow the current stage. Local preparation and pre-push checks show the terminal.

@@ -24,10 +24,11 @@ class ReleaseFetchWorker(QThread):
     runs_fetched = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    def __init__(self, repo_path: str, tag: str, parent=None):
+    def __init__(self, repo_path: str, tag: str, include_flathub: bool, parent=None):
         super().__init__(parent)
         self.repo_path = repo_path
         self.tag = tag
+        self.include_flathub = include_flathub
 
     def query(self, *args):
         result = subprocess.run(["gh", *args], cwd=self.repo_path,
@@ -48,6 +49,16 @@ class ReleaseFetchWorker(QThread):
             tag = self.tag or next(iter(tags), "")
             runs = self.query("run", "list", "--limit", "100", "--json",
                               "workflowName,status,conclusion,url,displayTitle,headBranch") if tag else []
+            flathub_pr = None
+            flathub_error = ""
+            if self.include_flathub and tag:
+                try:
+                    prs = self.query("pr", "list", "--repo", "flathub/io.github.screwys.Rufin",
+                                     "--state", "all", "--head", f"release/{tag}", "--limit", "1",
+                                     "--json", "number,title,url,state,headRefName")
+                    flathub_pr = prs[0] if prs else None
+                except Exception as error:
+                    flathub_error = str(error)
             runs_map = {}
             for run in runs:
                 title_tags = re.findall(r"v?\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?", run["displayTitle"])
@@ -60,9 +71,11 @@ class ReleaseFetchWorker(QThread):
             self.runs_fetched.emit({"latest_tag": tag, "tags": tags,
                 "release_url": f"{repo}/releases/tag/{tag}" if release else "",
                 "is_draft": release["isDraft"] if release else None,
-                "pr_url": prep.get(tag, {}).get("url", ""), "runs_map": runs_map})
+                "pr_url": prep.get(tag, {}).get("url", ""), "runs_map": runs_map,
+                "flathub_pr": flathub_pr, "flathub_error": flathub_error})
         except Exception as error:
             self.error.emit(str(error))
+
 
 
 class ReleaseJobsWidget(QWidget):
@@ -114,6 +127,7 @@ class ReleaseJobsWidget(QWidget):
                 "RPM": {"status": "idle", "url": "", "step": "—"},
                 "Windows": {"status": "idle", "url": "", "step": "—"},
                 "Homebrew": {"status": "idle", "url": "", "step": "—"},
+                "Flathub PR": {"status": "unknown", "url": "", "step": "No PR found for this release"},
             }
 
     def _init_ui(self):
@@ -197,7 +211,7 @@ class ReleaseJobsWidget(QWidget):
         # Workflows Table
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Workflow", "Status", "Current / Failed Step", "Action"])
+        self.table.setHorizontalHeaderLabels(["Workflow / Publication", "Status", "Current / Failed Step", "Action"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -241,7 +255,7 @@ class ReleaseJobsWidget(QWidget):
 
             # Action button
             if info["url"]:
-                btn = QPushButton("Open Run")
+                btn = QPushButton("Open PR" if name == "Flathub PR" else "Open Run")
                 btn.setFixedHeight(22)
                 btn.setStyleSheet("font-size: 11px; padding: 1px 8px;")
                 url = info["url"]
@@ -258,6 +272,18 @@ class ReleaseJobsWidget(QWidget):
         if st in ("success", "passed"):
             item.setText("Passed")
             item.setForeground(QColor("#3fb950"))
+        elif st == "merged":
+            item.setText("Merged")
+            item.setForeground(QColor("#3fb950"))
+        elif st == "open":
+            item.setText("Open")
+            item.setForeground(QColor("#58a6ff"))
+        elif st == "closed":
+            item.setText("Closed")
+            item.setForeground(QColor("#f85149"))
+        elif st == "not_found":
+            item.setText("Not found")
+            item.setForeground(QColor("#8b949e"))
         elif st in ("running", "in_progress", "queued", "waiting", "pending"):
             item.setText("Running")
             item.setForeground(QColor("#58a6ff"))
@@ -320,7 +346,7 @@ class ReleaseJobsWidget(QWidget):
             return
         self.btn_fetch_latest.setEnabled(False)
         self.sync_label.setText("Checking GitHub...")
-        self._fetch_worker = ReleaseFetchWorker(self.repo_path, self.selected_tag, self)
+        self._fetch_worker = ReleaseFetchWorker(self.repo_path, self.selected_tag, self.project_name == "Rufin", self)
         self._fetch_worker.error.connect(lambda error: self.sync_label.setText(f"Status unavailable: {error}"))
         self._fetch_worker.runs_fetched.connect(self._on_remote_runs_fetched)
         self._fetch_worker.finished.connect(lambda: self.btn_fetch_latest.setEnabled(True))
@@ -361,9 +387,30 @@ class ReleaseJobsWidget(QWidget):
             self.pr_url = result["pr_url"]
         if self.btn_pr:
             self.btn_pr.setEnabled(bool(self.pr_url))
+        if self.btn_flathub:
+            flathub_pr = result.get("flathub_pr")
+            self.flathub_url = flathub_pr.get("url", "") if flathub_pr else ""
+            self.btn_flathub.setEnabled(bool(self.flathub_url))
+            if result.get("flathub_error"):
+                self.jobs["Flathub PR"] = {
+                    "status": "unknown", "url": "",
+                    "step": f"Status unavailable: {result['flathub_error']}",
+                }
+            elif flathub_pr:
+                self.jobs["Flathub PR"] = {
+                    "status": flathub_pr["state"].lower(), "url": flathub_pr["url"],
+                    "step": f"PR #{flathub_pr['number']}: {flathub_pr['title']}",
+                }
+            else:
+                self.jobs["Flathub PR"] = {
+                    "status": "not_found", "url": "",
+                    "step": f"No PR found for release/{tag}" if tag else "No release tag selected",
+                }
         state = "Draft release" if result["is_draft"] else "Published release" if self.release_url else "Release preparation" if tag else "No releases found"
         self.sync_label.setText(f"{state}. Updated from GitHub.")
         for name in self.jobs:
+            if name == "Flathub PR":
+                continue
             run = result["runs_map"].get(name)
             if run:
                 previous = self._remote_runs.get(run["url"])

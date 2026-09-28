@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QMessageBox,
     QFrame,
+    QSizePolicy,
 )
 from core.config import AppConfig
 from core.git_manager import GitManager
@@ -152,6 +153,7 @@ class PublishPrTab(QWidget):
         self._init_ui()
         self._wire_signals()
         self.terminal.bind_runner(self.runner, self.git_mgr.repo_path, "publish", self.config.resolve_publish_script(self.git_mgr.repo_path))
+        self._restore_pending_publish()
         self._restore_saved_pr()
         self.refresh()
 
@@ -285,11 +287,15 @@ class PublishPrTab(QWidget):
         self.left_splitter.setStretchFactor(1, 0)
         self.left_splitter.setCollapsible(0, False)
         self.left_splitter.setCollapsible(1, False)
+        self.left_splitter.setMinimumWidth(320)
+        self.left_splitter.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
         self.main_splitter.addWidget(self.left_splitter)
 
         # ----------------- Right Panel -----------------
         right_widget = QWidget()
+        right_widget.setMinimumWidth(320)
+        right_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
@@ -356,7 +362,7 @@ class PublishPrTab(QWidget):
         self.runner.finished.connect(lambda code: self.file_list.btn_publish.setEnabled(True))
         self.file_list.file_selected.connect(self._show_single_file_diff)
         self.file_list.view_diff_requested.connect(self._show_multi_file_diff)
-        self.file_list.publish_requested.connect(self.run_publish)
+        self.file_list.publish_requested.connect(self._publish_button_clicked)
 
         self.runner.output_received.connect(self._on_output_received)
         self.runner.started.connect(lambda: self.terminal.set_status("Running", "running"))
@@ -364,6 +370,15 @@ class PublishPrTab(QWidget):
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
         self.terminal.stop_requested.connect(self.runner.stop)
         self.branch_input.editingFinished.connect(self.refresh)
+        self.branch_input.textChanged.connect(self._update_publish_button)
+        self.base_input.textChanged.connect(self._update_publish_button)
+        self.title_input.textChanged.connect(self._update_publish_button)
+        self.body_input.textChanged.connect(self._update_publish_button)
+        self.phase_input.textChanged.connect(self._update_publish_button)
+        self.auto_merge_cb.toggled.connect(self._update_publish_button)
+        self.wait_cb.toggled.connect(self._update_publish_button)
+        self.skip_pre_push_cb.toggled.connect(self._update_publish_button)
+        self.i18n_combo.currentIndexChanged.connect(self._update_publish_button)
 
     def _restore_saved_pr(self):
         saved = StateManager.get("rufin_tracked_pr")
@@ -388,12 +403,136 @@ class PublishPrTab(QWidget):
         self._published_pr = ""
         self._output_pending = ""
         self.bottom_tabs.show_activity("local", self.terminal, force=True)
+        self.file_list.btn_publish.setText("Publishing…")
+        pending = StateManager.get("rufin_publish_pending") or {}
+        if pending.get("repo_path") == self.git_mgr.repo_path and self.runner.path:
+            pending["job_id"] = self.runner.path.parent.name
+            StateManager.update(rufin_publish_pending=pending)
 
     def _on_process_restored(self, record):
+        pending = StateManager.get("rufin_publish_pending") or {}
+        job_id = self.runner.path.parent.name if self.runner.path else None
+        if pending.get("repo_path") == self.git_mgr.repo_path and pending.get("job_id") == job_id:
+            if not record["running"] and record.get("exit_code") == 0:
+                StateManager.update(rufin_publish_pending=None)
+                self.file_list.btn_publish.setText("Publish PR")
+            else:
+                self.file_list.btn_publish.setText("Resume PR" if not record["running"] else "Publish PR")
         if record["running"]:
             self.bottom_tabs.show_activity("local", self.terminal)
         elif record.get("exit_code") != 0 or record.get("stopped"):
             self.bottom_tabs.show_activity("failed", self.terminal)
+        self._update_publish_button()
+
+    def _restore_pending_publish(self):
+        pending = StateManager.get("rufin_publish_pending")
+        if not pending or pending.get("repo_path") != self.git_mgr.repo_path:
+            return
+        self.branch_input.setText(pending.get("branch", ""))
+        self.base_input.setText(pending.get("base", self.base_input.text()))
+        self.title_input.setText(pending.get("title", ""))
+        self.body_input.setPlainText(pending.get("body", ""))
+        self.body_input.document().setModified(pending.get("body_modified", False))
+        self.phase_input.setText(pending.get("phase", ""))
+        self.auto_merge_cb.setChecked(pending.get("auto_merge", self.auto_merge_cb.isChecked()))
+        self.wait_cb.setChecked(pending.get("wait", self.wait_cb.isChecked()))
+        self.skip_pre_push_cb.setChecked(pending.get("skip_pre_push", False))
+        index = self.i18n_combo.findData(pending.get("i18n", "none"))
+        if index >= 0:
+            self.i18n_combo.setCurrentIndex(index)
+
+    def _publish_button_clicked(self):
+        pending = StateManager.get("rufin_publish_pending") or {}
+        if pending.get("repo_path") == self.git_mgr.repo_path and pending.get("job_id") == (self.runner.path.parent.name if self.runner.path else None):
+            if self._pending_form_matches(pending):
+                self.resume_publish(pending)
+            else:
+                self.run_publish()
+        else:
+            self.run_publish()
+
+    def _update_publish_button(self, *_args):
+        if self.runner.is_running:
+            self.file_list.btn_publish.setText("Publishing…")
+            return
+        pending = StateManager.get("rufin_publish_pending") or {}
+        is_saved_retry = (
+            pending.get("repo_path") == self.git_mgr.repo_path
+            and pending.get("job_id") == (self.runner.path.parent.name if self.runner.path else None)
+            and self._pending_form_matches(pending)
+        )
+        self.file_list.btn_publish.setText("Resume PR" if is_saved_retry else "Publish PR")
+
+    def _pending_form_matches(self, pending):
+        return (
+            self.branch_input.text().strip() == pending.get("branch", "")
+            and self.base_input.text().strip() == pending.get("base", "")
+            and self.title_input.text().strip() == pending.get("title", "")
+            and self.body_input.toPlainText() == pending.get("body", "")
+            and self.body_input.document().isModified() == pending.get("body_modified", False)
+            and self.phase_input.text().strip() == pending.get("phase", "")
+            and self.auto_merge_cb.isChecked() == pending.get("auto_merge")
+            and self.wait_cb.isChecked() == pending.get("wait")
+            and self.skip_pre_push_cb.isChecked() == pending.get("skip_pre_push")
+            and self.i18n_combo.currentData() == pending.get("i18n")
+        )
+
+    def _start_publish_job(self, script_path, args, env_vars, pending):
+        self.detected_pr_url = ""
+        self.detected_pr_number = ""
+        self.pr_banner.setVisible(False)
+        self.bottom_tabs.setCurrentWidget(self.terminal)
+        self.terminal.clear_terminal()
+        self.terminal.set_status("Publishing PR", "running")
+        self._submitted_title = pending.get("title", "")
+        self._submitted_body = pending.get("body", "")
+        pending.pop("job_id", None)
+        StateManager.update(rufin_publish_pending=pending)
+        previous_path = self.runner.path
+        self.runner.start(script_path, args, cwd=self.git_mgr.repo_path, env_vars=env_vars)
+        if self.runner.path and self.runner.path != previous_path:
+            pending["job_id"] = self.runner.path.parent.name
+            StateManager.update(rufin_publish_pending=pending)
+        elif self.runner.path == previous_path:
+            self.file_list.btn_publish.setText("Publish PR")
+
+    def resume_publish(self, pending):
+        if self.runner.is_running:
+            return
+        script_path = self.config.resolve_publish_script(self.git_mgr.repo_path)
+        if not os.path.exists(script_path):
+            QMessageBox.critical(self, "Script Not Found", f"Cannot find publish script at:\n{script_path}")
+            return
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.git_mgr.repo_path,
+                              capture_output=True, text=True, check=False).stdout.strip()
+        committed = False
+        if head and pending.get("title") and head != pending.get("head_before"):
+            base = pending.get("head_before", "")
+            if subprocess.run(["git", "merge-base", "--is-ancestor", base, head],
+                              cwd=self.git_mgr.repo_path, check=False).returncode == 0:
+                subjects = subprocess.run(["git", "log", "--format=%s", f"{base}..{head}"],
+                                          cwd=self.git_mgr.repo_path, capture_output=True,
+                                          text=True, check=False).stdout.splitlines()
+                committed = pending["title"] in subjects
+            else:
+                committed = self.git_mgr.get_commit_subject() == pending["title"]
+        args = pending["retry_args"] if committed else pending["args"]
+        popup = ConfirmPreviewDialog(
+            title="Resume Pull Request",
+            details=[
+                ("Branch", pending.get("branch") or self.git_mgr.get_current_branch()),
+                ("Commit", "Use the commit already on this branch" if args == pending["retry_args"] else pending.get("title") or "Saved changes"),
+                ("Action", "Continue publishing this branch and run its checks again"),
+            ],
+            preview_text=pending.get("body") if pending.get("body_modified") else None,
+            preview_text_label="PR Description Preview:",
+            action_button_text="Resume PR",
+            anchor_widget=self.file_list.btn_publish,
+            parent=self,
+        )
+        if not popup.exec():
+            return
+        self._start_publish_job(script_path, args, pending.get("env", {}), pending)
 
     def _focus_remote_checks(self, data):
         if not data.get("statusCheckRollup") or self.bottom_tabs.activity == "failed":
@@ -452,6 +591,7 @@ class PublishPrTab(QWidget):
             self.body_input.setPlainText(draft["body"])
             self.body_input.document().setModified(False)
         self._detect_pr(curr_branch)
+        self._update_publish_button()
 
         selected_paths = self.file_list.get_selected_paths()
         if len(selected_paths) == 1:
@@ -613,6 +753,8 @@ class PublishPrTab(QWidget):
         elif i18n_choice == "sync":
             args.append("--sync-i18n-catalogs")
 
+        retry_args = list(args)
+
         if title and (all_paths or not self.pr_title_label.text()):
             args.append(title)
 
@@ -643,15 +785,25 @@ class PublishPrTab(QWidget):
         if not popup.exec():
             return
 
-        self.detected_pr_url = ""
-        self.detected_pr_number = ""
-        self.pr_banner.setVisible(False)
-        self.bottom_tabs.setCurrentWidget(self.terminal)
-        self.terminal.clear_terminal()
-        self.terminal.set_status("Publishing PR", "running")
-        self._submitted_title = title if all_paths else ""
-        self._submitted_body = body
-        self.runner.start(script_path, args, cwd=self.git_mgr.repo_path, env_vars=env_vars)
+        pending = {
+            "repo_path": self.git_mgr.repo_path,
+            "branch": branch,
+            "base": base_branch,
+            "title": title,
+            "body": body,
+            "body_modified": self.body_input.document().isModified(),
+            "phase": phase,
+            "auto_merge": self.auto_merge_cb.isChecked(),
+            "wait": self.wait_cb.isChecked(),
+            "skip_pre_push": skip_pre_push,
+            "i18n": i18n_choice,
+            "args": args,
+            "retry_args": retry_args,
+            "env": env_vars,
+            "head_before": subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.git_mgr.repo_path,
+                                           capture_output=True, text=True, check=False).stdout.strip(),
+        }
+        self._start_publish_job(script_path, args, env_vars, pending)
 
     def _on_process_finished(self, exit_code: int):
         if exit_code != 0 or self.runner.record.get("stopped"):
@@ -664,10 +816,13 @@ class PublishPrTab(QWidget):
         body = self.body_input.toPlainText()
         if (exit_code == 0 and body == self._submitted_body) or draft.get("body") == body:
             self.body_input.document().setModified(False)
-        if self._submitted_title == self.title_input.text().strip() and (exit_code == 0 or self.git_mgr.get_commit_subject() == self._submitted_title):
+        if exit_code == 0 and self._submitted_title == self.title_input.text().strip():
             self.title_input.clear()
-        if exit_code == 0 and body == self._submitted_body:
-            self.body_input.clear()
-            self.body_input.document().setModified(False)
+        if exit_code == 0:
+            StateManager.update(rufin_publish_pending=None)
+            self.file_list.btn_publish.setText("Publish PR")
+            if body == self._submitted_body:
+                self.body_input.clear()
+                self.body_input.document().setModified(False)
         if self.window().isVisible():
             self.refresh()

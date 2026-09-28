@@ -12,7 +12,7 @@ import time
 import uuid
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
-from core.jobs import external_process, is_alive, job_running, jobs_root, records, write_record
+from core.jobs import external_process, is_alive, is_stopped, job_running, jobs_root, records, write_record
 from core.notifications import send_desktop_notification
 
 
@@ -35,6 +35,7 @@ class ProcessRunner(QObject):
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._child = None
         self._stop_requested = False
+        self._paused = False
         self.timer = QTimer(self)
         self.timer.setInterval(250)
         self.timer.timeout.connect(self._poll)
@@ -42,6 +43,10 @@ class ProcessRunner(QObject):
     @property
     def is_running(self):
         return self._is_running
+
+    @property
+    def is_paused(self):
+        return self._paused
 
     def attach(self, cwd, key, program=None):
         if self._is_running:
@@ -64,6 +69,7 @@ class ProcessRunner(QObject):
         if old_record:
             self.output_received.emit("\n[ATTACHED TO ANOTHER COMMAND]\n")
         self._is_running = job_running(self.record)
+        self._paused = is_stopped(self.record.get("child", {}))
         self.reload_output()
 
     def reload_output(self):
@@ -76,7 +82,7 @@ class ProcessRunner(QObject):
         if self.record.get("external"):
             self.output_received.emit("[OBSERVING] Helper started outside this session. Its output and exit code are unavailable.\n")
         self._read_output()
-        self.restored.emit(dict(self.record, running=self._is_running))
+        self.restored.emit(dict(self.record, running=self._is_running, paused=self._paused))
         if self._is_running or self.path:
             self.timer.start()
 
@@ -119,6 +125,7 @@ class ProcessRunner(QObject):
         self._offset = 0
         self._decoder.reset()
         self._is_running = True
+        self._paused = False
         self._stop_requested = False
         self.output_received.emit(f"$ {shlex.join(self.record['command'])}\n")
         self.started.emit()
@@ -138,9 +145,15 @@ class ProcessRunner(QObject):
             pass
 
     def _poll(self):
+        had_child = bool(self.record.get("child"))
         if self.path:
             self.record = json.loads(self.path.read_text())
         self._read_output()
+        paused = is_stopped(self.record.get("child", {}))
+        has_child = bool(self.record.get("child"))
+        if paused != self._paused or has_child != had_child:
+            self._paused = paused
+            self.restored.emit(dict(self.record, running=self._is_running, paused=paused))
         if self._child and self._child.poll() is None and "pid" not in self.record:
             return
         running = job_running(self.record)
@@ -185,3 +198,19 @@ class ProcessRunner(QObject):
                 except ProcessLookupError:
                     return
                 self._stop_requested = False
+
+    def toggle_pause(self):
+        if not self._is_running or self.record.get("external"):
+            return
+        if self.path:
+            self.record = json.loads(self.path.read_text())
+        child = self.record.get("child", {})
+        if not is_alive(child):
+            return
+        signum = signal.SIGCONT if self._paused else signal.SIGSTOP
+        try:
+            os.killpg(child["pid"], signum)
+        except ProcessLookupError:
+            return
+        self._paused = signum == signal.SIGSTOP
+        self.restored.emit(dict(self.record, running=True, paused=self._paused))

@@ -201,7 +201,14 @@ class TerminalWidget(QWidget):
         self.btn_history.clicked.connect(self._show_history)
         header.addWidget(self.btn_history)
 
-        self.btn_stop = QPushButton("Stop")
+        self.btn_pause = QPushButton("Pause")
+        self.btn_pause.setFixedHeight(22)
+        self.btn_pause.setStyleSheet("font-size: 11px; padding: 1px 8px;")
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.setToolTip("Freeze the running command and keep it available to resume")
+        header.addWidget(self.btn_pause)
+
+        self.btn_stop = QPushButton("Cancel")
         self.btn_stop.setFixedHeight(22)
         self.btn_stop.setStyleSheet(
             "QPushButton { background-color: #3d1719; border: 1px solid #f85149; color: #ff7b72; font-size: 11px; padding: 1px 8px; font-weight: bold; } "
@@ -209,6 +216,7 @@ class TerminalWidget(QWidget):
             "QPushButton:disabled { background-color: #21262d; border-color: #30363d; color: #6e7681; }"
         )
         self.btn_stop.setEnabled(False)
+        self.btn_stop.setToolTip("Cancel the running command. Any commit already made stays on its branch.")
         self.btn_stop.clicked.connect(self.stop_requested.emit)
         header.addWidget(self.btn_stop)
 
@@ -328,6 +336,9 @@ class TerminalWidget(QWidget):
         runner.program = program
         self.interactive_runner.key = key + "-shell"
         runner.restored.connect(self._restore_task)
+        runner.started.connect(self._on_runner_started)
+        runner.finished.connect(lambda _code: self.btn_pause.setEnabled(False))
+        self.btn_pause.clicked.connect(runner.toggle_pause)
         runner.error_occurred.connect(lambda message: self.append_output(f"\n[ERROR] {message}\n"))
         self.interactive_runner.restored.connect(self._restore_shell)
         QTimer.singleShot(0, lambda: runner.attach(cwd, key, program))
@@ -371,15 +382,27 @@ class TerminalWidget(QWidget):
 
     def _restore_task(self, record):
         if record["running"]:
-            self.set_status("Observing helper" if record.get("external") else "Running", "running")
+            paused = record.get("paused", False)
+            label = "Observing helper" if record.get("external") else "Paused" if paused else "Running"
+            self.set_status(label, "running")
+            if paused:
+                self.status_badge.setText("Paused")
             self._task_start_time = record.get("started_at")
             self.btn_stop.setEnabled(not record.get("external", False))
+            self.btn_pause.setText("Resume" if paused else "Pause")
+            self.btn_pause.setEnabled(not record.get("external", False) and bool(record.get("child")))
         else:
+            self.btn_pause.setText("Pause")
+            self.btn_pause.setEnabled(False)
             code = record.get("exit_code")
             text = "Stopped" if record.get("stopped") else "Completed" if code == 0 else f"Exit {code}"
             if code is None:
                 text = "Ended, exit status unknown"
             self.set_status(text, "success" if code == 0 else "failed")
+
+    def _on_runner_started(self):
+        self.btn_pause.setText("Pause")
+        self.btn_pause.setEnabled(bool(self.runner.record.get("child")))
 
     def _restore_shell(self, record):
         if record["running"]:

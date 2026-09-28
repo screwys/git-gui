@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QAbstractButton,
     QPushButton,
     QLabel,
+    QSizePolicy,
 )
 from core.git_manager import GitFileItem
 
@@ -104,18 +105,13 @@ class FileRowWidget(QWidget):
         )
         layout.addWidget(self.status_lbl)
 
-        # Filename
-        self.name_lbl = QLabel(self.item.filename)
-        self.name_lbl.setStyleSheet("color: #e6edf3; font-weight: 500; font-size: 12px;")
-        layout.addWidget(self.name_lbl)
-
-        # Dirname (dimmed)
-        if self.item.dirname != ".":
-            self.dir_lbl = QLabel(self.item.dirname)
-            self.dir_lbl.setStyleSheet("color: #7d8590; font-size: 11px;")
-            layout.addWidget(self.dir_lbl)
-
-        layout.addStretch()
+        # Keep long paths from pushing the diff counts outside the list.
+        self.path_lbl = QLabel(self.item.filename if self.item.dirname == "." else f"{self.item.filename}  {self.item.dirname}")
+        self.path_lbl.setMinimumWidth(0)
+        self.path_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.path_lbl.setToolTip(self.item.path)
+        self.path_lbl.setStyleSheet("color: #e6edf3; font-weight: 500; font-size: 12px;")
+        layout.addWidget(self.path_lbl, 1)
 
         # Clean diff stat text without any enclosing boxes or borders
         stat_text = ""
@@ -130,6 +126,7 @@ class FileRowWidget(QWidget):
         self.stat_lbl.setTextFormat(Qt.TextFormat.RichText)
         self.stat_lbl.setText(stat_text)
         self.stat_lbl.setStyleSheet("font-size: 11px; font-family: monospace;")
+        self.stat_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.stat_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stat_lbl.setToolTip(f"View diff for {self.item.filename}")
         layout.addWidget(self.stat_lbl)
