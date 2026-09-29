@@ -146,6 +146,8 @@ class FileListWidget(QWidget):
         super().__init__(parent)
         self.items: List[GitFileItem] = []
         self.checked_paths: Set[str] = set()
+        self._selection_initialized = False
+        self._select_all_on_refresh = True
         self._updating = False
         self._init_ui()
 
@@ -212,11 +214,14 @@ class FileListWidget(QWidget):
             stat_suffix = f" (+{total_adds} -{total_dels})"
         self.btn_view_diff.setText(f"View Diff{stat_suffix}")
 
-        if not self.checked_paths:
+        if not self._selection_initialized or self._select_all_on_refresh:
             self.checked_paths = {i.path for i in items}
         else:
             current_paths = {i.path for i in items}
             self.checked_paths = self.checked_paths.intersection(current_paths)
+        self._selection_initialized = True
+        if items:
+            self._select_all_on_refresh = len(self.checked_paths) == len(items)
 
         self.select_all_cb.blockSignals(True)
         self.select_all_cb.setChecked(len(self.checked_paths) == len(items) and len(items) > 0)
@@ -240,6 +245,7 @@ class FileListWidget(QWidget):
     def _on_row_checked(self, path: str, checked: bool):
         if self._updating:
             return
+        self._selection_initialized = True
         if checked:
             self.checked_paths.add(path)
         else:
@@ -248,12 +254,16 @@ class FileListWidget(QWidget):
         self.select_all_cb.blockSignals(True)
         self.select_all_cb.setChecked(len(self.checked_paths) == len(self.items) and len(self.items) > 0)
         self.select_all_cb.blockSignals(False)
+        if self.items:
+            self._select_all_on_refresh = len(self.checked_paths) == len(self.items)
 
         self.selection_changed.emit(list(self.checked_paths))
 
     def _on_select_all_toggled(self, is_checked: bool):
         if self._updating:
             return
+        self._selection_initialized = True
+        self._select_all_on_refresh = is_checked
         self._updating = True
         if is_checked:
             self.checked_paths = {i.path for i in self.items}
@@ -277,8 +287,7 @@ class FileListWidget(QWidget):
             self.file_selected.emit(path)
 
     def _on_view_diff_clicked(self):
-        paths = list(self.checked_paths) if self.checked_paths else [i.path for i in self.items]
-        self.view_diff_requested.emit(paths)
+        self.view_diff_requested.emit(list(self.checked_paths))
 
     def get_selected_paths(self) -> List[str]:
         return list(self.checked_paths)

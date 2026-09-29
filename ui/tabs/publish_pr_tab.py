@@ -691,12 +691,7 @@ class PublishPrTab(QWidget):
             QDesktopServices.openUrl(QUrl(self.detected_pr_url))
 
     def refresh(self):
-        self.diff_viewer.repo_path = self.git_mgr.repo_path
-        self.terminal.repo_path = self.git_mgr.repo_path
-        self.checks_view.repo_path = self.git_mgr.repo_path
-
-        items = self.git_mgr.get_status_files()
-        self.file_list.set_files(items)
+        self.refresh_working_tree()
         curr_branch = self.branch_input.text().strip() or self.git_mgr.get_current_branch()
         context = (self.git_mgr.repo_path, curr_branch)
         if context != self._form_context and not self.body_input.document().isModified():
@@ -712,6 +707,14 @@ class PublishPrTab(QWidget):
         self._detect_pr(curr_branch)
         self._update_publish_button()
         self._fetch_active_prs()
+
+    def refresh_working_tree(self):
+        self.diff_viewer.repo_path = self.git_mgr.repo_path
+        self.terminal.repo_path = self.git_mgr.repo_path
+        self.checks_view.repo_path = self.git_mgr.repo_path
+
+        items = self.git_mgr.get_status_files()
+        self.file_list.set_files(items)
 
         selected_paths = self.file_list.get_selected_paths()
         if len(selected_paths) == 1:
@@ -809,9 +812,11 @@ class PublishPrTab(QWidget):
         selected_items = [i for i in self.file_list.items if i.path in paths]
         adds = sum(i.additions for i in selected_items)
         dels = sum(i.deletions for i in selected_items)
-        if not paths or len(paths) == len(self.file_list.items):
+        if len(paths) == len(self.file_list.items) and paths:
             diff_text = self.git_mgr.get_diff()
             self.diff_viewer.set_diff(diff_text, f"All Changes ({len(self.file_list.items)} files)", adds, dels, rel_path=None)
+        elif not paths:
+            self.diff_viewer.set_diff("", "No changes selected")
         else:
             diff_text = self.git_mgr.get_diff(paths)
             self.diff_viewer.set_diff(diff_text, f"{len(paths)} files selected", adds, dels, rel_path=None)

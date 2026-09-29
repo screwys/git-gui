@@ -186,6 +186,9 @@ class IglooCommitTab(QWidget):
         self._show_single_file_diff(rel_path)
 
     def refresh(self):
+        self.refresh_working_tree()
+
+    def refresh_working_tree(self):
         self.diff_viewer.repo_path = self.git_mgr.repo_path
         self.terminal.repo_path = self.git_mgr.repo_path
         items = self.git_mgr.get_status_files()
@@ -196,7 +199,7 @@ class IglooCommitTab(QWidget):
         if len(selected_paths) == 1:
             self._show_single_file_diff(selected_paths[0])
         elif items:
-            self._show_multi_file_diff([i.path for i in items])
+            self._show_multi_file_diff(selected_paths)
         else:
             self.diff_viewer.set_diff("", "Clean working tree")
 
@@ -215,11 +218,13 @@ class IglooCommitTab(QWidget):
         selected_items = [i for i in self.file_list.items if i.path in paths]
         adds = sum(i.additions for i in selected_items)
         dels = sum(i.deletions for i in selected_items)
-        if not paths or len(paths) == len(self.file_list.items):
+        if len(paths) == len(self.file_list.items) and paths:
             diff_text = self.git_mgr.get_diff()
             self.diff_viewer.set_diff(
                 diff_text, f"All Changes ({len(self.file_list.items)} files)", adds, dels, rel_path=None
             )
+        elif not paths:
+            self.diff_viewer.set_diff("", "No changes selected")
         else:
             diff_text = self.git_mgr.get_diff(paths)
             self.diff_viewer.set_diff(

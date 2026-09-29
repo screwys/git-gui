@@ -336,6 +336,10 @@ class MainWindow(QMainWindow):
         self.quit_timer = QTimer(self)
         self.quit_timer.setInterval(100)
         self.quit_timer.timeout.connect(self._finish_quit)
+        self.repo_refresh_timer = QTimer(self)
+        self.repo_refresh_timer.setInterval(30000)
+        self.repo_refresh_timer.timeout.connect(self._refresh_visible_working_tree)
+        self.repo_refresh_timer.start()
 
     def present(self):
         self._quitting = False
@@ -343,6 +347,7 @@ class MainWindow(QMainWindow):
         self.showNormal() if self.isMinimized() else self.show()
         self.raise_()
         self.activateWindow()
+        self.repo_refresh_timer.start()
         self._set_monitor_interval(False)
         self.refresh_active_repo()
 
@@ -359,6 +364,7 @@ class MainWindow(QMainWindow):
         event.ignore()
         if self.config.close_to_tray and QSystemTrayIcon.isSystemTrayAvailable():
             self.hide()
+            self.repo_refresh_timer.stop()
             self._set_monitor_interval(True)
         else:
             self.quit_app()
@@ -366,6 +372,7 @@ class MainWindow(QMainWindow):
     def quit_app(self):
         self._quitting = True
         self.hide()
+        self.repo_refresh_timer.stop()
         # Read-only GitHub workers finish naturally before their Qt owners are destroyed.
         self.rufin_view.publish_tab.checks_view.poll_timer.stop()
         for view in (self.rufin_view, self.igloo_view):
@@ -525,6 +532,18 @@ class MainWindow(QMainWindow):
             tab.runner.attach(self.active_git_mgr.repo_path, tab.runner.key, tab.runner.program)
         view.release_tab.jobs_view.sync_remote_status()
         self.status_bar.showMessage(f"Refreshed {self.active_repo_name} repository state.", 3000)
+
+    def _refresh_visible_working_tree(self):
+        if not self.isVisible():
+            return
+        view = self.project_tabs.currentWidget()
+        tab = view.tabs.currentWidget()
+        if hasattr(tab, "refresh_working_tree"):
+            runners = [self.runner, view.tabs.widget(0).runner, view.release_tab.runner]
+            if any(runner.is_running for runner in runners):
+                return
+            self.update_repo_display()
+            tab.refresh_working_tree()
 
     def _do_fetch(self):
         self._run_git_command(["fetch", "--prune", "origin"])
