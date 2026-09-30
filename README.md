@@ -60,7 +60,11 @@ Run it again if you move the checkout. Python 3 and PyQt6 must be installed on t
 
 ## Background commands and recovery
 
-Igloo's **Commit & Push** fetches remote changes and rebases local commits before pushing.
+Click **+** after the project tabs to open the folder picker and select a Git repository.
+The app saves added projects and restores the last selected project after restarting.
+Each added project has a **Commit & Push** tab with file selection, diffs, an editor, and a terminal.
+
+Igloo and added projects use **Commit & Push** to fetch remote changes and rebase local commits before pushing.
 Other working-tree edits are kept through Git's autostash. If conflicts occur, resolve or abort
 the rebase before retrying. On a clean working tree, **Push** retries existing commits without
 requiring a new message or creating another commit. The pre-push skip option still applies.

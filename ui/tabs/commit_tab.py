@@ -25,9 +25,9 @@ from ui.components.commit_draft import CommitDraft
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
 
 
-class IglooCommitTab(QWidget):
+class CommitTab(QWidget):
     """
-    Standard commit and push workflow tab for Igloo repository.
+    Standard commit and push workflow tab for a Git repository.
     Supports staging selected files, writing commit messages/descriptions,
     amend, and atomic pushing to origin (with pre-push skip option).
     """
@@ -273,7 +273,7 @@ class IglooCommitTab(QWidget):
 
         action_name = "Commit & Push" if will_push and create_commit else "Push" if will_push else "Commit"
         popup = ConfirmPreviewDialog(
-            title=f"Igloo {action_name}",
+            title=f"{Path(self.git_mgr.repo_path).name} {action_name}",
             details=details,
             preview_text=desc if create_commit and desc else None,
             preview_text_label="Extended Description:",
