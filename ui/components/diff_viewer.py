@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QCheckBox,
     QMessageBox,
+    QSizePolicy,
 )
 from core.config import AppConfig, ConfigManager
 from ui.components.toast import ToastNotification
@@ -125,6 +126,8 @@ class DiffCodeEditor(QPlainTextEdit):
         )
 
     def set_content(self, text: str, is_diff: bool = True):
+        if self.is_diff_mode == is_diff and self.toPlainText() == text:
+            return
         self.is_diff_mode = is_diff
         self.highlighter.is_diff_mode = is_diff
         self.setPlainText(text)
@@ -248,8 +251,9 @@ class DiffViewer(QWidget):
         header.setSpacing(8)
 
         self.title_label = QLabel("No changes selected")
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.title_label.setStyleSheet("color: #e6edf3; font-weight: 600; font-size: 12px; font-family: monospace;")
-        header.addWidget(self.title_label)
+        header.addWidget(self.title_label, 1)
 
         self.stats_label = QLabel("")
         self.stats_label.setStyleSheet("font-size: 11px; font-family: monospace;")
@@ -259,7 +263,10 @@ class DiffViewer(QWidget):
         self.dirty_badge.setStyleSheet("color: #d29922; font-size: 11px; font-weight: bold;")
         header.addWidget(self.dirty_badge)
 
-        header.addStretch()
+        layout.addLayout(header)
+        controls = QHBoxLayout()
+        controls.setContentsMargins(4, 0, 4, 2)
+        controls.setSpacing(4)
 
         # Mode toggles: [Diff] [Edit File]
         self.btn_diff_mode = QPushButton("Diff")
@@ -268,7 +275,7 @@ class DiffViewer(QWidget):
         self.btn_diff_mode.setChecked(True)
         self.btn_diff_mode.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_diff_mode.clicked.connect(self._switch_to_diff_mode)
-        header.addWidget(self.btn_diff_mode)
+        controls.addWidget(self.btn_diff_mode)
 
         self.btn_file_mode = QPushButton("Edit File")
         self.btn_file_mode.setFixedHeight(22)
@@ -276,7 +283,7 @@ class DiffViewer(QWidget):
         self.btn_file_mode.setChecked(False)
         self.btn_file_mode.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_file_mode.clicked.connect(self._switch_to_file_mode)
-        header.addWidget(self.btn_file_mode)
+        controls.addWidget(self.btn_file_mode)
 
         # Save button
         self.btn_save = QPushButton("Save")
@@ -287,7 +294,7 @@ class DiffViewer(QWidget):
         )
         self.btn_save.setToolTip("Save changes to file (Ctrl+S)")
         self.btn_save.clicked.connect(self.save_current)
-        header.addWidget(self.btn_save)
+        controls.addWidget(self.btn_save)
 
         # Reset button
         self.btn_reset = QPushButton("Reset")
@@ -295,21 +302,22 @@ class DiffViewer(QWidget):
         self.btn_reset.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_reset.setToolTip("Discard unsaved in-editor changes")
         self.btn_reset.clicked.connect(self.reset_current)
-        header.addWidget(self.btn_reset)
+        controls.addWidget(self.btn_reset)
+        controls.addStretch()
 
         # Wrap checkbox
         self.wrap_cb = QCheckBox("Wrap")
         self.wrap_cb.setChecked(self.config.wrap_diff)
         self.wrap_cb.toggled.connect(self._on_wrap_toggled)
-        header.addWidget(self.wrap_cb)
+        controls.addWidget(self.wrap_cb)
 
         self.btn_copy = QPushButton("Copy")
         self.btn_copy.setFixedHeight(22)
         self.btn_copy.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_copy.clicked.connect(self.copy_all)
-        header.addWidget(self.btn_copy)
+        controls.addWidget(self.btn_copy)
 
-        layout.addLayout(header)
+        layout.addLayout(controls)
 
         # Editor
         self.editor = DiffCodeEditor()
@@ -342,9 +350,11 @@ class DiffViewer(QWidget):
             self.dirty_badge.setText("● Modified")
 
     def set_diff(self, diff_text: str, title: str = "Diff Preview", additions: int = 0, deletions: int = 0, rel_path: Optional[str] = None):
+        same_file = self.current_rel_path == rel_path
         self.current_rel_path = rel_path
         self.current_diff_text = diff_text
         self.title_label.setText(title)
+        self.title_label.setToolTip(title)
 
         stat_text = ""
         if additions > 0:
@@ -357,7 +367,8 @@ class DiffViewer(QWidget):
         self.btn_file_mode.setEnabled(has_file)
 
         if self.view_mode == "file" and has_file:
-            self._load_file_content()
+            if not (same_file and self._is_dirty):
+                self._load_file_content()
         else:
             self._switch_to_diff_mode()
 
@@ -365,6 +376,8 @@ class DiffViewer(QWidget):
         self.view_mode = "diff"
         self.btn_diff_mode.setChecked(True)
         self.btn_file_mode.setChecked(False)
+        self.btn_save.hide()
+        self.btn_reset.hide()
         self.editor.blockSignals(True)
         self.editor.set_content(self.current_diff_text if self.current_diff_text else "(Clean working tree or no diff)", is_diff=True)
         self.editor.blockSignals(False)
@@ -377,6 +390,8 @@ class DiffViewer(QWidget):
         self.view_mode = "file"
         self.btn_diff_mode.setChecked(False)
         self.btn_file_mode.setChecked(True)
+        self.btn_save.show()
+        self.btn_reset.show()
         self._load_file_content()
 
     def _load_file_content(self):

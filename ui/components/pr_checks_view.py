@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QProgressBar,
+    QSizePolicy,
 )
 from core.notifications import send_desktop_notification
 from core.state import StateManager
@@ -129,6 +130,7 @@ class PrChecksWidget(QWidget):
         header_bar.setSpacing(8)
 
         self.lbl_title = QLabel("No active PR detected")
+        self.lbl_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.lbl_title.setStyleSheet("color: #e6edf3; font-weight: 600; font-size: 12px;")
         header_bar.addWidget(self.lbl_title, 1)
 
@@ -197,6 +199,7 @@ class PrChecksWidget(QWidget):
 
         state_suffix = f" ({state.capitalize()})" if state else ""
         self.lbl_title.setText(f"PR #{self.pr_number}{state_suffix}: {self.pr_title}" if self.pr_title else f"PR #{self.pr_number}{state_suffix}")
+        self.lbl_title.setToolTip(self.lbl_title.text())
         self.btn_open_pr.setEnabled(bool(self.pr_url))
         self.refresh_checks()
         if not self.poll_timer.isActive() and (not state or state.upper() == "OPEN"):
@@ -239,6 +242,7 @@ class PrChecksWidget(QWidget):
         self.table.setRowCount(0)
         self.progress_bar.setValue(0)
         self.lbl_title.setText("No pull request for this branch")
+        self.lbl_title.setToolTip("")
         self.btn_open_pr.setEnabled(False)
         self.status_pill.setText("No PR")
 
@@ -259,6 +263,7 @@ class PrChecksWidget(QWidget):
 
         state_suffix = f" ({self.pr_state.capitalize()})" if self.pr_state else ""
         self.lbl_title.setText(f"PR #{self.pr_number}{state_suffix}: {self.pr_title}" if self.pr_title else f"PR #{self.pr_number}{state_suffix}")
+        self.lbl_title.setToolTip(self.lbl_title.text())
 
         # Persist updated tracked PR state
         StateManager.update(

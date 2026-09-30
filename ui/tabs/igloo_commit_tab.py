@@ -96,25 +96,20 @@ class IglooCommitTab(QWidget):
         opts_layout.setContentsMargins(8, 4, 8, 4)
         opts_layout.setSpacing(3)
 
-        h_opts = QHBoxLayout()
-        h_opts.setSpacing(10)
         self.push_cb = QCheckBox("Push to origin upon commit")
         self.push_cb.setChecked(True)
         self.push_cb.toggled.connect(self._on_push_toggled)
-        h_opts.addWidget(self.push_cb)
+        opts_layout.addWidget(self.push_cb)
 
         self.amend_cb = QCheckBox("Amend (--amend)")
         self.amend_cb.setChecked(False)
         self.amend_cb.toggled.connect(self._on_amend_toggled)
-        h_opts.addWidget(self.amend_cb)
+        opts_layout.addWidget(self.amend_cb)
 
         self.skip_pre_push_cb = QCheckBox("Skip pre-push (--no-verify)")
         self.skip_pre_push_cb.setChecked(False)
         self.skip_pre_push_cb.setToolTip("Bypass git pre-push hook checks with --no-verify")
-        h_opts.addWidget(self.skip_pre_push_cb)
-
-        h_opts.addStretch()
-        opts_layout.addLayout(h_opts)
+        opts_layout.addWidget(self.skip_pre_push_cb)
 
         form_layout.addWidget(opts_grp)
 
@@ -139,6 +134,7 @@ class IglooCommitTab(QWidget):
         self.diff_viewer = DiffViewer(self.config, self.git_mgr.repo_path)
         self.diff_viewer.file_saved.connect(self._on_file_saved)
         right_splitter.addWidget(self.diff_viewer)
+        right_splitter.setCollapsible(0, False)
 
         self.terminal = TerminalWidget(repo_path=self.git_mgr.repo_path)
         right_splitter.addWidget(self.terminal)
@@ -147,6 +143,7 @@ class IglooCommitTab(QWidget):
         right_layout.addWidget(right_splitter)
 
         self.main_splitter.addWidget(right_widget)
+        self.main_splitter.setCollapsible(1, False)
         self.main_splitter.setSizes([380, 620])
 
     def _wire_signals(self):
@@ -196,7 +193,10 @@ class IglooCommitTab(QWidget):
         self._on_push_toggled(self.push_cb.isChecked())
 
         selected_paths = self.file_list.get_selected_paths()
-        if len(selected_paths) == 1:
+        preview_path = self.diff_viewer.current_rel_path
+        if any(item.path == preview_path for item in items):
+            self._show_single_file_diff(preview_path)
+        elif len(selected_paths) == 1:
             self._show_single_file_diff(selected_paths[0])
         elif items:
             self._show_multi_file_diff(selected_paths)

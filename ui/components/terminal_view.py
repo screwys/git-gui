@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QDialog,
     QComboBox,
+    QMenu,
+    QSizePolicy,
 )
 from core.runner import ProcessRunner
 from core.jobs import jobs_root, records, job_running
@@ -158,48 +160,47 @@ class TerminalWidget(QWidget):
         header.addWidget(title)
 
         self.status_badge = QLabel("Idle")
+        self.status_badge.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.status_badge.setStyleSheet(
             "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
         )
-        header.addWidget(self.status_badge)
+        header.addWidget(self.status_badge, 1)
 
-        header.addStretch()
+        controls = QHBoxLayout()
+        controls.setContentsMargins(4, 0, 4, 2)
+        controls.setSpacing(6)
 
         self.cb_wrap = QCheckBox("Wrap")
         self.cb_wrap.setChecked(True)
         self.cb_wrap.toggled.connect(self._toggle_wrap)
-        header.addWidget(self.cb_wrap)
+        controls.addWidget(self.cb_wrap)
 
         self.cb_autoscroll = QCheckBox("Auto-scroll")
         self.cb_autoscroll.setChecked(True)
         self.cb_autoscroll.toggled.connect(self._toggle_autoscroll)
-        header.addWidget(self.cb_autoscroll)
+        controls.addWidget(self.cb_autoscroll)
+        controls.addStretch()
 
         self.btn_copy = QPushButton("Copy")
         self.btn_copy.setFixedHeight(22)
         self.btn_copy.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_copy.clicked.connect(self._copy_all)
-        header.addWidget(self.btn_copy)
+        controls.addWidget(self.btn_copy)
 
         self.btn_clear = QPushButton("Clear")
         self.btn_clear.setFixedHeight(22)
         self.btn_clear.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         self.btn_clear.clicked.connect(self.clear_terminal)
-        header.addWidget(self.btn_clear)
+        controls.addWidget(self.btn_clear)
 
-        self.btn_reload = QPushButton("Reload log")
-        self.btn_reload.setFixedHeight(22)
-        self.btn_reload.setStyleSheet("font-size: 11px; padding: 1px 8px;")
-        self.btn_reload.setToolTip("Restore saved output without running the command again")
-        self.btn_reload.clicked.connect(self._reload_log)
-        header.addWidget(self.btn_reload)
-
-        self.btn_history = QPushButton("History")
-        self.btn_history.setFixedHeight(22)
-        self.btn_history.setStyleSheet("font-size: 11px; padding: 1px 8px;")
-        self.btn_history.setToolTip("View earlier commands, logs, and exit status")
-        self.btn_history.clicked.connect(self._show_history)
-        header.addWidget(self.btn_history)
+        self.btn_log_menu = QPushButton("More")
+        self.btn_log_menu.setFixedHeight(22)
+        self.btn_log_menu.setStyleSheet("font-size: 11px; padding: 1px 8px;")
+        log_menu = QMenu(self.btn_log_menu)
+        log_menu.addAction("Reload log", self._reload_log)
+        log_menu.addAction("History", self._show_history)
+        self.btn_log_menu.setMenu(log_menu)
+        controls.addWidget(self.btn_log_menu)
 
         self.btn_pause = QPushButton("Pause")
         self.btn_pause.setFixedHeight(22)
@@ -221,6 +222,7 @@ class TerminalWidget(QWidget):
         header.addWidget(self.btn_stop)
 
         out_layout.addLayout(header)
+        out_layout.addLayout(controls)
 
         # Output console (Wrap by default)
         self.console = QPlainTextEdit()
@@ -248,28 +250,33 @@ class TerminalWidget(QWidget):
         shell_header.setContentsMargins(4, 2, 4, 2)
         shell_header.setSpacing(6)
 
-        shell_title = QLabel("Interactive Command Runner")
+        shell_title = QLabel("Command Runner")
         shell_title.setStyleSheet("color: #e6edf3; font-weight: 600; font-size: 11px;")
         shell_header.addWidget(shell_title)
 
         self.shell_status_badge = QLabel("Ready")
+        self.shell_status_badge.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.shell_status_badge.setStyleSheet(
             "background-color: #21262d; color: #7ee787; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
         )
-        shell_header.addWidget(self.shell_status_badge)
+        shell_header.addWidget(self.shell_status_badge, 1)
 
-        shell_header.addStretch()
+        shell_layout.addLayout(shell_header)
+        shell_controls = QHBoxLayout()
+        shell_controls.setContentsMargins(4, 0, 4, 2)
+        shell_controls.setSpacing(6)
+        shell_controls.addStretch()
 
         self.cb_shell_wrap = QCheckBox("Wrap")
         self.cb_shell_wrap.setChecked(True)
         self.cb_shell_wrap.toggled.connect(self._toggle_shell_wrap)
-        shell_header.addWidget(self.cb_shell_wrap)
+        shell_controls.addWidget(self.cb_shell_wrap)
 
         btn_shell_clear = QPushButton("Clear")
         btn_shell_clear.setFixedHeight(22)
         btn_shell_clear.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         btn_shell_clear.clicked.connect(self._clear_shell)
-        shell_header.addWidget(btn_shell_clear)
+        shell_controls.addWidget(btn_shell_clear)
 
         self.btn_shell_stop = QPushButton("Stop")
         self.btn_shell_stop.setFixedHeight(22)
@@ -280,9 +287,9 @@ class TerminalWidget(QWidget):
         )
         self.btn_shell_stop.setEnabled(False)
         self.btn_shell_stop.clicked.connect(self.interactive_runner.stop)
-        shell_header.addWidget(self.btn_shell_stop)
+        shell_controls.addWidget(self.btn_shell_stop)
 
-        shell_layout.addLayout(shell_header)
+        shell_layout.addLayout(shell_controls)
 
         # Shell Console
         self.shell_console = QPlainTextEdit()
@@ -472,6 +479,7 @@ class TerminalWidget(QWidget):
                     "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 500;"
                 )
             self.btn_stop.setEnabled(False)
+        self.status_badge.setToolTip(self.status_badge.text())
 
     def _on_task_timer_tick(self):
         if self._task_start_time is not None:
@@ -481,6 +489,7 @@ class TerminalWidget(QWidget):
                 self.status_badge.setText(f"Running for {dur}")
             else:
                 self.status_badge.setText(f"{self._task_base_text} ({dur})")
+            self.status_badge.setToolTip(self.status_badge.text())
 
     def _on_shell_timer_tick(self):
         if self._shell_start_time is not None:

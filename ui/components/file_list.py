@@ -5,8 +5,9 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QListWidget,
-    QListWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QHeaderView,
     QAbstractButton,
     QPushButton,
     QLabel,
@@ -57,85 +58,6 @@ class MinimalCheckBox(QAbstractButton):
             painter.drawRoundedRect(rect, r, r)
 
 
-class FileRowWidget(QWidget):
-    checked_toggled = pyqtSignal(bool)
-    diff_clicked = pyqtSignal(str)
-
-    def __init__(self, item: GitFileItem, is_checked: bool = True, parent=None):
-        super().__init__(parent)
-        self.item = item
-        self._init_ui(is_checked)
-
-    def _init_ui(self, is_checked: bool):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 2, 6, 2)
-        layout.setSpacing(6)
-        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-        # Minimal vector checkbox
-        self.checkbox = MinimalCheckBox(is_checked, self)
-        self.checkbox.toggled.connect(self.checked_toggled.emit)
-        layout.addWidget(self.checkbox)
-
-        # Status badge (GitHub/Zed style badge)
-        status_char = self.item.display_status
-        self.status_lbl = QLabel(status_char)
-        self.status_lbl.setFixedSize(16, 16)
-        self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        if status_char in ("A", "U"):
-            color = "#3fb950"
-            bg = "rgba(46, 160, 67, 0.18)"
-            border = "rgba(46, 160, 67, 0.4)"
-        elif status_char == "D":
-            color = "#f85149"
-            bg = "rgba(248, 81, 73, 0.18)"
-            border = "rgba(248, 81, 73, 0.4)"
-        elif status_char == "R":
-            color = "#a371f7"
-            bg = "rgba(163, 113, 247, 0.18)"
-            border = "rgba(163, 113, 247, 0.4)"
-        else:
-            color = "#d29922"
-            bg = "rgba(187, 128, 9, 0.18)"
-            border = "rgba(187, 128, 9, 0.4)"
-
-        self.status_lbl.setStyleSheet(
-            f"color: {color}; background-color: {bg}; border: 1px solid {border}; border-radius: 3px; font-weight: bold; font-size: 10px; font-family: monospace;"
-        )
-        layout.addWidget(self.status_lbl)
-
-        # Keep long paths from pushing the diff counts outside the list.
-        self.path_lbl = QLabel(self.item.filename if self.item.dirname == "." else f"{self.item.filename}  {self.item.dirname}")
-        self.path_lbl.setMinimumWidth(0)
-        self.path_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.path_lbl.setToolTip(self.item.path)
-        self.path_lbl.setStyleSheet("color: #e6edf3; font-weight: 500; font-size: 12px;")
-        layout.addWidget(self.path_lbl, 1)
-
-        # Clean diff stat text without any enclosing boxes or borders
-        stat_text = ""
-        if self.item.additions > 0:
-            stat_text += f"<span style='color: #3fb950;'>+{self.item.additions}</span> "
-        if self.item.deletions > 0:
-            stat_text += f"<span style='color: #f85149;'>-{self.item.deletions}</span>"
-        if not stat_text:
-            stat_text = "<span style='color: #484f58;'>0</span>"
-
-        self.stat_lbl = QLabel()
-        self.stat_lbl.setTextFormat(Qt.TextFormat.RichText)
-        self.stat_lbl.setText(stat_text)
-        self.stat_lbl.setStyleSheet("font-size: 11px; font-family: monospace;")
-        self.stat_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.stat_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.stat_lbl.setToolTip(f"View diff for {self.item.filename}")
-        layout.addWidget(self.stat_lbl)
-
-    def mousePressEvent(self, event):
-        # If clicked over stat_lbl or clicked anywhere on the row except the checkbox
-        super().mousePressEvent(event)
-
-
 class FileListWidget(QWidget):
     file_selected = pyqtSignal(str)
     selection_changed = pyqtSignal(list)
@@ -146,7 +68,6 @@ class FileListWidget(QWidget):
         super().__init__(parent)
         self.items: List[GitFileItem] = []
         self.checked_paths: Set[str] = set()
-        self._selection_initialized = False
         self._select_all_on_refresh = True
         self._updating = False
         self._init_ui()
@@ -162,64 +83,82 @@ class FileListWidget(QWidget):
         header.setSpacing(6)
 
         self.title_lbl = QLabel("Changes (0)")
+        self.title_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.title_lbl.setStyleSheet("color: #e6edf3; font-weight: 600; font-size: 12px;")
-        header.addWidget(self.title_lbl)
+        header.addWidget(self.title_lbl, 1)
 
-        header.addStretch()
-
-        # Publish PR button placed on top right next to View Diff
-        self.btn_publish = QPushButton("Publish PR")
-        self.btn_publish.setObjectName("primaryButton")
-        self.btn_publish.setFixedHeight(22)
-        self.btn_publish.setStyleSheet("font-size: 11px; padding: 1px 10px; font-weight: 600;")
-        self.btn_publish.clicked.connect(self.publish_requested.emit)
-        header.addWidget(self.btn_publish)
-
-        self.btn_view_diff = QPushButton("View Diff")
-        self.btn_view_diff.setFixedHeight(22)
-        self.btn_view_diff.setStyleSheet("font-size: 11px; padding: 1px 8px;")
-        self.btn_view_diff.clicked.connect(self._on_view_diff_clicked)
-        header.addWidget(self.btn_view_diff)
+        self.stats_lbl = QLabel()
+        self.stats_lbl.setStyleSheet("font-size: 11px; font-family: monospace;")
+        header.addWidget(self.stats_lbl)
 
         self.select_all_cb = MinimalCheckBox(True, self)
         self.select_all_cb.setToolTip("Select / Deselect All")
         self.select_all_cb.toggled.connect(self._on_select_all_toggled)
         header.addWidget(self.select_all_cb)
-
         layout.addLayout(header)
 
+        actions = QHBoxLayout()
+        actions.setContentsMargins(4, 0, 4, 2)
+        actions.setSpacing(6)
+
+        self.btn_publish = QPushButton("Publish PR")
+        self.btn_publish.setObjectName("primaryButton")
+        self.btn_publish.setFixedHeight(22)
+        self.btn_publish.setStyleSheet("font-size: 11px; padding: 1px 10px; font-weight: 600;")
+        self.btn_publish.clicked.connect(self.publish_requested.emit)
+        actions.addWidget(self.btn_publish)
+
+        self.btn_view_diff = QPushButton("View Diff")
+        self.btn_view_diff.setFixedHeight(22)
+        self.btn_view_diff.setStyleSheet("font-size: 11px; padding: 1px 8px;")
+        self.btn_view_diff.clicked.connect(self._on_view_diff_clicked)
+        actions.addWidget(self.btn_view_diff)
+        actions.addStretch()
+        layout.addLayout(actions)
+
         # List Widget
-        self.list_widget = QListWidget()
+        self.list_widget = QTreeWidget()
+        self.list_widget.setColumnCount(4)
+        self.list_widget.setHeaderHidden(True)
+        self.list_widget.setRootIsDecorated(False)
+        self.list_widget.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.list_widget.header().setStretchLastSection(False)
+        for column in (0, 2, 3):
+            self.list_widget.header().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self.list_widget.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.list_widget.setStyleSheet(
-            "QListWidget { background-color: #0b0e14; border: 1px solid #30363d; border-radius: 6px; } "
-            "QListWidget::item { padding: 0px; border-bottom: 1px solid #161b22; } "
-            "QListWidget::item:selected { background-color: #1c2128; } "
-            "QListWidget::item:hover { background-color: #13171e; }"
+            "QTreeWidget { background-color: #0b0e14; border: 1px solid #30363d; border-radius: 6px; } "
+            "QTreeWidget::item { padding: 2px; border-bottom: 1px solid #161b22; } "
+            "QTreeWidget::item:selected { background-color: #1c2128; } "
+            "QTreeWidget::item:hover { background-color: #13171e; }"
         )
         self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
+        self.list_widget.itemChanged.connect(self._on_row_checked)
         layout.addWidget(self.list_widget)
 
     def set_files(self, items: List[GitFileItem]):
         self._updating = True
+        current = self.list_widget.currentItem()
+        current_path = current.data(0, Qt.ItemDataRole.UserRole) if current else None
+        scroll = self.list_widget.verticalScrollBar().value()
         self.items = items
         self.list_widget.clear()
 
         total_adds = sum(i.additions for i in items)
         total_dels = sum(i.deletions for i in items)
         self.title_lbl.setText(f"Changes ({len(items)})")
-        stat_suffix = ""
-        if total_adds > 0 or total_dels > 0:
-            stat_suffix = f" (+{total_adds} -{total_dels})"
-        self.btn_view_diff.setText(f"View Diff{stat_suffix}")
+        self.stats_lbl.setText(
+            f"<span style='color: #3fb950;'>+{total_adds}</span> "
+            f"<span style='color: #f85149;'>-{total_dels}</span>"
+        )
 
-        if not self._selection_initialized or self._select_all_on_refresh:
+        if self._select_all_on_refresh:
             self.checked_paths = {i.path for i in items}
         else:
             current_paths = {i.path for i in items}
             self.checked_paths = self.checked_paths.intersection(current_paths)
-        self._selection_initialized = True
         if items:
             self._select_all_on_refresh = len(self.checked_paths) == len(items)
 
@@ -228,24 +167,31 @@ class FileListWidget(QWidget):
         self.select_all_cb.blockSignals(False)
 
         for item in items:
-            list_item = QListWidgetItem(self.list_widget)
-            list_item.setData(Qt.ItemDataRole.UserRole, item.path)
+            path_text = item.filename if item.dirname == "." else f"{item.filename}  {item.dirname}"
+            list_item = QTreeWidgetItem(self.list_widget, [
+                item.display_status, path_text,
+                f"+{item.additions}" if item.additions else ("" if item.deletions else "0"),
+                f"-{item.deletions}" if item.deletions else "",
+            ])
+            list_item.setData(0, Qt.ItemDataRole.UserRole, item.path)
+            list_item.setToolTip(1, item.path)
+            list_item.setCheckState(0, Qt.CheckState.Checked if item.path in self.checked_paths else Qt.CheckState.Unchecked)
+            status_color = {"A": "#3fb950", "U": "#3fb950", "D": "#f85149", "R": "#a371f7"}.get(item.display_status, "#d29922")
+            list_item.setForeground(0, QColor(status_color))
+            for column, color in ((2, "#3fb950"), (3, "#f85149")):
+                list_item.setForeground(column, QColor(color))
+                list_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if item.path == current_path:
+                self.list_widget.setCurrentItem(list_item)
 
-            row_widget = FileRowWidget(item, is_checked=(item.path in self.checked_paths))
-            row_widget.checked_toggled.connect(
-                lambda checked, p=item.path: self._on_row_checked(p, checked)
-            )
-
-            list_item.setSizeHint(row_widget.sizeHint())
-            self.list_widget.addItem(list_item)
-            self.list_widget.setItemWidget(list_item, row_widget)
-
+        self.list_widget.verticalScrollBar().setValue(scroll)
         self._updating = False
 
-    def _on_row_checked(self, path: str, checked: bool):
-        if self._updating:
+    def _on_row_checked(self, item: QTreeWidgetItem, column: int):
+        if self._updating or column != 0:
             return
-        self._selection_initialized = True
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        checked = item.checkState(0) == Qt.CheckState.Checked
         if checked:
             self.checked_paths.add(path)
         else:
@@ -262,7 +208,6 @@ class FileListWidget(QWidget):
     def _on_select_all_toggled(self, is_checked: bool):
         if self._updating:
             return
-        self._selection_initialized = True
         self._select_all_on_refresh = is_checked
         self._updating = True
         if is_checked:
@@ -270,19 +215,17 @@ class FileListWidget(QWidget):
         else:
             self.checked_paths.clear()
 
-        for idx in range(self.list_widget.count()):
-            item = self.list_widget.item(idx)
-            row_widget = self.list_widget.itemWidget(item)
-            if isinstance(row_widget, FileRowWidget):
-                row_widget.checkbox.blockSignals(True)
-                row_widget.checkbox.setChecked(is_checked)
-                row_widget.checkbox.blockSignals(False)
+        for idx in range(self.list_widget.topLevelItemCount()):
+            item = self.list_widget.topLevelItem(idx)
+            item.setCheckState(0, Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
 
         self._updating = False
         self.selection_changed.emit(list(self.checked_paths))
 
-    def _on_item_clicked(self, list_item: QListWidgetItem):
-        path = list_item.data(Qt.ItemDataRole.UserRole)
+    def _on_item_clicked(self, list_item: QTreeWidgetItem, column: int):
+        if column == 0:
+            return
+        path = list_item.data(0, Qt.ItemDataRole.UserRole)
         if path:
             self.file_selected.emit(path)
 

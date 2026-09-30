@@ -261,23 +261,18 @@ class PublishPrTab(QWidget):
         flags_layout.setContentsMargins(8, 4, 8, 4)
         flags_layout.setSpacing(3)
 
-        h_checks = QHBoxLayout()
-        h_checks.setSpacing(10)
         self.auto_merge_cb = QCheckBox("Squash auto-merge")
         self.auto_merge_cb.setChecked(self.config.default_auto_merge)
-        h_checks.addWidget(self.auto_merge_cb)
+        flags_layout.addWidget(self.auto_merge_cb)
 
         self.wait_cb = QCheckBox("Wait CI checks (--wait)")
         self.wait_cb.setChecked(self.config.default_wait_ci)
-        h_checks.addWidget(self.wait_cb)
+        flags_layout.addWidget(self.wait_cb)
 
         self.skip_pre_push_cb = QCheckBox("Skip pre-push")
         self.skip_pre_push_cb.setChecked(False)
         self.skip_pre_push_cb.setToolTip("Skip local pre-push hook verification (RUFIN_SKIP_PRE_PUSH_HOOK=1)")
-        h_checks.addWidget(self.skip_pre_push_cb)
-
-        h_checks.addStretch()
-        flags_layout.addLayout(h_checks)
+        flags_layout.addWidget(self.skip_pre_push_cb)
 
         # Thin row: Publish after PR merges
         h_pr_row = QHBoxLayout()
@@ -309,6 +304,8 @@ class PublishPrTab(QWidget):
         lbl_i18n = QLabel("Catalogs:")
         lbl_i18n.setStyleSheet("color: #8b949e; font-size: 11px;")
         self.i18n_combo = QComboBox()
+        self.i18n_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.i18n_combo.setMinimumContentsLength(16)
         self.i18n_combo.addItem("Normal (Ignore changed .po catalogs)", "none")
         self.i18n_combo.addItem("Include prepared .po files (--include-i18n-catalogs)", "include")
         self.i18n_combo.addItem("Sync and merge all .po catalogs (--sync-i18n-catalogs)", "sync")
@@ -326,14 +323,12 @@ class PublishPrTab(QWidget):
         self.left_splitter.setCollapsible(0, False)
         self.left_splitter.setCollapsible(1, False)
         self.left_splitter.setMinimumWidth(320)
-        self.left_splitter.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
         self.main_splitter.addWidget(self.left_splitter)
 
         # ----------------- Right Panel -----------------
         right_widget = QWidget()
         right_widget.setMinimumWidth(320)
-        right_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
@@ -347,6 +342,7 @@ class PublishPrTab(QWidget):
         h_banner = QHBoxLayout(self.pr_banner)
         h_banner.setContentsMargins(8, 2, 8, 2)
         self.pr_banner_lbl = QLabel("Pull Request opened:")
+        self.pr_banner_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.pr_banner_lbl.setStyleSheet("color: #58a6ff; font-weight: 500;")
         h_banner.addWidget(self.pr_banner_lbl, 1)
 
@@ -369,6 +365,7 @@ class PublishPrTab(QWidget):
         self.diff_viewer = DiffViewer(self.config, self.git_mgr.repo_path)
         self.diff_viewer.file_saved.connect(self._on_file_saved)
         right_splitter.addWidget(self.diff_viewer)
+        right_splitter.setCollapsible(0, False)
 
         # Lower: Tab widget with Checks & CI and Terminal Log
         self.bottom_tabs = ActivityTabs()
@@ -388,6 +385,7 @@ class PublishPrTab(QWidget):
         right_layout.addWidget(right_splitter)
 
         self.main_splitter.addWidget(right_widget)
+        self.main_splitter.setCollapsible(1, False)
         self.main_splitter.setSizes([380, 620])
 
     def _wire_signals(self):
@@ -428,6 +426,7 @@ class PublishPrTab(QWidget):
             state = saved.get("state", "")
             state_str = f" ({state.capitalize()})" if state else ""
             self.pr_banner_lbl.setText(f"Pull Request #{self.detected_pr_number}{state_str}: {title}")
+            self.pr_banner_lbl.setToolTip(self.pr_banner_lbl.text())
             self.pr_banner.setVisible(True)
             self.checks_view.set_pr(self.detected_pr_number, title=title, url=self.detected_pr_url, state=state)
 
@@ -675,6 +674,7 @@ class PublishPrTab(QWidget):
             self.detected_pr_url = url
             self.detected_pr_number = pr_num
             self.pr_banner_lbl.setText(f"Pull Request #{pr_num}")
+            self.pr_banner_lbl.setToolTip(self.pr_banner_lbl.text())
             self.pr_banner.setVisible(True)
             self.checks_view.set_pr(pr_num, url=url, state="OPEN")
             StateManager.update(
@@ -717,10 +717,13 @@ class PublishPrTab(QWidget):
         self.file_list.set_files(items)
 
         selected_paths = self.file_list.get_selected_paths()
-        if len(selected_paths) == 1:
+        preview_path = self.diff_viewer.current_rel_path
+        if any(item.path == preview_path for item in items):
+            self._show_single_file_diff(preview_path)
+        elif len(selected_paths) == 1:
             self._show_single_file_diff(selected_paths[0])
         elif items:
-            self._show_multi_file_diff([i.path for i in items])
+            self._show_multi_file_diff(selected_paths)
         else:
             self.diff_viewer.set_diff("", "Clean working tree")
 
@@ -786,6 +789,7 @@ class PublishPrTab(QWidget):
             self.detected_pr_url = url
             state_str = f" ({state.capitalize()})" if state else ""
             self.pr_banner_lbl.setText(f"Pull Request #{pr_num}{state_str}: {title}")
+            self.pr_banner_lbl.setToolTip(self.pr_banner_lbl.text())
             self.pr_banner.setVisible(True)
             self.checks_view.set_pr(pr_num, title=title, url=url, state=state)
             StateManager.update(
