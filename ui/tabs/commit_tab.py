@@ -86,7 +86,7 @@ class CommitTab(QWidget):
         self.desc_input.setPlaceholderText("Extended description (optional markdown)...")
         commit_layout.addWidget(self.desc_input)
         self.commit_draft = CommitDraft(self.summary_input, self.desc_input, self._draft_diff)
-        commit_layout.addWidget(self.commit_draft)
+        h_summary.addWidget(self.commit_draft)
 
         form_layout.addWidget(commit_grp)
 

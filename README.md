@@ -88,9 +88,10 @@ Other working-tree edits are kept through Git's autostash. If conflicts occur, r
 the rebase before retrying. On a clean working tree, **Push** retries existing commits without
 requiring a new message or creating another commit. The pre-push skip option still applies.
 
-In either commit form, click **Fill with Codex** to fill the subject and description from the
-selected diff. Both fields remain editable before confirmation. Click it again to request another
-draft, or use **Cancel** during generation. This uses `codex exec` with `gpt-6-luna`, low reasoning,
+In either commit form, click the **Fill with Codex** icon beside the commit message to fill
+the subject and description from the selected diff. Both fields remain editable before confirmation.
+Click it again to request another draft, or click the stop icon during generation to cancel.
+This uses `codex exec` with `gpt-6-luna`, low reasoning,
 and your existing Codex login.
 Install Codex CLI and run `codex login` first. It makes no background generation requests and
 keeps edits made while generation is running. Release notes remain manually written.

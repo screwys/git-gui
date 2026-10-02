@@ -2,11 +2,14 @@ import json
 import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import QProcess
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLabel
+from PyQt6.QtCore import QProcess, QSize
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import QStyle, QToolButton
+
+from ui.components.toast import ToastNotification
 
 
-class CommitDraft(QWidget):
+class CommitDraft(QToolButton):
     """Fill editable commit fields from a selected diff using the local Codex CLI."""
 
     def __init__(self, subject, description, get_diff, parent=None):
@@ -19,16 +22,21 @@ class CommitDraft(QWidget):
         self.process.errorOccurred.connect(self._error)
         self.directory = None
         self.before = None
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
         self.cancelled = False
-        self.generate = QPushButton("Fill with Codex")
-        self.generate.setToolTip("Send the selected diff to Luna and fill editable commit fields. Uses your Codex login.")
-        self.generate.clicked.connect(self._clicked)
-        layout.addWidget(self.generate)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status, 1)
+        self.draft_icon = QIcon.fromTheme("document-edit-symbolic", self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.cancel_icon = QIcon.fromTheme("process-stop-symbolic", self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop))
+        self.setIcon(self.draft_icon)
+        self.setIconSize(QSize(16, 16))
+        self.setFixedSize(24, 24)
+        self.setToolTip("Fill with Codex")
+        self.setAccessibleName("Fill with Codex")
+        self.clicked.connect(self._clicked)
+        self.toast = ToastNotification(subject.parentWidget())
+
+    def _status(self, message):
+        self.setToolTip(message)
+        self.toast.setParent(self.window())
+        self.toast.show_toast(message, action_text="")
 
     def _clicked(self):
         if self.process.state() != QProcess.ProcessState.NotRunning:
@@ -42,7 +50,7 @@ class CommitDraft(QWidget):
             return
         diff = self.get_diff()
         if not diff.strip():
-            self.status.setText("Select changes to describe.")
+            self._status("Select changes to describe.")
             return
         self.before = (self.subject.text(), self.description.toPlainText())
         self.cancelled = False
@@ -69,49 +77,50 @@ class CommitDraft(QWidget):
             "--output-schema", str(root / "schema.json"),
             "--output-last-message", str(root / "draft.json"), "-",
         ])
-        self.generate.setText("Cancel")
-        self.status.setToolTip("")
-        self.status.setText("Writing with Luna...")
+        self.setIcon(self.cancel_icon)
+        self.setAccessibleName("Cancel generation")
+        self.setToolTip("Cancel generation")
         self.process.start()
         self.process.write(self.prompt)
         self.process.closeWriteChannel()
 
     def _error(self, error):
         if error == QProcess.ProcessError.FailedToStart:
-            self.status.setText("Could not start Codex. Install the CLI and run codex login.")
+            self._status("Could not start Codex. Install the CLI and run codex login.")
             self._cleanup()
 
     def _finished(self, code, exit_status):
         try:
             if self.cancelled:
-                self.status.setText("Cancelled.")
+                self._status("Cancelled.")
                 return
             if code != 0:
                 error = bytes(self.process.readAllStandardError()).decode("utf-8", "replace")
-                self.status.setText("Codex failed. Hover for details.")
-                self.status.setToolTip(error[-4000:])
+                self._status("Codex failed.")
+                self.setToolTip(error[-4000:])
                 return
             draft = json.loads((Path(self.directory.name) / "draft.json").read_text())
             subject, description = draft["subject"], draft["description"]
             if not isinstance(subject, str) or not isinstance(description, str) or not subject.strip():
                 raise ValueError("Codex returned an empty or invalid commit message.")
             if self.before != (self.subject.text(), self.description.toPlainText()):
-                self.status.setText("Your edits were kept. Click Fill with Codex for a new draft.")
+                self._status("Your edits were kept.")
                 return
             if self.source_diff != self.get_diff():
-                self.status.setText("Selected changes changed. Click Fill with Codex for a new draft.")
+                self._status("Selected changes changed. Generate a new draft.")
                 return
             self.subject.setText(subject.strip())
             self.description.setPlainText(description.strip())
             self.description.document().setModified(True)
-            self.status.setText("Filled. Edit before committing.")
+            self._status("Filled.")
         except (OSError, ValueError, KeyError, TypeError) as error:
-            self.status.setText(str(error))
+            self._status(str(error))
         finally:
             self._cleanup()
 
     def _cleanup(self):
-        self.generate.setText("Fill with Codex")
+        self.setIcon(self.draft_icon)
+        self.setAccessibleName("Fill with Codex")
         if self.directory:
             self.directory.cleanup()
             self.directory = None

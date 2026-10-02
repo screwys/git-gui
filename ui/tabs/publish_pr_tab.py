@@ -251,7 +251,7 @@ class PublishPrTab(QWidget):
         self.body_input.setPlaceholderText("Description (optional markdown)...")
         pr_layout.addWidget(self.body_input)
         self.commit_draft = CommitDraft(self.title_input, self.body_input, self._draft_diff)
-        pr_layout.addWidget(self.commit_draft)
+        h_title_phase.insertWidget(2, self.commit_draft)
 
         form_layout.addWidget(pr_grp)
 
