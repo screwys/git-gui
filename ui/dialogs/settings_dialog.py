@@ -89,6 +89,17 @@ class SettingsDialog(QDialog):
         h_igloo.addWidget(btn_browse_igloo)
         repos_layout.addLayout(h_igloo)
 
+        repos_layout.addWidget(QLabel("nocblue"))
+        h_nocblue = QHBoxLayout()
+        self.nocblue_path_edit = QLineEdit()
+        self.nocblue_path_edit.textChanged.connect(self._auto_save)
+        h_nocblue.addWidget(self.nocblue_path_edit)
+        btn_browse_nocblue = QPushButton("Browse...")
+        btn_browse_nocblue.setFixedHeight(24)
+        btn_browse_nocblue.clicked.connect(lambda: self._browse_dir(self.nocblue_path_edit))
+        h_nocblue.addWidget(btn_browse_nocblue)
+        repos_layout.addLayout(h_nocblue)
+
         layout.addWidget(repos_grp)
 
         # ---------------- Scripts Group ----------------
@@ -202,6 +213,7 @@ class SettingsDialog(QDialog):
     def _load_values(self):
         self.rufin_path_edit.blockSignals(True)
         self.igloo_path_edit.blockSignals(True)
+        self.nocblue_path_edit.blockSignals(True)
         self.publish_script_edit.blockSignals(True)
         self.release_script_edit.blockSignals(True)
         self.base_branch_edit.blockSignals(True)
@@ -212,6 +224,7 @@ class SettingsDialog(QDialog):
 
         self.rufin_path_edit.setText(self.config.rufin_repo_path)
         self.igloo_path_edit.setText(self.config.igloo_repo_path)
+        self.nocblue_path_edit.setText(self.config.nocblue_repo_path)
         self.publish_script_edit.setText(self.config.publish_pr_script)
         self.release_script_edit.setText(self.config.release_script)
         self.base_branch_edit.setText(self.config.default_base_branch)
@@ -222,6 +235,7 @@ class SettingsDialog(QDialog):
 
         self.rufin_path_edit.blockSignals(False)
         self.igloo_path_edit.blockSignals(False)
+        self.nocblue_path_edit.blockSignals(False)
         self.publish_script_edit.blockSignals(False)
         self.release_script_edit.blockSignals(False)
         self.base_branch_edit.blockSignals(False)
@@ -234,6 +248,7 @@ class SettingsDialog(QDialog):
         default = AppConfig()
         self.rufin_path_edit.setText(default.rufin_repo_path)
         self.igloo_path_edit.setText(default.igloo_repo_path)
+        self.nocblue_path_edit.setText(default.nocblue_repo_path)
         self.publish_script_edit.setText(default.publish_pr_script)
         self.release_script_edit.setText(default.release_script)
         self.base_branch_edit.setText(default.default_base_branch)
@@ -246,11 +261,14 @@ class SettingsDialog(QDialog):
     def _auto_save(self):
         rufin = self.rufin_path_edit.text().strip()
         igloo = self.igloo_path_edit.text().strip()
+        nocblue = self.nocblue_path_edit.text().strip()
         if rufin:
             self.config.rufin_repo_path = rufin
             self.config.repo_path = rufin
         if igloo:
             self.config.igloo_repo_path = igloo
+        if nocblue:
+            self.config.nocblue_repo_path = nocblue
 
         pub = self.publish_script_edit.text().strip()
         rel = self.release_script_edit.text().strip()

@@ -8,6 +8,7 @@ from typing import Optional
 class AppConfig:
     rufin_repo_path: str = "/var/home/screwy/Projects/Rufin"
     igloo_repo_path: str = "/var/home/screwy/Projects/Igloo"
+    nocblue_repo_path: str = "/var/home/screwy/Projects/nocblue"
     repo_path: str = "/var/home/screwy/Projects/Rufin"  # backward compat
     publish_pr_script: str = ".local/scripts/publish-pr.sh"
     release_script: str = ".local/scripts/release-rufin.sh"
@@ -17,6 +18,7 @@ class AppConfig:
     wrap_diff: bool = True
     close_to_tray: bool = False
     project_paths: list[str] = field(default_factory=list)
+    package_sources: dict[str, list[dict[str, str]]] = field(default_factory=dict)
 
     def resolve_publish_script(self, current_repo: Optional[str] = None) -> str:
         repo = current_repo or self.rufin_repo_path

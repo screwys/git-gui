@@ -56,13 +56,32 @@ python3 install-desktop.py
 
 The installer creates command links in `~/.local/bin` and installs the repository's
 `rufin-git-gui.desktop` entry in your application menu, with paths to this checkout and its icon.
-Run it again if you move the checkout. Python 3 and PyQt6 must be installed on the system.
+Run it again if you move the checkout. Python 3, PyQt6, and PyYAML must be installed on the system.
+The Python dependencies are listed in `requirements.txt`.
 
 ## Background commands and recovery
 
 Click **+** after the project tabs to open the folder picker and select a Git repository.
 The app saves added projects and restores the last selected project after restarting.
 Each added project has a **Commit & Push** tab with file selection, diffs, an editor, and a terminal.
+
+Rufin, Igloo, and nocblue are default projects. Their repository paths are configurable in Settings.
+An existing added nocblue project appears once.
+
+Nocblue and added projects also have a **Packages** tab. Select RPM, Brew, or Nix, choose a
+source, then add a package or remove selected entries. The tab shows the resulting Git diff
+and fills the commit subject. A subject you wrote manually is kept. Use **Commit & Push**
+to review and commit the changes.
+
+Package sources are detected in BlueBuild recipes, `Brewfile`, and plain package lists such as
+`manifests/nix-profile.txt` or `restore/packages/brew.txt`. **Add source** saves another source
+file for that repository. RPM recipes support DNF and rpm-ostree install and remove lists;
+Nix lists retain full references and pinned revisions. Brewfiles accept a formula name or a
+declaration such as `cask "firefox"`. Package edits update the repository files.
+
+For nocblue, edits to a manifest also update its matching runtime copy under
+`files/system/usr/share/nocblue/manifests`. Its current package sources are RPM recipes and
+the Nix profile manifest. Brew sources appear when a Brewfile or Brew package list is present.
 
 Igloo and added projects use **Commit & Push** to fetch remote changes and rebase local commits before pushing.
 Other working-tree edits are kept through Git's autostash. If conflicts occur, resolve or abort

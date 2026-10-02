@@ -37,6 +37,7 @@ from ui.tabs.publish_pr_tab import PublishPrTab
 from ui.tabs.release_tab import ReleaseTab
 from ui.tabs.commit_tab import CommitTab
 from ui.tabs.igloo_release_tab import IglooReleaseTab
+from ui.tabs.packages_tab import PackagesTab
 from ui.dialogs.settings_dialog import SettingsDialog
 from ui.components.icons import create_restart_icon, create_android_icon
 
@@ -315,7 +316,7 @@ class IglooView(QWidget):
 
 
 class ProjectView(QWidget):
-    def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None):
+    def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None, *, nocblue=False):
         super().__init__(parent)
         self.git_mgr = git_mgr
         self.config = config
@@ -324,10 +325,22 @@ class ProjectView(QWidget):
         self.tabs = QTabWidget()
         self.commit_tab = CommitTab(git_mgr, config)
         self.tabs.addTab(self.commit_tab, "Commit & Push")
+        self.packages_tab = PackagesTab(git_mgr, config, nocblue=nocblue)
+        self.packages_tab.changed.connect(self._fill_package_commit)
+        self.tabs.addTab(self.packages_tab, "Packages")
+        self._package_subject = ""
         layout.addWidget(self.tabs)
+
+    def _fill_package_commit(self, subject):
+        edit = self.commit_tab.summary_input
+        if not edit.text().strip() or edit.text() == self._package_subject:
+            edit.setText(subject)
+        self._package_subject = subject
+        self.commit_tab.refresh_working_tree()
 
     def refresh(self):
         self.commit_tab.refresh()
+        self.packages_tab.refresh()
 
 
 class MainWindow(QMainWindow):
@@ -336,6 +349,7 @@ class MainWindow(QMainWindow):
         self.config: AppConfig = ConfigManager.load()
         self.rufin_git_mgr = GitManager(self.config.rufin_repo_path)
         self.igloo_git_mgr = GitManager(self.config.igloo_repo_path)
+        self.nocblue_git_mgr = GitManager(self.config.nocblue_repo_path)
         self.runner = ProcessRunner(self)
         self._init_ui()
         self._wire_signals()
@@ -430,11 +444,14 @@ class MainWindow(QMainWindow):
 
         self.rufin_view = RufinView(self.rufin_git_mgr, self.config)
         self.igloo_view = IglooView(self.igloo_git_mgr, self.config)
+        self.nocblue_view = ProjectView(self.nocblue_git_mgr, self.config, nocblue=True)
 
         self.project_tabs.addWidget(self.rufin_view)
         self.project_tabs.addWidget(self.igloo_view)
+        self.project_tabs.addWidget(self.nocblue_view)
         self.project_bar.addTab("Rufin")
         self.project_bar.addTab("Igloo")
+        self.project_bar.addTab("nocblue")
         self.btn_add_project = QPushButton("+")
         self.btn_add_project.setFixedSize(24, 24)
         self.btn_add_project.setStyleSheet("QPushButton { padding: 0; font-size: 18px; }")
@@ -456,7 +473,7 @@ class MainWindow(QMainWindow):
         for index in range(self.project_tabs.count()):
             view = self.project_tabs.widget(index)
             project = self.project_bar.tabText(index) if index < 2 else view.git_mgr.repo_path
-            if saved_proj == project:
+            if saved_proj == project or (view is self.nocblue_view and saved_proj == "nocblue"):
                 self.project_tabs.setCurrentIndex(index)
                 break
         self.project_tabs.currentChanged.connect(self._on_project_changed)
@@ -512,6 +529,10 @@ class MainWindow(QMainWindow):
         return self.project_bar.tabText(self.project_tabs.currentIndex())
 
     def _add_project_view(self, path: str):
+        for index in range(self.project_tabs.count()):
+            view = self.project_tabs.widget(index)
+            if os.path.realpath(view.git_mgr.repo_path) == os.path.realpath(path):
+                return view
         view = ProjectView(GitManager(path), self.config)
         index = self.project_tabs.addWidget(view)
         self.project_bar.addTab(os.path.basename(os.path.normpath(path)))
@@ -555,6 +576,7 @@ class MainWindow(QMainWindow):
         # Update paths if changed
         self.rufin_git_mgr.repo_path = self.config.rufin_repo_path
         self.igloo_git_mgr.repo_path = self.config.igloo_repo_path
+        self.nocblue_git_mgr.repo_path = self.config.nocblue_repo_path
 
         self.rufin_view.config = self.config
         self.igloo_view.config = self.config
@@ -598,7 +620,8 @@ class MainWindow(QMainWindow):
         view.refresh()
         for index in range(view.tabs.count()):
             tab = view.tabs.widget(index)
-            tab.runner.attach(self.active_git_mgr.repo_path, tab.runner.key, tab.runner.program)
+            if hasattr(tab, "runner"):
+                tab.runner.attach(self.active_git_mgr.repo_path, tab.runner.key, tab.runner.program)
         if hasattr(view, "release_tab"):
             view.release_tab.jobs_view.sync_remote_status()
         self.status_bar.showMessage(f"Refreshed {self.active_repo_name} repository state.", 3000)
@@ -609,7 +632,8 @@ class MainWindow(QMainWindow):
         view = self.project_tabs.currentWidget()
         tab = view.tabs.currentWidget()
         if hasattr(tab, "refresh_working_tree"):
-            runners = [self.runner] + [view.tabs.widget(index).runner for index in range(view.tabs.count())]
+            runners = [self.runner] + [view.tabs.widget(index).runner for index in range(view.tabs.count())
+                                      if hasattr(view.tabs.widget(index), "runner")]
             if any(runner.is_running for runner in runners):
                 return
             self.update_repo_display()
