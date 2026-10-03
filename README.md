@@ -73,6 +73,7 @@ source, then add a package with the plus icon or check entries and click the tra
 The tab shows the resulting Git diff
 and fills the commit subject. A subject you wrote manually is kept. Use **Commit & Push**
 to review and commit the changes.
+Generated subjects list the changed names, such as `feat(packages): add postgres and postgres-server`.
 
 Package sources are detected in BlueBuild recipes, `Brewfile`, and plain package lists such as
 `manifests/nix-profile.txt` or `restore/packages/brew.txt`. **Add source** saves another source

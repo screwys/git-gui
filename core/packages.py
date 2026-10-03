@@ -181,18 +181,20 @@ def edit_entries(source, text, *, add="", remove=()):
 
 def commit_subject(added, removed):
     def describe(names):
-        if len(names) == 1:
-            name = next(iter(names))
+        labels = set()
+        for name in names:
             if name.startswith("brew "):
                 name = name.removeprefix("brew ")
             if "#" in name:
                 name = name.rsplit("#", 1)[1].split(".")[-1]
-            if len(name) <= 48 and "\n" not in name:
-                return name
-        return f"{len(names)} package" + ("s" if len(names) != 1 else "")
+            labels.add(" ".join(name.split()))
+        labels = sorted(labels)
+        if len(labels) <= 2:
+            return " and ".join(labels)
+        return ", ".join(labels[:-1]) + " and " + labels[-1]
 
     if added and removed:
-        return "chore(packages): update package selection"
+        return f"chore(packages): add {describe(added)} and remove {describe(removed)}"
     if added:
         return f"feat(packages): add {describe(added)}"
     if removed:
