@@ -40,6 +40,7 @@ from ui.tabs.igloo_release_tab import IglooReleaseTab
 from ui.tabs.packages_tab import PackagesTab
 from ui.dialogs.settings_dialog import SettingsDialog
 from ui.components.icons import create_restart_icon, create_android_icon
+from ui.components.rpm_package_catalog import RpmPackageCatalog
 
 
 def get_gtk_button_layout() -> List[str]:
@@ -316,7 +317,7 @@ class IglooView(QWidget):
 
 
 class ProjectView(QWidget):
-    def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None, *, nocblue=False):
+    def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None, *, nocblue=False, rpm_catalog=None):
         super().__init__(parent)
         self.git_mgr = git_mgr
         self.config = config
@@ -325,7 +326,7 @@ class ProjectView(QWidget):
         self.tabs = QTabWidget()
         self.commit_tab = CommitTab(git_mgr, config)
         self.tabs.addTab(self.commit_tab, "Commit & Push")
-        self.packages_tab = PackagesTab(git_mgr, config, nocblue=nocblue)
+        self.packages_tab = PackagesTab(git_mgr, config, nocblue=nocblue, rpm_catalog=rpm_catalog)
         self.packages_tab.changed.connect(self._fill_package_commit)
         self.tabs.addTab(self.packages_tab, "Packages")
         self._package_subject = ""
@@ -350,6 +351,7 @@ class MainWindow(QMainWindow):
         self.rufin_git_mgr = GitManager(self.config.rufin_repo_path)
         self.igloo_git_mgr = GitManager(self.config.igloo_repo_path)
         self.nocblue_git_mgr = GitManager(self.config.nocblue_repo_path)
+        self.rpm_catalog = RpmPackageCatalog(self)
         self.runner = ProcessRunner(self)
         self._init_ui()
         self._wire_signals()
@@ -444,7 +446,7 @@ class MainWindow(QMainWindow):
 
         self.rufin_view = RufinView(self.rufin_git_mgr, self.config)
         self.igloo_view = IglooView(self.igloo_git_mgr, self.config)
-        self.nocblue_view = ProjectView(self.nocblue_git_mgr, self.config, nocblue=True)
+        self.nocblue_view = ProjectView(self.nocblue_git_mgr, self.config, nocblue=True, rpm_catalog=self.rpm_catalog)
 
         self.project_tabs.addWidget(self.rufin_view)
         self.project_tabs.addWidget(self.igloo_view)
@@ -533,7 +535,7 @@ class MainWindow(QMainWindow):
             view = self.project_tabs.widget(index)
             if os.path.realpath(view.git_mgr.repo_path) == os.path.realpath(path):
                 return view
-        view = ProjectView(GitManager(path), self.config)
+        view = ProjectView(GitManager(path), self.config, rpm_catalog=self.rpm_catalog)
         index = self.project_tabs.addWidget(view)
         self.project_bar.addTab(os.path.basename(os.path.normpath(path)))
         self.project_bar.setTabToolTip(index, path)

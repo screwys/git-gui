@@ -1,5 +1,39 @@
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
-from PyQt6.QtCore import Qt, QPointF
+from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap
+
+
+def create_add_icon() -> QIcon:
+    pix = QPixmap(24, 24)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor("#c9d1d9"), 1.8)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    painter.drawLine(12, 5, 12, 19)
+    painter.drawLine(5, 12, 19, 12)
+    painter.end()
+    return QIcon(pix)
+
+
+def create_trash_icon() -> QIcon:
+    pix = QPixmap(24, 24)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor("#c9d1d9"), 1.6)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.drawLine(5, 6, 19, 6)
+    painter.drawRoundedRect(9, 3, 6, 3, 1, 1)
+    painter.drawLine(7, 9, 8, 20)
+    painter.drawLine(8, 20, 16, 20)
+    painter.drawLine(16, 20, 17, 9)
+    painter.drawLine(10, 10, 10, 17)
+    painter.drawLine(14, 10, 14, 17)
+    painter.end()
+    return QIcon(pix)
 
 
 def create_restart_icon() -> QIcon:

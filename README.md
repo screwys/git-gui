@@ -69,7 +69,8 @@ Rufin, Igloo, and nocblue are default projects. Their repository paths are confi
 An existing added nocblue project appears once.
 
 Nocblue and added projects also have a **Packages** tab. Select RPM, Brew, or Nix, choose a
-source, then add a package or remove selected entries. The tab shows the resulting Git diff
+source, then add a package with the plus icon or check entries and click the trash icon.
+The tab shows the resulting Git diff
 and fills the commit subject. A subject you wrote manually is kept. Use **Commit & Push**
 to review and commit the changes.
 
@@ -78,6 +79,13 @@ Package sources are detected in BlueBuild recipes, `Brewfile`, and plain package
 file for that repository. RPM recipes support DNF and rpm-ostree install and remove lists;
 Nix lists retain full references and pinned revisions. Brewfiles accept a formula name or a
 declaration such as `cask "firefox"`. Package edits update the repository files.
+
+RPM autocomplete reads package names with `dnf --cacheonly repoquery` when you first type
+a package name. Projects share that list for the current app session, and typing matches
+the names locally. **Reload** reads the DNF cache again. The field reports whether a name
+is in cached metadata; names absent from the cache remain addable for repositories with
+other package sources. This lookup does not download metadata. If the cache is empty,
+run `dnf makecache` separately. DNF completion applies to RPM sources.
 
 For nocblue, edits to a manifest also update its matching runtime copy under
 `files/system/usr/share/nocblue/manifests`. Its current package sources are RPM recipes and
