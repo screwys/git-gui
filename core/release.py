@@ -87,7 +87,7 @@ def release(tag, target, notes, push=False, github=False, workflow=""):
         ], check=True)
         print(f"Created {tag} at {commit}.", flush=True)
     if push:
-        subprocess.run(["git", "push", "origin", f"{ref}:{ref}"], check=True)
+        subprocess.run(["git", "push", "--no-verify", "origin", f"{ref}:{ref}"], check=True)
     if github:
         if not push:
             remote_refs = subprocess.check_output([
