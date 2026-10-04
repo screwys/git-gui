@@ -37,6 +37,7 @@ from ui.tabs.publish_pr_tab import PublishPrTab
 from ui.tabs.release_tab import ReleaseTab
 from ui.tabs.commit_tab import CommitTab
 from ui.tabs.igloo_release_tab import IglooReleaseTab
+from ui.tabs.generic_release_tab import GenericReleaseTab
 from ui.tabs.packages_tab import PackagesTab
 from ui.dialogs.settings_dialog import SettingsDialog
 from ui.components.icons import create_restart_icon, create_android_icon
@@ -329,9 +330,18 @@ class ProjectView(QWidget):
         self.packages_tab = PackagesTab(git_mgr, config, nocblue=nocblue, rpm_catalog=rpm_catalog)
         self.packages_tab.changed.connect(self._fill_package_commit)
         self.tabs.addTab(self.packages_tab, "Packages")
+        self.release_tab = GenericReleaseTab(git_mgr)
+        self.tabs.addTab(self.release_tab, "Release")
         self._package_subject = ""
         layout.addWidget(self.tabs)
         self._update_package_tab()
+        state_key = f"project_subtab:{os.path.realpath(git_mgr.repo_path)}"
+        saved_tab = StateManager.get(state_key, "Commit & Push")
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index) == saved_tab and self.tabs.isTabVisible(index):
+                self.tabs.setCurrentIndex(index)
+        self.tabs.currentChanged.connect(
+            lambda index: StateManager.update(**{state_key: self.tabs.tabText(index)}))
 
     def _update_package_tab(self):
         enabled = (self.packages_tab.nocblue or
@@ -350,6 +360,7 @@ class ProjectView(QWidget):
         self._update_package_tab()
         if self.tabs.isTabVisible(self.tabs.indexOf(self.packages_tab)):
             self.packages_tab.refresh()
+        self.release_tab.refresh()
 
 
 class MainWindow(QMainWindow):
@@ -399,9 +410,10 @@ class MainWindow(QMainWindow):
         checks.poll_timer.setInterval(60000 if background else 12000)
         if checks.pr_number and checks.pr_state == "OPEN":
             checks.poll_timer.start()
-        for view in (self.rufin_view, self.igloo_view):
-            view.release_tab.jobs_view.poll_timer.setInterval(60000 if background else 15000)
-            view.release_tab.jobs_view.poll_timer.start()
+        for index in range(self.project_tabs.count()):
+            jobs = self.project_tabs.widget(index).release_tab.jobs_view
+            jobs.poll_timer.setInterval(60000 if background else 15000)
+            jobs.poll_timer.start()
 
     def closeEvent(self, event):
         event.ignore()
@@ -418,8 +430,8 @@ class MainWindow(QMainWindow):
         self.repo_refresh_timer.stop()
         # Read-only GitHub workers finish naturally before their Qt owners are destroyed.
         self.rufin_view.publish_tab.checks_view.poll_timer.stop()
-        for view in (self.rufin_view, self.igloo_view):
-            view.release_tab.jobs_view.poll_timer.stop()
+        for index in range(self.project_tabs.count()):
+            self.project_tabs.widget(index).release_tab.jobs_view.poll_timer.stop()
         self.quit_timer.start()
         self._finish_quit()
 

@@ -65,6 +65,25 @@ Click **+** after the project tabs to open the folder picker and select a Git re
 The app saves added projects and restores the last selected project after restarting.
 Each added project has a **Commit & Push** tab with file selection, diffs, an editor, and a terminal.
 
+Added projects also have a **Release** tab. Enter a tag and a commit, write release notes,
+then confirm **Release** to create an annotated tag, push it to origin, and publish on GitHub.
+Patch, Minor, and Major suggest a version from the latest local tag; any valid Git tag is accepted.
+The confirmation shows the exact commit. Commit version file changes before tagging.
+Uncheck both publication options to create the tag locally. Retries reuse a tag at the same commit
+and keep its annotation. Tags at another commit are never replaced.
+
+**Push tag to origin** and **Create GitHub release** are selected by default.
+To publish an existing remote tag, keep **Create GitHub release** selected and uncheck
+**Push tag to origin**. The remote tag must point to the selected commit.
+The app detects tag workflows that publish with `gh release create` or `softprops/action-gh-release`
+and selects them as the **Publisher**. For pdrive-sync-rs and rescue, use a `v*` tag.
+The app waits for their workflow to build the binaries and publish, then applies the entered
+release notes. For other projects, **GitHub CLI** creates the release directly.
+The publisher remains selectable. Unchecking **Create GitHub release** skips the app's publication
+step; a repository's tag workflow can still publish when its tag is pushed.
+**Jobs and Progress** shows the selected tag's workflows and release link. GitHub status and
+publication require GitHub CLI authentication.
+
 Rufin, Igloo, and nocblue are default projects. Their repository paths are configurable in Settings.
 An existing added nocblue project appears once.
 
