@@ -68,7 +68,9 @@ Each added project has a **Commit & Push** tab with file selection, diffs, an ed
 Rufin, Igloo, and nocblue are default projects. Their repository paths are configurable in Settings.
 An existing added nocblue project appears once.
 
-Nocblue and added projects also have a **Packages** tab. Select RPM, Brew, or Nix, choose a
+Nocblue has a **Packages** tab by default. For a custom project, enable **Packages** in
+Settings to show it. Projects with previously configured package sources keep it enabled.
+Select RPM, Brew, or Nix, choose a
 source, then add a package with the plus icon or check entries and click the trash icon.
 The tab shows the resulting Git diff
 and fills the commit subject. A subject you wrote manually is kept. Use **Commit & Push**

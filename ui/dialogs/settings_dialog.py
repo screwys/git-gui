@@ -15,9 +15,10 @@ from core.config import AppConfig, ConfigManager
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, config: AppConfig, parent=None):
+    def __init__(self, config: AppConfig, parent=None, *, project_path=None):
         super().__init__(parent)
         self.config = config
+        self.project_path = os.path.realpath(project_path) if project_path else None
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.resize(540, 440)
@@ -101,6 +102,14 @@ class SettingsDialog(QDialog):
         repos_layout.addLayout(h_nocblue)
 
         layout.addWidget(repos_grp)
+
+        if self.project_path:
+            project_group = QGroupBox(os.path.basename(self.project_path))
+            project_layout = QVBoxLayout(project_group)
+            self.packages_cb = QCheckBox("Packages")
+            self.packages_cb.toggled.connect(self._auto_save)
+            project_layout.addWidget(self.packages_cb)
+            layout.addWidget(project_group)
 
         # ---------------- Scripts Group ----------------
         scripts_grp = QGroupBox("Rufin Scripts")
@@ -211,6 +220,10 @@ class SettingsDialog(QDialog):
             target_edit.setText(chosen)
 
     def _load_values(self):
+        if self.project_path:
+            self.packages_cb.blockSignals(True)
+            self.packages_cb.setChecked(self.project_path in self.config.package_project_paths)
+            self.packages_cb.blockSignals(False)
         self.rufin_path_edit.blockSignals(True)
         self.igloo_path_edit.blockSignals(True)
         self.nocblue_path_edit.blockSignals(True)
@@ -246,6 +259,8 @@ class SettingsDialog(QDialog):
 
     def _reset_defaults(self):
         default = AppConfig()
+        if self.project_path:
+            self.packages_cb.setChecked(False)
         self.rufin_path_edit.setText(default.rufin_repo_path)
         self.igloo_path_edit.setText(default.igloo_repo_path)
         self.nocblue_path_edit.setText(default.nocblue_repo_path)
@@ -259,6 +274,12 @@ class SettingsDialog(QDialog):
         self._auto_save()
 
     def _auto_save(self):
+        if self.project_path:
+            enabled = self.packages_cb.isChecked()
+            if enabled and self.project_path not in self.config.package_project_paths:
+                self.config.package_project_paths.append(self.project_path)
+            elif not enabled and self.project_path in self.config.package_project_paths:
+                self.config.package_project_paths.remove(self.project_path)
         rufin = self.rufin_path_edit.text().strip()
         igloo = self.igloo_path_edit.text().strip()
         nocblue = self.nocblue_path_edit.text().strip()

@@ -19,6 +19,7 @@ class AppConfig:
     close_to_tray: bool = False
     project_paths: list[str] = field(default_factory=list)
     package_sources: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+    package_project_paths: list[str] = field(default_factory=list)
 
     def resolve_publish_script(self, current_repo: Optional[str] = None) -> str:
         repo = current_repo or self.rufin_repo_path
@@ -54,6 +55,8 @@ class ConfigManager:
                 data = json.load(f)
             valid_keys = {f.name for f in fields(AppConfig)}
             filtered = {k: v for k, v in data.items() if k in valid_keys}
+            if "package_project_paths" not in data:
+                filtered["package_project_paths"] = list(filtered.get("package_sources", {}))
             return AppConfig(**filtered)
         except Exception as e:
             print(f"Error loading config: {e}")

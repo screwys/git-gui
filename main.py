@@ -331,6 +331,12 @@ class ProjectView(QWidget):
         self.tabs.addTab(self.packages_tab, "Packages")
         self._package_subject = ""
         layout.addWidget(self.tabs)
+        self._update_package_tab()
+
+    def _update_package_tab(self):
+        enabled = (self.packages_tab.nocblue or
+                   os.path.realpath(self.git_mgr.repo_path) in self.config.package_project_paths)
+        self.tabs.setTabVisible(self.tabs.indexOf(self.packages_tab), enabled)
 
     def _fill_package_commit(self, subject):
         edit = self.commit_tab.summary_input
@@ -341,7 +347,9 @@ class ProjectView(QWidget):
 
     def refresh(self):
         self.commit_tab.refresh()
-        self.packages_tab.refresh()
+        self._update_package_tab()
+        if self.tabs.isTabVisible(self.tabs.indexOf(self.packages_tab)):
+            self.packages_tab.refresh()
 
 
 class MainWindow(QMainWindow):
@@ -569,7 +577,9 @@ class MainWindow(QMainWindow):
         self.refresh_active_repo()
 
     def open_settings(self):
-        dlg = SettingsDialog(self.config, self)
+        view = self.project_tabs.currentWidget()
+        project_path = view.git_mgr.repo_path if isinstance(view, ProjectView) and view is not self.nocblue_view else None
+        dlg = SettingsDialog(self.config, self, project_path=project_path)
         btn = self.top_bar.btn_settings
         btn_pos = btn.mapToGlobal(btn.rect().bottomRight())
         dlg.move(max(10, btn_pos.x() - dlg.width()), btn_pos.y() + 4)
