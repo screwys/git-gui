@@ -6,7 +6,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 class AppInstance:
     def __init__(self):
         runtime = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.RuntimeLocation)
-        self.address = os.path.join(runtime, "rufin-git-gui.socket")
+        self.address = os.path.join(runtime, "git-gui.socket")
         self.lock = QLockFile(self.address + ".lock")
         self.server = QLocalServer()
 

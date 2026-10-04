@@ -377,7 +377,7 @@ class MainWindow(QMainWindow):
         self.update_repo_display()
         self._quitting = False
         self.tray = QSystemTrayIcon(self.windowIcon(), self)
-        self.tray.setToolTip("Rufin Git GUI")
+        self.tray.setToolTip("Git GUI")
         menu = QMenu(self)
         menu.addAction("Open Git GUI", self.present)
         menu.addSeparator()
@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
             QApplication.instance().quit()
 
     def _init_ui(self):
-        self.setWindowTitle("Rufin Git GUI")
+        self.setWindowTitle("Git GUI")
         self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "git-gui.svg")))
         self.resize(1200, 780)
         self.setMinimumSize(880, 560)
@@ -682,8 +682,8 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Rufin Git GUI")
-    app.setDesktopFileName("rufin-git-gui")
+    app.setApplicationName("Git GUI")
+    app.setDesktopFileName("git-gui")
     app.setQuitOnLastWindowClosed(False)
     instance = AppInstance()
     if not instance.acquire():

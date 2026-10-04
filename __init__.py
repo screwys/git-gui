@@ -1,1 +1,1 @@
-# Rufin Git GUI package
+# Git GUI package

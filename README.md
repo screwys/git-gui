@@ -1,4 +1,4 @@
-# Rufin Git GUI
+# Git GUI
 
 A clean, fast, and extendable PyQt6 GUI designed for managing Git pull requests and releases with the Rufin scripts (`publish-pr.sh` and `release-rufin.sh`).
 
@@ -41,9 +41,9 @@ A clean, fast, and extendable PyQt6 GUI designed for managing Git pull requests 
 
 Launch directly from anywhere:
 ```bash
-rufin-git-gui
+git-gui
 # Or targeting a specific repository directory:
-rufin-git-gui /path/to/repo
+git-gui /path/to/repo
 ```
 
 You can also launch it from your application launcher / Noctalia via the installed `.desktop` entry.
@@ -55,7 +55,7 @@ python3 install-desktop.py
 ```
 
 The installer creates command links in `~/.local/bin` and installs the repository's
-`rufin-git-gui.desktop` entry in your application menu, with paths to this checkout and its icon.
+`git-gui.desktop` entry in your application menu, with paths to this checkout and its icon.
 Run it again if you move the checkout. Python 3, PyQt6, and PyYAML must be installed on the system.
 The Python dependencies are listed in `requirements.txt`.
 
@@ -139,7 +139,7 @@ using an existing commit when the original run already created one. Notification
 remain open or in the tray.
 
 **History** shows earlier commands and their recorded results. Logs and command records live in
-`$XDG_STATE_HOME/rufin-git-gui/jobs`, or `~/.local/state/rufin-git-gui/jobs` by default. The terminal
+`$XDG_STATE_HOME/git-gui/jobs`, or `~/.local/state/git-gui/jobs` by default. The terminal
 keeps the latest 10,000 displayed lines; full logs remain on disk.
 
 The app also detects Rufin publish and release helpers started elsewhere. Those helpers are shown
@@ -164,10 +164,10 @@ working tree or generate diffs. Opening or refreshing a repository updates its c
 ## Architecture & Extensibility
 
 ```
-rufin-git-gui/
+git-gui/
 ├── main.py                     # Main window, draggable top bar, tab host
 ├── core/
-│   ├── config.py               # Settings manager (reads/writes ~/.config/rufin-git-gui/config.json)
+│   ├── config.py               # Settings manager (reads/writes ~/.config/git-gui/config.json)
 │   ├── git_manager.py          # Git status, additions/deletions stats, diffs, branches, fetch, pull
 │   ├── runner.py               # Attach to commands and stream saved output
 │   ├── jobs.py                 # Detached command supervisor and durable records
@@ -183,7 +183,7 @@ rufin-git-gui/
 │   └── tabs/
 │       ├── publish_pr_tab.py   # PR publication workflow
 │       └── release_tab.py      # Release workflow
-└── rufin-git-gui               # Shell wrapper script
+└── git-gui               # Shell wrapper script
 ```
 
 ### Adding New Workflows / Tabs

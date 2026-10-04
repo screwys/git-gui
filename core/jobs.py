@@ -9,7 +9,14 @@ import time
 
 
 def jobs_root():
-    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "rufin-git-gui/jobs"
+    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    root = state / "git-gui"
+    legacy = state / "rufin-git-gui"
+    if legacy.is_dir() and not root.exists():
+        legacy.rename(root)
+        # Commands started before the rename still use their original paths.
+        legacy.symlink_to(root, target_is_directory=True)
+    return root / "jobs"
 
 
 def write_record(path, record):
