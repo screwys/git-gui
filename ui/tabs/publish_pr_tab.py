@@ -466,6 +466,7 @@ class PublishPrTab(QWidget):
         pending = StateManager.get("rufin_publish_pending")
         if not pending or pending.get("repo_path") != self.git_mgr.repo_path:
             return
+        self._form_context = (self.git_mgr.repo_path, pending.get("branch", ""))
         self.branch_input.setText(pending.get("branch", ""))
         self.base_input.setText(pending.get("base", self.base_input.text()))
         self.title_input.setText(pending.get("title", ""))
