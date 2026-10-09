@@ -669,6 +669,22 @@ class PublishPrTab(QWidget):
         if "\n" not in self._output_pending:
             return
         text, self._output_pending = self._output_pending.rsplit("\n", 1)
+        for branch in re.findall(r"(?m)^Publishing branch: (.+)$", text):
+            pending = StateManager.get("rufin_publish_pending") or {}
+            job_id = self.runner.path.parent.name if self.runner.path else None
+            if pending.get("repo_path") != self.git_mgr.repo_path or pending.get("job_id") != job_id:
+                continue
+            previous_branch = pending["branch"]
+            pending["branch"] = branch
+            for key in ("args", "retry_args"):
+                args = pending[key]
+                if "--branch" in args:
+                    args[args.index("--branch") + 1] = branch
+                else:
+                    args[:0] = ["--branch", branch]
+            StateManager.update(rufin_publish_pending=pending)
+            if self.branch_input.text().strip() == previous_branch:
+                self.branch_input.setText(branch)
         m = re.search(r"https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)", text)
         if m:
             url = m.group(0)
