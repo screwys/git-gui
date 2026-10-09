@@ -42,7 +42,8 @@ class PublishRetryTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         script = self.repo / ".git" / "publish.sh"
-        script.touch()
+        script.write_text('#!/bin/sh\ngit branch --show-current\n')
+        script.chmod(0o755)
         self.tab = PublishPrTab(GitManager(str(self.repo)), AppConfig(publish_pr_script=str(script)))
         self.addCleanup(self.tab.deleteLater)
 
@@ -92,12 +93,12 @@ class PublishRetryTests(unittest.TestCase):
             self.assertEqual(args[args.index("--body") + 1], body)
             self.assertEqual(call.kwargs["env_vars"]["RUFIN_ALLOW_PR_BODY"], "1")
 
-    def test_failed_push_clears_consumed_commit_subject_and_keeps_body(self):
+    def test_failed_push_keeps_the_form_for_resuming(self):
         self.tab.title_input.setText("feat: add Connect")
         self.tab._submitted_title = "feat: add Connect"
         self.tab._submitted_body = self.body
         self.tab._on_process_finished(1)
-        self.assertEqual(self.tab.title_input.text(), "")
+        self.assertEqual(self.tab.title_input.text(), "feat: add Connect")
         self.assertEqual(self.tab.body_input.toPlainText(), self.body)
 
     def test_success_does_not_discard_edits_made_while_running(self):

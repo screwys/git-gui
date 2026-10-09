@@ -621,7 +621,8 @@ class PublishPrTab(QWidget):
         if not os.path.exists(script_path):
             QMessageBox.critical(self, "Script Not Found", f"Cannot find publish script at:\n{script_path}")
             return
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.git_mgr.repo_path,
+        branch_ref = f"refs/heads/{pending['branch']}"
+        head = subprocess.run(["git", "rev-parse", "--verify", branch_ref], cwd=self.git_mgr.repo_path,
                               capture_output=True, text=True, check=False).stdout.strip()
         committed = False
         if head and pending.get("title") and head != pending.get("head_before"):
@@ -633,7 +634,10 @@ class PublishPrTab(QWidget):
                                           text=True, check=False).stdout.splitlines()
                 committed = pending["title"] in subjects
             else:
-                committed = self.git_mgr.get_commit_subject() == pending["title"]
+                subject = subprocess.run(["git", "log", "-1", "--format=%s", branch_ref],
+                                         cwd=self.git_mgr.repo_path, capture_output=True,
+                                         text=True, check=False).stdout.strip()
+                committed = subject == pending["title"]
         args = pending["retry_args"] if committed else pending["args"]
         popup = ConfirmPreviewDialog(
             title="Resume Pull Request",
@@ -875,6 +879,16 @@ class PublishPrTab(QWidget):
             QMessageBox.warning(self, "Commit Subject", "Enter a subject for the changes being committed.")
             return
 
+        if not branch:
+            resolved = subprocess.run(
+                [script_path, "--base", base_branch, "--print-branch", title],
+                cwd=self.git_mgr.repo_path, capture_output=True, text=True, check=False,
+            )
+            if resolved.returncode != 0:
+                QMessageBox.critical(self, "Publish Branch", resolved.stderr.strip())
+                return
+            branch = resolved.stdout.strip()
+
         args = []
         if base_branch:
             args.extend(["--base", base_branch])
@@ -940,6 +954,7 @@ class PublishPrTab(QWidget):
         if not popup.exec():
             return
 
+        self.branch_input.setText(branch)
         pending = {
             "repo_path": self.git_mgr.repo_path,
             "branch": branch,
