@@ -1,5 +1,5 @@
 from typing import List, Set
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QItemSelectionModel
 from PyQt6.QtGui import QPainter, QColor, QPen
 from PyQt6.QtWidgets import (
     QWidget,
@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QLabel,
     QSizePolicy,
+    QAbstractItemView,
 )
 from core.git_manager import GitFileItem
 
@@ -64,8 +65,9 @@ class FileListWidget(QWidget):
     view_diff_requested = pyqtSignal(list)
     publish_requested = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, read_only=False):
         super().__init__(parent)
+        self.read_only = read_only
         self.items: List[GitFileItem] = []
         self.checked_paths: Set[str] = set()
         self._select_all_on_refresh = True
@@ -94,6 +96,7 @@ class FileListWidget(QWidget):
         self.select_all_cb = MinimalCheckBox(True, self)
         self.select_all_cb.setToolTip("Select / Deselect All")
         self.select_all_cb.toggled.connect(self._on_select_all_toggled)
+        self.select_all_cb.setVisible(not self.read_only)
         header.addWidget(self.select_all_cb)
         layout.addLayout(header)
 
@@ -106,6 +109,7 @@ class FileListWidget(QWidget):
         self.btn_publish.setFixedHeight(22)
         self.btn_publish.setStyleSheet("font-size: 11px; padding: 1px 10px; font-weight: 600;")
         self.btn_publish.clicked.connect(self.publish_requested.emit)
+        self.btn_publish.setVisible(not self.read_only)
         actions.addWidget(self.btn_publish)
 
         self.btn_view_diff = QPushButton("View Diff")
@@ -121,6 +125,8 @@ class FileListWidget(QWidget):
         self.list_widget.setColumnCount(4)
         self.list_widget.setHeaderHidden(True)
         self.list_widget.setRootIsDecorated(False)
+        if self.read_only:
+            self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list_widget.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.list_widget.header().setStretchLastSection(False)
         for column in (0, 2, 3):
@@ -142,6 +148,7 @@ class FileListWidget(QWidget):
         self._updating = True
         current = self.list_widget.currentItem()
         current_path = current.data(0, Qt.ItemDataRole.UserRole) if current else None
+        selected_paths = set(self.get_selected_paths()) if self.read_only else set()
         scroll = self.list_widget.verticalScrollBar().value()
         self.items = items
         self.list_widget.clear()
@@ -175,14 +182,20 @@ class FileListWidget(QWidget):
             ])
             list_item.setData(0, Qt.ItemDataRole.UserRole, item.path)
             list_item.setToolTip(1, item.path)
-            list_item.setCheckState(0, Qt.CheckState.Checked if item.path in self.checked_paths else Qt.CheckState.Unchecked)
+            if not self.read_only:
+                list_item.setCheckState(0, Qt.CheckState.Checked if item.path in self.checked_paths else Qt.CheckState.Unchecked)
             status_color = {"A": "#3fb950", "U": "#3fb950", "D": "#f85149", "R": "#a371f7"}.get(item.display_status, "#d29922")
             list_item.setForeground(0, QColor(status_color))
             for column, color in ((2, "#3fb950"), (3, "#f85149")):
                 list_item.setForeground(column, QColor(color))
                 list_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             if item.path == current_path:
-                self.list_widget.setCurrentItem(list_item)
+                if self.read_only:
+                    self.list_widget.setCurrentItem(list_item, 0, QItemSelectionModel.SelectionFlag.NoUpdate)
+                else:
+                    self.list_widget.setCurrentItem(list_item)
+            if self.read_only:
+                list_item.setSelected(item.path in selected_paths)
 
         self.list_widget.verticalScrollBar().setValue(scroll)
         self._updating = False
@@ -223,14 +236,16 @@ class FileListWidget(QWidget):
         self.selection_changed.emit(list(self.checked_paths))
 
     def _on_item_clicked(self, list_item: QTreeWidgetItem, column: int):
-        if column == 0:
+        if column == 0 and not self.read_only:
             return
         path = list_item.data(0, Qt.ItemDataRole.UserRole)
         if path:
             self.file_selected.emit(path)
 
     def _on_view_diff_clicked(self):
-        self.view_diff_requested.emit(list(self.checked_paths))
+        self.view_diff_requested.emit(self.get_selected_paths())
 
     def get_selected_paths(self) -> List[str]:
+        if self.read_only:
+            return [item.data(0, Qt.ItemDataRole.UserRole) for item in self.list_widget.selectedItems()]
         return list(self.checked_paths)

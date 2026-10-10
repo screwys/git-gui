@@ -36,6 +36,7 @@ from ui.style import DARK_STYLESHEET
 from ui.tabs.publish_pr_tab import PublishPrTab
 from ui.tabs.release_tab import ReleaseTab
 from ui.tabs.commit_tab import CommitTab
+from ui.tabs.changes_tab import ChangesTab
 from ui.tabs.igloo_release_tab import IglooReleaseTab
 from ui.tabs.generic_release_tab import GenericReleaseTab
 from ui.tabs.packages_tab import PackagesTab
@@ -276,16 +277,22 @@ class RufinView(QWidget):
 
         self.tabs.addTab(self.publish_tab, "Publish PR")
         self.tabs.addTab(self.release_tab, "Release")
+        self.changes_tab = ChangesTab(self.git_mgr, self.config)
+        self.tabs.addTab(self.changes_tab, "Changes")
 
         saved_tab = StateManager.get("rufin_subtab", "Publish PR")
-        self.tabs.setCurrentIndex(1 if saved_tab == "Release" else 0)
-        self.tabs.currentChanged.connect(lambda idx: StateManager.update(rufin_subtab="Release" if idx == 1 else "Publish PR"))
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index) == saved_tab:
+                self.tabs.setCurrentIndex(index)
+        self.tabs.currentChanged.connect(lambda idx: StateManager.update(rufin_subtab=self.tabs.tabText(idx)))
 
         layout.addWidget(self.tabs)
 
     def refresh(self):
         self.publish_tab.refresh()
         self.release_tab.refresh()
+        if self.tabs.currentWidget() is self.changes_tab:
+            self.changes_tab.refresh()
 
 
 class IglooView(QWidget):
@@ -305,16 +312,22 @@ class IglooView(QWidget):
 
         self.tabs.addTab(self.commit_tab, "Commit & Push")
         self.tabs.addTab(self.release_tab, "Release")
+        self.changes_tab = ChangesTab(self.git_mgr, self.config)
+        self.tabs.addTab(self.changes_tab, "Changes")
 
         saved_tab = StateManager.get("igloo_subtab", "Commit & Push")
-        self.tabs.setCurrentIndex(1 if saved_tab == "Release" else 0)
-        self.tabs.currentChanged.connect(lambda idx: StateManager.update(igloo_subtab="Release" if idx == 1 else "Commit & Push"))
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index) == saved_tab:
+                self.tabs.setCurrentIndex(index)
+        self.tabs.currentChanged.connect(lambda idx: StateManager.update(igloo_subtab=self.tabs.tabText(idx)))
 
         layout.addWidget(self.tabs)
 
     def refresh(self):
         self.commit_tab.refresh()
         self.release_tab.refresh()
+        if self.tabs.currentWidget() is self.changes_tab:
+            self.changes_tab.refresh()
 
 
 class ProjectView(QWidget):
@@ -332,6 +345,8 @@ class ProjectView(QWidget):
         self.tabs.addTab(self.packages_tab, "Packages")
         self.release_tab = GenericReleaseTab(git_mgr)
         self.tabs.addTab(self.release_tab, "Release")
+        self.changes_tab = ChangesTab(self.git_mgr, self.config)
+        self.tabs.addTab(self.changes_tab, "Changes")
         self._package_subject = ""
         layout.addWidget(self.tabs)
         self._update_package_tab()
@@ -361,6 +376,8 @@ class ProjectView(QWidget):
         if self.tabs.isTabVisible(self.tabs.indexOf(self.packages_tab)):
             self.packages_tab.refresh()
         self.release_tab.refresh()
+        if self.tabs.currentWidget() is self.changes_tab:
+            self.changes_tab.refresh()
 
 
 class MainWindow(QMainWindow):

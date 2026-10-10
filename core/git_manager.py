@@ -13,6 +13,7 @@ class GitFileItem:
     is_untracked: bool = False
     is_staged: bool = False
     is_deleted: bool = False
+    original_path: str | None = None
 
     @property
     def filename(self) -> str:
@@ -37,6 +38,31 @@ class GitFileItem:
         if "R" in s:
             return "R"
         return s if s else "M"
+
+
+@dataclass
+class GitWorktree:
+    path: str
+    branch: str = ""
+    head: str = ""
+    bare: bool = False
+    prunable: bool = False
+    locked: bool = False
+
+
+@dataclass(frozen=True)
+class GitComparison:
+    left: str
+    right: str | None = None
+    include_untracked: bool = False
+
+
+@dataclass(frozen=True)
+class GitCommit:
+    oid: str
+    short_oid: str
+    date: str
+    subject: str
 
 
 class GitManager:
@@ -72,6 +98,137 @@ class GitManager:
         code, out, _ = self._run_git(["branch", "--format=%(refname:short)"])
         branches = [b.strip() for b in out.splitlines() if b.strip()]
         return current, branches
+
+    def _read_git(self, args: list[str]) -> str:
+        code, out, err = self._run_git(args)
+        if code != 0:
+            raise RuntimeError(err.strip() or "Git command failed")
+        return out
+
+    def get_worktrees(self) -> list[GitWorktree]:
+        out = self._read_git(["worktree", "list", "--porcelain", "-z"])
+        worktrees = []
+        current = None
+        for field in out.split("\0"):
+            key, _, value = field.partition(" ")
+            if key == "worktree":
+                current = GitWorktree(value)
+                worktrees.append(current)
+            elif current is not None:
+                if key == "branch":
+                    current.branch = value.removeprefix("refs/heads/")
+                elif key == "HEAD":
+                    current.head = value
+                elif key in ("bare", "prunable", "locked"):
+                    setattr(current, key, True)
+        return worktrees
+
+    def get_comparison_refs(self) -> list[str]:
+        out = self._read_git([
+            "for-each-ref", "--format=%(refname:short)",
+            "refs/heads", "refs/remotes", "refs/tags",
+        ])
+        return out.splitlines()
+
+    def get_default_base(self, branch: str) -> str:
+        code, out, _ = self._run_git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        refs = self.get_comparison_refs()
+        for ref in (f"origin/{branch}", branch, out.strip() if code == 0 else ""):
+            if ref and ref in refs:
+                return ref
+        return branch
+
+    def resolve_commit(self, ref: str) -> str:
+        return self._read_git([
+            "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}",
+        ]).strip()
+
+    def working_comparison(self) -> GitComparison:
+        code, out, _ = self._run_git(["rev-parse", "--verify", "HEAD"])
+        left = out.strip() if code == 0 else self._read_git(["hash-object", "-t", "tree", "/dev/null"]).strip()
+        return GitComparison(left, include_untracked=True)
+
+    def branch_comparison(self, base: str, include_uncommitted: bool) -> GitComparison:
+        base_oid = self.resolve_commit(base)
+        head = self.resolve_commit("HEAD")
+        left = self._read_git(["merge-base", base_oid, head]).strip()
+        return GitComparison(left, None if include_uncommitted else head, include_uncommitted)
+
+    def commit_comparison(self, ref: str) -> GitComparison:
+        oid = self.resolve_commit(ref)
+        parents = self._read_git(["rev-list", "--parents", "-n", "1", oid]).split()
+        left = parents[1] if len(parents) > 1 else self._read_git(["hash-object", "-t", "tree", "/dev/null"]).strip()
+        return GitComparison(left, oid)
+
+    def get_commits(self, limit: int = 200) -> list[GitCommit]:
+        code, out, err = self._run_git([
+            "log", f"-{limit}", "--format=%H%x00%h%x00%cs%x00%s", "HEAD", "--",
+        ])
+        if code != 0:
+            # A new repository has no history yet.
+            if self._run_git(["rev-parse", "--verify", "HEAD"])[0] != 0:
+                return []
+            raise RuntimeError(err.strip() or "Could not load commits")
+        return [GitCommit(*line.split("\0", 3)) for line in out.splitlines()]
+
+    @staticmethod
+    def _comparison_args(comparison: GitComparison) -> list[str]:
+        return [comparison.left] + ([comparison.right] if comparison.right else [])
+
+    def get_comparison_files(self, comparison: GitComparison) -> list[GitFileItem]:
+        revisions = self._comparison_args(comparison)
+        fields = self._read_git(["diff", "--name-status", "-z", "--find-renames", *revisions, "--"]).split("\0")
+        items = []
+        index = 0
+        while index < len(fields) and fields[index]:
+            status, path = fields[index:index + 2]
+            index += 2
+            original = None
+            if status.startswith(("R", "C")):
+                original, path = path, fields[index]
+                index += 1
+            items.append(GitFileItem(path, status, is_deleted=status == "D", original_path=original))
+
+        fields = iter(self._read_git(["diff", "--numstat", "-z", "--find-renames", *revisions, "--"]).split("\0"))
+        stats = {}
+        for field in fields:
+            if not field:
+                continue
+            adds, dels, path = field.split("\t", 2)
+            if not path:
+                next(fields)  # Original path of a rename.
+                path = next(fields)
+            stats[path] = (int(adds) if adds.isdigit() else 0, int(dels) if dels.isdigit() else 0)
+        for item in items:
+            item.additions, item.deletions = stats.get(item.path, (0, 0))
+
+        if comparison.include_untracked:
+            paths = self._read_git(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0")
+            for path in paths:
+                if path:
+                    try:
+                        additions = self._count_text_lines(os.path.join(self.repo_path, path))
+                    except OSError:
+                        additions = 0
+                    items.append(GitFileItem(path, "??", additions=additions, is_untracked=True))
+        return items
+
+    def get_comparison_diff(self, comparison: GitComparison, items: list[GitFileItem]) -> str:
+        if not items:
+            return ""
+        paths = list(dict.fromkeys(
+            path for item in items if not item.is_untracked
+            for path in (item.original_path, item.path) if path is not None
+        ))
+        chunks = []
+        if paths:
+            chunks.append(self._read_git([
+                "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
+                *self._comparison_args(comparison), "--", *paths,
+            ]))
+        if comparison.include_untracked:
+            chunks.append(self._format_untracked_diff([item.path for item in items if item.is_untracked]))
+        return "\n\n".join(chunk.strip() for chunk in chunks if chunk.strip())
 
     def get_pr_draft(self, branch: str) -> Dict[str, str]:
         draft = {}
