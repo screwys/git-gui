@@ -70,6 +70,7 @@ class FileListWidget(QWidget):
         self.read_only = read_only
         self.items: List[GitFileItem] = []
         self.checked_paths: Set[str] = set()
+        self.selectable_paths: Set[str] = set()
         self._select_all_on_refresh = True
         self._updating = False
         self._init_ui()
@@ -144,13 +145,14 @@ class FileListWidget(QWidget):
         self.list_widget.itemChanged.connect(self._on_row_checked)
         layout.addWidget(self.list_widget)
 
-    def set_files(self, items: List[GitFileItem]):
+    def set_files(self, items: List[GitFileItem], *, selectable_paths=None):
         self._updating = True
         current = self.list_widget.currentItem()
         current_path = current.data(0, Qt.ItemDataRole.UserRole) if current else None
         selected_paths = set(self.get_selected_paths()) if self.read_only else set()
         scroll = self.list_widget.verticalScrollBar().value()
         self.items = items
+        self.selectable_paths = ({i.path for i in items} if selectable_paths is None else set(selectable_paths))
         self.list_widget.clear()
 
         total_adds = sum(i.additions for i in items)
@@ -162,15 +164,14 @@ class FileListWidget(QWidget):
         )
 
         if self._select_all_on_refresh:
-            self.checked_paths = {i.path for i in items}
+            self.checked_paths = set(self.selectable_paths)
         else:
-            current_paths = {i.path for i in items}
-            self.checked_paths = self.checked_paths.intersection(current_paths)
-        if items:
-            self._select_all_on_refresh = len(self.checked_paths) == len(items)
+            self.checked_paths.intersection_update(self.selectable_paths)
+        if self.selectable_paths:
+            self._select_all_on_refresh = self.checked_paths == self.selectable_paths
 
         self.select_all_cb.blockSignals(True)
-        self.select_all_cb.setChecked(len(self.checked_paths) == len(items) and len(items) > 0)
+        self.select_all_cb.setChecked(bool(self.selectable_paths) and self.checked_paths == self.selectable_paths)
         self.select_all_cb.blockSignals(False)
 
         for item in items:
@@ -182,8 +183,10 @@ class FileListWidget(QWidget):
             ])
             list_item.setData(0, Qt.ItemDataRole.UserRole, item.path)
             list_item.setToolTip(1, item.path)
-            if not self.read_only:
+            if not self.read_only and item.path in self.selectable_paths:
                 list_item.setCheckState(0, Qt.CheckState.Checked if item.path in self.checked_paths else Qt.CheckState.Unchecked)
+            else:
+                list_item.setFlags(list_item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
             status_color = {"A": "#3fb950", "U": "#3fb950", "D": "#f85149", "R": "#a371f7"}.get(item.display_status, "#d29922")
             list_item.setForeground(0, QColor(status_color))
             for column, color in ((2, "#3fb950"), (3, "#f85149")):
@@ -204,6 +207,8 @@ class FileListWidget(QWidget):
         if self._updating or column != 0:
             return
         path = item.data(0, Qt.ItemDataRole.UserRole)
+        if path not in self.selectable_paths:
+            return
         checked = item.checkState(0) == Qt.CheckState.Checked
         if checked:
             self.checked_paths.add(path)
@@ -211,10 +216,10 @@ class FileListWidget(QWidget):
             self.checked_paths.discard(path)
 
         self.select_all_cb.blockSignals(True)
-        self.select_all_cb.setChecked(len(self.checked_paths) == len(self.items) and len(self.items) > 0)
+        self.select_all_cb.setChecked(bool(self.selectable_paths) and self.checked_paths == self.selectable_paths)
         self.select_all_cb.blockSignals(False)
-        if self.items:
-            self._select_all_on_refresh = len(self.checked_paths) == len(self.items)
+        if self.selectable_paths:
+            self._select_all_on_refresh = self.checked_paths == self.selectable_paths
 
         self.selection_changed.emit(list(self.checked_paths))
 
@@ -224,21 +229,22 @@ class FileListWidget(QWidget):
         self._select_all_on_refresh = is_checked
         self._updating = True
         if is_checked:
-            self.checked_paths = {i.path for i in self.items}
+            self.checked_paths = set(self.selectable_paths)
         else:
             self.checked_paths.clear()
 
         for idx in range(self.list_widget.topLevelItemCount()):
             item = self.list_widget.topLevelItem(idx)
-            item.setCheckState(0, Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
+            if item.data(0, Qt.ItemDataRole.UserRole) in self.selectable_paths:
+                item.setCheckState(0, Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
 
         self._updating = False
         self.selection_changed.emit(list(self.checked_paths))
 
     def _on_item_clicked(self, list_item: QTreeWidgetItem, column: int):
-        if column == 0 and not self.read_only:
-            return
         path = list_item.data(0, Qt.ItemDataRole.UserRole)
+        if column == 0 and not self.read_only and path in self.selectable_paths:
+            return
         if path:
             self.file_selected.emit(path)
 

@@ -147,6 +147,8 @@ class PublishPrTab(QWidget):
         self._detect_worker: Optional[BranchPrDetectWorker] = None
         self._latest_worker: Optional[LatestPrDetectWorker] = None
         self._form_context = None
+        self._branch_comparison = None
+        self._working_tree_items = []
         self._submitted_title = ""
         self._submitted_body = ""
         self._output_pending = ""
@@ -183,6 +185,9 @@ class PublishPrTab(QWidget):
 
         # 1. Changes File List (Top, expands to take space)
         self.file_list = FileListWidget()
+        self.branch_diff_error = QLabel("Branch diff unavailable")
+        self.branch_diff_error.hide()
+        self.file_list.layout().insertWidget(2, self.branch_diff_error)
         self.left_splitter.addWidget(self.file_list)
 
         # 2. Form Widget (Bottom, fits without any scrollbar)
@@ -408,6 +413,7 @@ class PublishPrTab(QWidget):
         self.branch_input.editingFinished.connect(self.refresh)
         self.branch_input.textChanged.connect(self._update_publish_button)
         self.base_input.textChanged.connect(self._update_publish_button)
+        self.base_input.editingFinished.connect(self.refresh_working_tree)
         self.title_input.textChanged.connect(self._update_publish_button)
         self.body_input.textChanged.connect(self._update_publish_button)
         self.phase_input.textChanged.connect(self._update_publish_button)
@@ -734,19 +740,33 @@ class PublishPrTab(QWidget):
         self.terminal.repo_path = self.git_mgr.repo_path
         self.checks_view.repo_path = self.git_mgr.repo_path
 
-        items = self.git_mgr.get_status_files()
-        self.file_list.set_files(items)
+        self._working_tree_items = self.git_mgr.get_status_files()
+        self._branch_comparison = None
+        try:
+            base = self.base_input.text().strip() or self.config.default_base_branch
+            remote_base = f"origin/{base}"
+            base_ref = remote_base if remote_base in self.git_mgr.get_comparison_refs() else base
+            self._branch_comparison = self.git_mgr.branch_comparison(base_ref, True)
+            items = self.git_mgr.get_comparison_files(self._branch_comparison)
+            branch_paths = {item.path for item in items}
+            items.extend(item for item in self._working_tree_items if item.path not in branch_paths)
+            self.branch_diff_error.hide()
+        except RuntimeError as error:
+            self._branch_comparison = None
+            items = self._working_tree_items
+            self.branch_diff_error.setToolTip(str(error))
+            self.branch_diff_error.show()
+        self.file_list.set_files(items, selectable_paths=[item.path for item in self._working_tree_items])
+        if self._branch_comparison is None:
+            self.file_list.title_lbl.setText(f"Uncommitted ({len(items)})")
 
-        selected_paths = self.file_list.get_selected_paths()
         preview_path = self.diff_viewer.current_rel_path
         if any(item.path == preview_path for item in items):
             self._show_single_file_diff(preview_path)
-        elif len(selected_paths) == 1:
-            self._show_single_file_diff(selected_paths[0])
         elif items:
-            self._show_multi_file_diff(selected_paths)
+            self._show_multi_file_diff([item.path for item in items])
         else:
-            self.diff_viewer.set_diff("", "Clean working tree")
+            self.diff_viewer.set_diff("", "No branch changes" if self._branch_comparison else "Clean working tree")
 
     def _detect_pr(self, curr_branch):
         if curr_branch and curr_branch != (self.base_input.text().strip() or self.config.default_base_branch):
@@ -822,9 +842,20 @@ class PublishPrTab(QWidget):
                 }
             )
 
+    def _preview_diff(self, paths: List[str]):
+        if self._branch_comparison is None:
+            return self.git_mgr.get_diff(paths)
+        items = [item for item in self.file_list.items if item.path in paths]
+        try:
+            return self.git_mgr.get_comparison_diff(self._branch_comparison, items) or "No net branch changes"
+        except RuntimeError as error:
+            self.branch_diff_error.setToolTip(str(error))
+            self.branch_diff_error.show()
+            return str(error)
+
     def _show_single_file_diff(self, path: str):
-        diff_text = self.git_mgr.get_diff([path])
         item = next((i for i in self.file_list.items if i.path == path), None)
+        diff_text = self._preview_diff([path])
         adds = item.additions if item else 0
         dels = item.deletions if item else 0
         self.diff_viewer.set_diff(diff_text, path, adds, dels, rel_path=path)
@@ -834,9 +865,15 @@ class PublishPrTab(QWidget):
         return self.git_mgr.get_diff(paths) if paths else ""
 
     def _show_multi_file_diff(self, paths: List[str]):
+        if self._branch_comparison and set(paths) == self.file_list.selectable_paths:
+            paths = [item.path for item in self.file_list.items]
         selected_items = [i for i in self.file_list.items if i.path in paths]
         adds = sum(i.additions for i in selected_items)
         dels = sum(i.deletions for i in selected_items)
+        if self._branch_comparison:
+            diff_text = self._preview_diff(paths)
+            self.diff_viewer.set_diff(diff_text, f"Branch Changes ({len(selected_items)} files)", adds, dels)
+            return
         if len(paths) == len(self.file_list.items) and paths:
             diff_text = self.git_mgr.get_diff()
             self.diff_viewer.set_diff(diff_text, f"All Changes ({len(self.file_list.items)} files)", adds, dels, rel_path=None)
@@ -890,7 +927,7 @@ class PublishPrTab(QWidget):
         skip_pre_push = self.skip_pre_push_cb.isChecked()
 
         selected_paths = self.file_list.get_selected_paths()
-        all_paths = [i.path for i in self.file_list.items]
+        all_paths = [i.path for i in self._working_tree_items]
         partial_files = bool(selected_paths and len(selected_paths) < len(all_paths))
         if all_paths and not title:
             QMessageBox.warning(self, "Commit Subject", "Enter a subject for the changes being committed.")
