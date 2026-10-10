@@ -78,6 +78,8 @@ class DiffSyntaxHighlighter(QSyntaxHighlighter):
 
 
 class DiffCodeEditor(QPlainTextEdit):
+    editing_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.line_meta: List[Dict] = []
@@ -101,6 +103,27 @@ class DiffCodeEditor(QPlainTextEdit):
             "QPlainTextEdit { background-color: #0b0e14; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 2px; font-family: monospace; }"
         )
         self.update_line_number_area_width(0)
+
+    def _prepare_edit(self):
+        if self.is_diff_mode and not self.isReadOnly():
+            self.editing_requested.emit()
+
+    def keyPressEvent(self, event):
+        if (event.text() and event.text().isprintable()) or event.key() in (
+            Qt.Key.Key_Backspace, Qt.Key.Key_Delete, Qt.Key.Key_Return,
+            Qt.Key.Key_Enter, Qt.Key.Key_Tab,
+        ) or event.matches(QKeySequence.StandardKey.Cut):
+            self._prepare_edit()
+        super().keyPressEvent(event)
+
+    def insertFromMimeData(self, source):
+        self._prepare_edit()
+        super().insertFromMimeData(source)
+
+    def inputMethodEvent(self, event):
+        if event.commitString() or event.preeditString():
+            self._prepare_edit()
+        super().inputMethodEvent(event)
 
     def line_number_area_width(self) -> int:
         digits = max(3, len(str(max(1, self.blockCount()))))
@@ -238,6 +261,7 @@ class DiffViewer(QWidget):
         self.view_mode = "diff"  # "diff" or "file"
         self._is_dirty = False
         self._revert_backup_content: Optional[str] = None
+        self._revert_path: Optional[str] = None
         self._init_ui()
 
     def _init_ui(self):
@@ -268,7 +292,7 @@ class DiffViewer(QWidget):
         controls.setContentsMargins(4, 0, 4, 2)
         controls.setSpacing(4)
 
-        # Mode toggles: [Diff] [Edit File]
+        # Mode toggles
         self.btn_diff_mode = QPushButton("Diff")
         self.btn_diff_mode.setFixedHeight(22)
         self.btn_diff_mode.setCheckable(True)
@@ -277,7 +301,7 @@ class DiffViewer(QWidget):
         self.btn_diff_mode.clicked.connect(self._switch_to_diff_mode)
         controls.addWidget(self.btn_diff_mode)
 
-        self.btn_file_mode = QPushButton("Edit File")
+        self.btn_file_mode = QPushButton("File")
         self.btn_file_mode.setFixedHeight(22)
         self.btn_file_mode.setCheckable(True)
         self.btn_file_mode.setChecked(False)
@@ -321,6 +345,7 @@ class DiffViewer(QWidget):
 
         # Editor
         self.editor = DiffCodeEditor()
+        self.editor.editing_requested.connect(self._start_file_edit)
         wrap_mode = QPlainTextEdit.LineWrapMode.WidgetWidth if self.config.wrap_diff else QPlainTextEdit.LineWrapMode.NoWrap
         self.editor.setLineWrapMode(wrap_mode)
         self.editor.document().contentsChanged.connect(self._on_editor_modified)
@@ -385,14 +410,47 @@ class DiffViewer(QWidget):
         self.dirty_badge.setText("")
 
     def _switch_to_file_mode(self):
-        if not self.current_rel_path:
+        if not self.current_rel_path or not self._load_file_content():
             return
         self.view_mode = "file"
         self.btn_diff_mode.setChecked(False)
         self.btn_file_mode.setChecked(True)
         self.btn_save.show()
         self.btn_reset.show()
-        self._load_file_content()
+
+    def _start_file_edit(self):
+        if not self.btn_file_mode.isEnabled() or not self.current_rel_path:
+            return
+        cursor = self.editor.textCursor()
+
+        def file_position(position):
+            block = self.editor.document().findBlock(position)
+            index = block.blockNumber()
+            column = position - block.position()
+            meta = self.editor.line_meta[index] if index < len(self.editor.line_meta) else None
+            if meta and meta["type"] in ("ctx", "add") and meta["num"] is not None:
+                return meta["num"] - 1, max(0, column - 1)
+            for following in self.editor.line_meta[index + 1:]:
+                if following["type"] in ("ctx", "add") and following["num"] is not None:
+                    return following["num"] - 1, 0
+            return self.editor.blockCount(), 0
+
+        anchor = file_position(cursor.anchor())
+        position = file_position(cursor.position())
+        self._switch_to_file_mode()
+        if self.view_mode != "file":
+            return
+        cursor = self.editor.textCursor()
+        for (line, column), mode in (
+            (anchor, QTextCursor.MoveMode.MoveAnchor),
+            (position, QTextCursor.MoveMode.KeepAnchor),
+        ):
+            block = self.editor.document().findBlockByNumber(line)
+            if not block.isValid():
+                block = self.editor.document().lastBlock()
+                column = len(block.text())
+            cursor.setPosition(block.position() + min(column, len(block.text())), mode)
+        self.editor.setTextCursor(cursor)
 
     def _load_file_content(self):
         if not self.current_rel_path or not self.repo_path:
@@ -408,6 +466,7 @@ class DiffViewer(QWidget):
             self.editor.blockSignals(False)
             self._is_dirty = False
             self.dirty_badge.setText("")
+            return True
         except Exception as e:
             QMessageBox.warning(self, "Read Error", f"Could not read file {full_path}:\n{e}")
 
@@ -426,48 +485,52 @@ class DiffViewer(QWidget):
             self.dirty_badge.setText("")
             return
 
+        if self.view_mode != "file" or not self._is_dirty:
+            return
+        if QMessageBox.question(
+            self, "Save file", f"Save changes to {self.current_rel_path}?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        ) != QMessageBox.StandardButton.Save:
+            return
+
         full_path = os.path.join(self.repo_path, self.current_rel_path)
-        if self.view_mode == "file":
-            try:
-                if os.path.exists(full_path):
-                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-                        self._revert_backup_content = f.read()
+        try:
+            if os.path.exists(full_path):
+                with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                    self._revert_backup_content = f.read()
 
-                content = self.editor.toPlainText()
-                with open(full_path, "w", encoding="utf-8") as f:
-                    f.write(content)
+            content = self.editor.toPlainText()
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            self._revert_path = full_path
 
-                self._is_dirty = False
-                self.dirty_badge.setText("Saved")
-                self.file_saved.emit(self.current_rel_path)
+            self._is_dirty = False
+            self.dirty_badge.setText("Saved")
+            self.file_saved.emit(self.current_rel_path)
 
-                self.toast.show_toast(
-                    "File is edited. Do you want to revert your changes?",
-                    action_text="Revert",
-                    duration_ms=8000,
-                )
-            except Exception as e:
-                QMessageBox.critical(self, "Save Failed", f"Could not save {full_path}:\n{e}")
-        else:
-            QMessageBox.information(
-                self,
-                "Save Information",
-                "To save changes to disk, switch to 'Edit File' mode and press Save (Ctrl+S).\n"
-                "Diff View is for reviewing patch changes.",
+            self.toast.show_toast(
+                "File saved",
+                action_text="Revert",
+                duration_ms=8000,
             )
+        except Exception as e:
+            QMessageBox.critical(self, "Save Failed", f"Could not save {full_path}:\n{e}")
 
     def _revert_saved_file(self):
-        if not self.current_rel_path or not self.repo_path or self._revert_backup_content is None:
+        if not self._revert_path or self._revert_backup_content is None:
             return
-        full_path = os.path.join(self.repo_path, self.current_rel_path)
+        full_path = self._revert_path
         try:
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(self._revert_backup_content)
             self._revert_backup_content = None
-            self._load_file_content()
-            self._is_dirty = False
-            self.dirty_badge.setText("Reverted")
-            self.file_saved.emit(self.current_rel_path)
+            self._revert_path = None
+            if self.current_rel_path and full_path == os.path.join(self.repo_path, self.current_rel_path):
+                self._load_file_content()
+                self._is_dirty = False
+                self.dirty_badge.setText("Reverted")
+            self.file_saved.emit(os.path.relpath(full_path, self.repo_path))
         except Exception as e:
             QMessageBox.critical(self, "Revert Failed", f"Could not revert {full_path}:\n{e}")
 
