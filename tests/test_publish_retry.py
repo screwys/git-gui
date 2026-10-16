@@ -111,3 +111,8 @@ class PublishRetryTests(unittest.TestCase):
         self.assertEqual(self.tab.body_input.toPlainText(), body)
         self.assertTrue(self.tab.body_input.document().isModified())
         self.assertEqual(self.tab.title_input.text(), "fix: another change")
+
+    def test_manual_pre_push_skip_is_passed_without_check_results(self):
+        self.tab.skip_pre_push_cb.setChecked(True)
+        call = self.publish_arguments()
+        self.assertEqual(call.kwargs["env_vars"], {"RUFIN_SKIP_PRE_PUSH_HOOK": "1"})

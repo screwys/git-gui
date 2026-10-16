@@ -164,20 +164,21 @@ class ProcessRunner(QObject):
         if self.path and self.path.with_name("output.log").exists():
             if self._offset < self.path.with_name("output.log").stat().st_size:
                 return
+        if self._child and self._child.poll() is None:
+            return
         was_running = self._is_running
         self._is_running = False
         self.timer.stop()
-        if self._child:
-            self._child.poll()
         code = self.record.get("exit_code", -1)
         if was_running:
             if code == -1:
                 self.output_received.emit("\n[ENDED] No exit status was recorded. Check Git and remote status before retrying.\n")
+            finished_record = self.record
             self.finished.emit(code)
-            if not self.record.get("external"):
-                status = "Stopped" if self.record.get("stopped") else "Completed" if code == 0 else "Failed"
+            if not finished_record.get("external"):
+                status = "Stopped" if finished_record.get("stopped") else "Completed" if code == 0 else "Failed"
                 send_desktop_notification(f"{status}: {self.key}",
-                    f"{Path(self.record['cwd']).name}: {shlex.join(self.record['command'][:2])}",
+                    f"{Path(finished_record['cwd']).name}: {shlex.join(finished_record['command'][:2])}",
                     urgency="normal" if code == 0 else "critical")
 
     def stop(self):

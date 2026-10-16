@@ -2,6 +2,8 @@ import os
 import re
 import json
 import subprocess
+import sys
+from pathlib import Path
 from typing import List, Optional
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QDesktopServices
@@ -24,6 +26,7 @@ from PyQt6.QtWidgets import (
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
+from core.publish_checks import CHECK_INPUT, has_pending_edits, pending_inputs
 from core.notifications import send_desktop_notification
 from ui.components.commit_draft import CommitDraft
 from ui.components.activity_tabs import ActivityTabs
@@ -159,6 +162,9 @@ class PublishPrTab(QWidget):
         self._waiting_args = []
         self._waiting_env_vars = {}
         self._waiting_pending = {}
+        self._waiting_check_inputs = None
+        self._waiting_checks_running = False
+        self._waiting_pr_merged = False
         self._pr_poll_timer = QTimer(self)
         self._pr_poll_timer.setInterval(10000)
         self._pr_poll_timer.timeout.connect(self._poll_waiting_pr)
@@ -409,7 +415,7 @@ class PublishPrTab(QWidget):
         self.runner.started.connect(lambda: self.terminal.set_status("Running", "running"))
         self.runner.finished.connect(self._on_process_finished)
         self.runner.error_occurred.connect(lambda msg: self.terminal.set_status("Error", "failed"))
-        self.terminal.stop_requested.connect(self.runner.stop)
+        self.terminal.stop_requested.connect(self._stop_publish)
         self.branch_input.editingFinished.connect(self.refresh)
         self.branch_input.textChanged.connect(self._update_publish_button)
         self.base_input.textChanged.connect(self._update_publish_button)
@@ -457,7 +463,7 @@ class PublishPrTab(QWidget):
         pending = StateManager.get("rufin_publish_pending") or {}
         job_id = self.runner.path.parent.name if self.runner.path else None
         if pending.get("repo_path") == self.git_mgr.repo_path and pending.get("job_id") == job_id:
-            if not record["running"] and record.get("exit_code") == 0:
+            if not record["running"] and record.get("exit_code") == 0 and not pending.get("checks_only"):
                 StateManager.update(rufin_publish_pending=None)
                 self.file_list.btn_publish.setText("Publish PR")
             else:
@@ -489,6 +495,9 @@ class PublishPrTab(QWidget):
     def _publish_button_clicked(self):
         if self._is_waiting_for_pr:
             self._cancel_pr_wait()
+            return
+        if self.wait_pr_cb.isChecked():
+            self.run_publish()
             return
         pending = StateManager.get("rufin_publish_pending") or {}
         if pending.get("repo_path") == self.git_mgr.repo_path and pending.get("job_id") == (self.runner.path.parent.name if self.runner.path else None):
@@ -602,7 +611,7 @@ class PublishPrTab(QWidget):
             and self.i18n_combo.currentData() == pending.get("i18n")
         )
 
-    def _start_publish_job(self, script_path, args, env_vars, pending):
+    def _start_publish_job(self, script_path, args, env_vars, pending, checks_only=False):
         self.detected_pr_url = ""
         self.detected_pr_number = ""
         self.pr_banner.setVisible(False)
@@ -612,6 +621,7 @@ class PublishPrTab(QWidget):
         self._submitted_title = pending.get("title", "")
         self._submitted_body = pending.get("body", "")
         pending.pop("job_id", None)
+        pending["checks_only"] = checks_only
         StateManager.update(rufin_publish_pending=pending)
         previous_path = self.runner.path
         self.runner.start(script_path, args, cwd=self.git_mgr.repo_path, env_vars=env_vars)
@@ -676,6 +686,10 @@ class PublishPrTab(QWidget):
         if "\n" not in self._output_pending:
             return
         text, self._output_pending = self._output_pending.rsplit("\n", 1)
+        if self._waiting_checks_running:
+            for line in text.splitlines():
+                if line.startswith(CHECK_INPUT):
+                    self._waiting_check_inputs = json.loads(line.removeprefix(CHECK_INPUT))
         for branch in re.findall(r"(?m)^Publishing branch: (.+)$", text):
             pending = StateManager.get("rufin_publish_pending") or {}
             job_id = self.runner.path.parent.name if self.runner.path else None
@@ -1024,14 +1038,14 @@ class PublishPrTab(QWidget):
             "args": args,
             "retry_args": retry_args,
             "env": env_vars,
+            "paths": selected_paths if partial_files else None,
             "head_before": subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.git_mgr.repo_path,
                                            capture_output=True, text=True, check=False).stdout.strip(),
         }
         if pr_num:
             if self.runner.is_running:
                 self.terminal.append_output("[*] Stopping running script to wait for PR...\n")
-                self.runner.stop()
-            self._start_waiting_for_pr(pr_num, script_path, args, env_vars, pending)
+            self._stop_and_run(lambda: self._start_waiting_for_pr(pr_num, script_path, args, env_vars, pending))
         else:
             self._stop_and_run(lambda: self._start_publish_job(script_path, args, env_vars, pending))
 
@@ -1057,6 +1071,9 @@ class PublishPrTab(QWidget):
         self._waiting_args = args
         self._waiting_env_vars = env_vars
         self._waiting_pending = pending
+        self._waiting_check_inputs = None
+        self._waiting_checks_running = False
+        self._waiting_pr_merged = False
 
         self.file_list.btn_publish.setEnabled(True)
         self._update_publish_button()
@@ -1071,10 +1088,70 @@ class PublishPrTab(QWidget):
         self.bottom_tabs.show_activity("local", self.terminal, force=True)
 
         self._pr_poll_timer.start(10000)
+        if not pending["skip_pre_push"]:
+            self._start_waiting_checks()
         self._poll_waiting_pr()
+
+    def _start_waiting_checks(self):
+        self._waiting_check_inputs = None
+        self._waiting_checks_running = True
+        command = str(Path(__file__).resolve().parents[2] / "core" / "publish_checks.py")
+        self._start_publish_job(
+            sys.executable, [command, self._waiting_script_path, json.dumps(self._waiting_pending)],
+            self._waiting_env_vars, self._waiting_pending,
+            checks_only=True,
+        )
+        if self.runner.is_running:
+            self.terminal.set_status("Checking pending changes", "running")
+        elif self._waiting_checks_running:
+            self._waiting_checks_running = False
+            self._fail_pr_wait("Pending checks could not start.")
+
+    def _publish_when_ready(self, checks_passed=True):
+        if not self._is_waiting_for_pr or self._waiting_checks_running or self.runner.is_running:
+            return
+        pending = self._waiting_pending
+        args = self._waiting_args
+        env_vars = dict(self._waiting_env_vars)
+        if not pending["skip_pre_push"]:
+            try:
+                inputs = pending_inputs(self.git_mgr.repo_path, pending["branch"], pending["paths"])
+                if inputs != self._waiting_check_inputs:
+                    self.terminal.append_output("[*] Pending changes edited. Running checks again.\n")
+                    self._start_waiting_checks()
+                    return
+                if not checks_passed:
+                    self._fail_pr_wait("Pending checks failed. Publication stopped.")
+                    return
+                args = pending["args"] if has_pending_edits(self.git_mgr.repo_path, inputs) else pending["retry_args"]
+            except (OSError, subprocess.CalledProcessError) as error:
+                self._fail_pr_wait(f"Cannot read pending changes: {error}")
+                return
+            env_vars["RUFIN_SKIP_PRE_PUSH_HOOK"] = "1"
+            env_vars["RUFIN_SKIP_CLIPPY_HOOK"] = "0"
+            env_vars["RUFIN_PRECHECKED_HEAD"] = inputs[1]
+        if not self._waiting_pr_merged:
+            self.terminal.set_status(f"Waiting for PR #{self._waiting_pr_num}", "running")
+            return
+        self._pr_poll_timer.stop()
+        self._is_waiting_for_pr = False
+        self.terminal.append_output("[+] Starting publication after merge.\n")
+        self._start_publish_job(self._waiting_script_path, args, env_vars, pending)
+
+    def _fail_pr_wait(self, message):
+        self._pr_poll_timer.stop()
+        self._is_waiting_for_pr = False
+        self.wait_pr_status_lbl.setText(message)
+        self.terminal.append_output(f"[!] {message}\n")
+        self.terminal.set_status(message, "failed")
+        self.bottom_tabs.show_activity("failed", self.terminal)
+        self._update_publish_button()
 
     def _poll_waiting_pr(self):
         if not self._is_waiting_for_pr:
+            return
+        self._publish_when_ready()
+        if not self._is_waiting_for_pr or self._waiting_pr_merged:
             return
         if self._pr_poll_worker and self._pr_poll_worker.isRunning():
             return
@@ -1089,17 +1166,15 @@ class PublishPrTab(QWidget):
         pr_num = self._waiting_pr_num
 
         if state == "MERGED":
-            self._pr_poll_timer.stop()
-            self._is_waiting_for_pr = False
+            self._waiting_pr_merged = True
             self.wait_pr_status_lbl.setText(f"PR #{pr_num} merged!")
             self.wait_pr_status_lbl.setStyleSheet("color: #3fb950; font-size: 11px;")
-            self.terminal.append_output(f"\n[+] PR #{pr_num} has merged! Publishing PR now...\n\n")
-            send_desktop_notification("PR Merged", f"PR #{pr_num} merged. Publishing PR...")
+            self.terminal.append_output(f"\n[+] PR #{pr_num} has merged.\n")
+            send_desktop_notification("PR Merged", f"PR #{pr_num} merged.")
             self._update_publish_button()
-            self._stop_and_run(lambda: self._start_publish_job(
-                self._waiting_script_path, self._waiting_args, self._waiting_env_vars, self._waiting_pending
-            ))
+            self._publish_when_ready()
         elif state == "CLOSED":
+            self._cancel_pr_wait()
             self._pr_poll_timer.stop()
             self._is_waiting_for_pr = False
             self.wait_pr_status_lbl.setText(f"PR #{pr_num} closed without merge")
@@ -1116,6 +1191,8 @@ class PublishPrTab(QWidget):
     def _cancel_pr_wait(self):
         self._pr_poll_timer.stop()
         self._is_waiting_for_pr = False
+        if self._waiting_checks_running:
+            self.runner.stop()
         self.wait_pr_status_lbl.setText("Wait cancelled")
         self.wait_pr_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
         if self._waiting_pr_num:
@@ -1123,7 +1200,27 @@ class PublishPrTab(QWidget):
         self.terminal.set_status("Cancelled", "normal")
         self._update_publish_button()
 
+    def _stop_publish(self):
+        if self._is_waiting_for_pr:
+            self._cancel_pr_wait()
+        else:
+            self.runner.stop()
+
     def _on_process_finished(self, exit_code: int):
+        pending = StateManager.get("rufin_publish_pending") or {}
+        checks_only = (pending.get("checks_only") and self.runner.path
+                       and pending.get("job_id") == self.runner.path.parent.name)
+        if self._waiting_checks_running or checks_only:
+            self._waiting_checks_running = False
+            if self._is_waiting_for_pr:
+                if self._waiting_check_inputs is None:
+                    self._fail_pr_wait("Pending checks failed. Publication stopped.")
+                else:
+                    self._publish_when_ready(checks_passed=exit_code == 0 and not self.runner.record.get("stopped"))
+            elif checks_only and not self._waiting_pr_num:
+                self.terminal.set_status("Checks passed" if exit_code == 0 else "Checks failed",
+                                         "success" if exit_code == 0 else "failed")
+            return
         if self._is_waiting_for_pr:
             self._update_publish_button()
             return
