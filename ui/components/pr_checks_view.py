@@ -191,6 +191,8 @@ class PrChecksWidget(QWidget):
         if self.pr_number != str(pr_number):
             self.notified_failed_checks.clear()
             self._last_result = None
+        elif self.pr_state == "MERGED" and state in ("", "OPEN"):
+            state = self.pr_state
 
         self.pr_number = str(pr_number)
         self.pr_title = title
@@ -220,7 +222,8 @@ class PrChecksWidget(QWidget):
         generation = self._generation
         self._worker.checks_fetched.connect(
             lambda data: self._on_checks_received(data) if generation == self._generation else None)
-        self._worker.error.connect(self._on_fetch_error)
+        self._worker.error.connect(
+            lambda error: self._on_fetch_error(error) if generation == self._generation else None)
         self._worker.finished.connect(self._release_worker)
         self._worker.start()
 
@@ -237,7 +240,13 @@ class PrChecksWidget(QWidget):
         self.status_pill.setToolTip(err)
 
     def clear_pr(self):
+        self._generation += 1
         self.pr_number = None
+        self.pr_title = ""
+        self.pr_url = ""
+        self.pr_state = ""
+        self.notified_failed_checks.clear()
+        self._last_result = None
         self.poll_timer.stop()
         self.table.setRowCount(0)
         self.progress_bar.setValue(0)

@@ -41,6 +41,7 @@ from ui.tabs.release_tab import ActivePrsFetchWorker, PrPollWorker
 
 class BranchPrDetectWorker(QThread):
     pr_found = pyqtSignal(dict)
+    error = pyqtSignal(str)
 
     def __init__(self, repo_path: str, branch: str, parent=None):
         super().__init__(parent)
@@ -72,12 +73,15 @@ class BranchPrDetectWorker(QThread):
             if res.returncode == 0 and res.stdout.strip():
                 items = json.loads(res.stdout)
                 self.pr_found.emit(items[0] if items else {})
-        except Exception:
-            pass
+            else:
+                self.error.emit(res.stderr.strip() or "No data returned")
+        except Exception as error:
+            self.error.emit(str(error))
 
 
 class LatestPrDetectWorker(QThread):
     pr_found = pyqtSignal(dict)
+    error = pyqtSignal(str)
 
     def __init__(self, repo_path: str, parent=None):
         super().__init__(parent)
@@ -106,11 +110,13 @@ class LatestPrDetectWorker(QThread):
                 text=True,
                 timeout=10,
             )
-            if res.returncode == 0 and res.stdout.strip():
-                items = json.loads(res.stdout)
-                if items:
-                    self.pr_found.emit(items[0])
-                    return
+            if res.returncode != 0 or not res.stdout.strip():
+                self.error.emit(res.stderr.strip() or "No data returned")
+                return
+            items = json.loads(res.stdout)
+            if items:
+                self.pr_found.emit(items[0])
+                return
 
             # Fallback to general latest PR
             cmd_all = [
@@ -133,10 +139,11 @@ class LatestPrDetectWorker(QThread):
             )
             if res_all.returncode == 0 and res_all.stdout.strip():
                 items = json.loads(res_all.stdout)
-                if items:
-                    self.pr_found.emit(items[0])
-        except Exception:
-            pass
+                self.pr_found.emit(items[0] if items else {})
+            else:
+                self.error.emit(res_all.stderr.strip() or "No data returned")
+        except Exception as error:
+            self.error.emit(str(error))
 
 
 class PublishPrTab(QWidget):
@@ -464,15 +471,23 @@ class PublishPrTab(QWidget):
         job_id = self.runner.path.parent.name if self.runner.path else None
         if pending.get("repo_path") == self.git_mgr.repo_path and pending.get("job_id") == job_id:
             if not record["running"] and record.get("exit_code") == 0 and not pending.get("checks_only"):
-                StateManager.update(rufin_publish_pending=None)
-                self.file_list.btn_publish.setText("Publish PR")
+                self._complete_pending_publish(pending)
+                self.refresh()
             else:
                 self.file_list.btn_publish.setText("Resume PR" if not record["running"] else "Publish PR")
         if record["running"]:
             self.bottom_tabs.show_activity("local", self.terminal)
-        elif record.get("exit_code") != 0 or record.get("stopped"):
-            self.bottom_tabs.show_activity("failed", self.terminal)
         self._update_publish_button()
+
+    def _complete_pending_publish(self, pending):
+        StateManager.update(rufin_publish_pending=None)
+        if self.branch_input.text().strip() == pending.get("branch"):
+            self.branch_input.clear()
+        if self.title_input.text().strip() == pending.get("title"):
+            self.title_input.clear()
+        if self.body_input.toPlainText() == pending.get("body"):
+            self.body_input.clear()
+            self.body_input.document().setModified(False)
 
     def _restore_pending_publish(self):
         pending = StateManager.get("rufin_publish_pending")
@@ -682,6 +697,8 @@ class PublishPrTab(QWidget):
 
     def _on_output_received(self, text: str):
         self.terminal.append_output(text)
+        if self.runner.replaying_output and not self.runner.is_running:
+            return
         self._output_pending += text
         if "\n" not in self._output_pending:
             return
@@ -723,7 +740,7 @@ class PublishPrTab(QWidget):
                     "number": pr_num,
                     "title": self.pr_title_label.text().removeprefix("PR: ") or self.title_input.text().strip(),
                     "url": url,
-                    "state": "OPEN",
+                    "state": self.checks_view.pr_state,
                 }
             )
 
@@ -735,6 +752,8 @@ class PublishPrTab(QWidget):
         self.refresh_working_tree()
         curr_branch = self.branch_input.text().strip() or self.git_mgr.get_current_branch()
         context = (self.git_mgr.repo_path, curr_branch)
+        if context != self._form_context:
+            self._on_open_pr_detected({})
         if context != self._form_context and not self.body_input.document().isModified():
             self.body_input.clear()
             self.body_input.document().setModified(False)
@@ -791,6 +810,7 @@ class PublishPrTab(QWidget):
                 context = self._form_context
                 self._detect_worker.context = context
                 self._detect_worker.pr_found.connect(lambda data, context=context: self._on_open_pr_detected(data, context))
+                self._detect_worker.error.connect(lambda error, context=context: self._on_pr_lookup_error(error, context))
                 self._detect_worker.finished.connect(self._release_detect_worker)
                 self._detect_worker.start()
         else:
@@ -801,12 +821,21 @@ class PublishPrTab(QWidget):
                 context = self._form_context
                 self._latest_worker.context = context
                 self._latest_worker.pr_found.connect(lambda data, context=context: self._on_latest_pr_detected(data, context))
+                self._latest_worker.error.connect(lambda error, context=context: self._on_pr_lookup_error(error, context))
                 self._latest_worker.finished.connect(self._release_detect_worker)
                 self._latest_worker.start()
 
     def _on_latest_pr_detected(self, data, context):
         if context == self._form_context:
             self._on_open_pr_detected(data)
+
+    def _on_pr_lookup_error(self, error, context):
+        if context != self._form_context:
+            return
+        self._on_open_pr_detected({})
+        self.pr_banner_lbl.setText("PR status unavailable")
+        self.pr_banner_lbl.setToolTip(error)
+        self.pr_banner.show()
 
     def _release_detect_worker(self):
         worker = self.sender()
@@ -826,6 +855,8 @@ class PublishPrTab(QWidget):
             self.detected_pr_url = ""
             self.pr_banner.hide()
             self.checks_view.clear_pr()
+            self.pr_title_label.clear()
+            self.pr_title_label.hide()
             StateManager.update(rufin_tracked_pr=None)
             return
         pr_num = str(pr_data.get("number", ""))
@@ -852,7 +883,7 @@ class PublishPrTab(QWidget):
                     "number": pr_num,
                     "title": title,
                     "url": url,
-                    "state": state,
+                    "state": self.checks_view.pr_state,
                 }
             )
 
@@ -1237,7 +1268,7 @@ class PublishPrTab(QWidget):
         if exit_code == 0 and self._submitted_title == self.title_input.text().strip():
             self.title_input.clear()
         if exit_code == 0:
-            StateManager.update(rufin_publish_pending=None)
+            self._complete_pending_publish(pending)
             self.file_list.btn_publish.setText("Publish PR")
             if body == self._submitted_body:
                 self.body_input.clear()

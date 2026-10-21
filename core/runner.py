@@ -32,6 +32,8 @@ class ProcessRunner(QObject):
         self.path = None
         self._is_running = False
         self._offset = 0
+        self.replaying_output = False
+        self._replay_end = 0
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._child = None
         self._stop_requested = False
@@ -78,7 +80,13 @@ class ProcessRunner(QObject):
             return
         self._offset = 0
         self._decoder.reset()
-        self.output_received.emit(f"$ {shlex.join(self.record['command'])}\n")
+        self._replay_end = (self.path.with_name("output.log").stat().st_size
+                            if self.path and self.path.with_name("output.log").exists() else 0)
+        self.replaying_output = True
+        try:
+            self.output_received.emit(f"$ {shlex.join(self.record['command'])}\n")
+        finally:
+            self.replaying_output = False
         if self.record.get("external"):
             self.output_received.emit("[OBSERVING] Helper started outside this session. Its output and exit code are unavailable.\n")
         self._read_output()
@@ -123,6 +131,7 @@ class ProcessRunner(QObject):
         finally:
             lock.close()
         self._offset = 0
+        self._replay_end = 0
         self._decoder.reset()
         self._is_running = True
         self._paused = False
@@ -137,10 +146,16 @@ class ProcessRunner(QObject):
         try:
             with self.path.with_name("output.log").open("rb") as output:
                 output.seek(self._offset)
-                data = output.read(256 * 1024)
+                remaining = self._replay_end - self._offset
+                replaying = remaining > 0
+                data = output.read(min(256 * 1024, remaining) if replaying else 256 * 1024)
                 self._offset += len(data)
             if data:
-                self.output_received.emit(self._decoder.decode(data))
+                self.replaying_output = replaying
+                try:
+                    self.output_received.emit(self._decoder.decode(data))
+                finally:
+                    self.replaying_output = False
         except FileNotFoundError:
             pass
 

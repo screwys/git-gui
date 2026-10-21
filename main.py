@@ -534,7 +534,7 @@ class MainWindow(QMainWindow):
     def _wire_signals(self):
         self.runner.restored.connect(
             lambda record: self.git_dock.show()
-            if record["running"] or record.get("exit_code") != 0 else None)
+            if record["running"] else None)
         self.runner.output_received.connect(self._on_runner_output)
         self.runner.started.connect(lambda: self.status_bar.showMessage("Running task...", 3000))
         self.runner.finished.connect(self._on_runner_finished)

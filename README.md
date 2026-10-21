@@ -134,6 +134,8 @@ Commands started by the app run in a separate Linux process session. Closing the
 or restarting the GUI does not cancel them. Reopening attaches to running commands and restores
 their saved output and exit status. **Cancel** terminates the command's process group, including child
 processes. **Pause** freezes the running command, and **Resume** continues it from the same point.
+Completed logs do not change the selected PR or force the terminal open. A completed publish clears
+its saved branch target so discovery follows the current checkout again.
 Cancelled PR runs keep their form and branch details; **Resume PR** retries the saved publish step,
 using an existing commit when the original run already created one. Notifications require the GUI to
 remain open or in the tray.

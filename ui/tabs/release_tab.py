@@ -449,17 +449,16 @@ class ReleaseTab(QWidget):
 
     def _on_output_received(self, text: str):
         self.terminal.append_output(text)
+        if self.runner.replaying_output and not self.runner.is_running:
+            return
         self.jobs_view.process_output_chunk(text)
 
     def _on_process_started(self):
         self.output_tabs.show_activity("local", self.terminal, force=True)
 
     def _on_activity_restored(self, record):
-        if record["running"]:
-            if self.output_tabs.activity != "remote":
-                self.output_tabs.show_activity("local", self.terminal)
-        elif record.get("exit_code") != 0 or record.get("stopped"):
-            self.output_tabs.show_activity("failed", self.terminal)
+        if record["running"] and self.output_tabs.activity != "remote":
+            self.output_tabs.show_activity("local", self.terminal)
 
     def _focus_workflow(self):
         if self.output_tabs.activity != "failed":
