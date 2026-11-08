@@ -287,10 +287,10 @@ class PublishPrTab(QWidget):
         self.wait_cb.setChecked(self.config.default_wait_ci)
         flags_layout.addWidget(self.wait_cb)
 
-        self.skip_pre_push_cb = QCheckBox("Skip pre-push")
-        self.skip_pre_push_cb.setChecked(False)
-        self.skip_pre_push_cb.setToolTip("Skip local pre-push hook verification (RUFIN_SKIP_PRE_PUSH_HOOK=1)")
-        flags_layout.addWidget(self.skip_pre_push_cb)
+        self.full_checks_cb = QCheckBox("Full checks (--full)")
+        self.full_checks_cb.setChecked(False)
+        self.full_checks_cb.setToolTip("Run the whole pre-push gate instead of the focused checks")
+        flags_layout.addWidget(self.full_checks_cb)
 
         # Thin row: Publish after PR merges
         h_pr_row = QHBoxLayout()
@@ -432,7 +432,7 @@ class PublishPrTab(QWidget):
         self.phase_input.textChanged.connect(self._update_publish_button)
         self.auto_merge_cb.toggled.connect(self._update_publish_button)
         self.wait_cb.toggled.connect(self._update_publish_button)
-        self.skip_pre_push_cb.toggled.connect(self._update_publish_button)
+        self.full_checks_cb.toggled.connect(self._update_publish_button)
         self.i18n_combo.currentIndexChanged.connect(self._update_publish_button)
         self.wait_pr_cb.toggled.connect(self._update_publish_button)
 
@@ -502,7 +502,7 @@ class PublishPrTab(QWidget):
         self.phase_input.setText(pending.get("phase", ""))
         self.auto_merge_cb.setChecked(pending.get("auto_merge", self.auto_merge_cb.isChecked()))
         self.wait_cb.setChecked(pending.get("wait", self.wait_cb.isChecked()))
-        self.skip_pre_push_cb.setChecked(pending.get("skip_pre_push", False))
+        self.full_checks_cb.setChecked(pending.get("full", False))
         index = self.i18n_combo.findData(pending.get("i18n", "none"))
         if index >= 0:
             self.i18n_combo.setCurrentIndex(index)
@@ -622,7 +622,7 @@ class PublishPrTab(QWidget):
             and self.phase_input.text().strip() == pending.get("phase", "")
             and self.auto_merge_cb.isChecked() == pending.get("auto_merge")
             and self.wait_cb.isChecked() == pending.get("wait")
-            and self.skip_pre_push_cb.isChecked() == pending.get("skip_pre_push")
+            and self.full_checks_cb.isChecked() == pending.get("full")
             and self.i18n_combo.currentData() == pending.get("i18n")
         )
 
@@ -969,7 +969,7 @@ class PublishPrTab(QWidget):
         body = self.body_input.toPlainText()
         phase = self.phase_input.text().strip()
         title = self.title_input.text().strip()
-        skip_pre_push = self.skip_pre_push_cb.isChecked()
+        full_checks = self.full_checks_cb.isChecked()
 
         selected_paths = self.file_list.get_selected_paths()
         all_paths = [i.path for i in self._working_tree_items]
@@ -999,8 +999,8 @@ class PublishPrTab(QWidget):
             args.extend(["--body", body])
             env_vars["RUFIN_ALLOW_PR_BODY"] = "1"
 
-        if skip_pre_push:
-            env_vars["RUFIN_SKIP_PRE_PUSH_HOOK"] = "1"
+        if full_checks:
+            args.append("--full")
 
         if phase:
             args.extend(["--phase", phase])
@@ -1036,7 +1036,7 @@ class PublishPrTab(QWidget):
         details.extend([
             ("Squash Merge", "Enabled" if self.auto_merge_cb.isChecked() else "Disabled"),
             ("Wait CI Checks", "Yes" if self.wait_cb.isChecked() else "No"),
-            ("Skip Pre-push", "Yes" if skip_pre_push else "No"),
+            ("Full Checks", "Yes" if full_checks else "No"),
         ])
         if i18n_choice != "none":
             details.append(("I18n Catalogs", self.i18n_combo.currentText()))
@@ -1064,7 +1064,7 @@ class PublishPrTab(QWidget):
             "phase": phase,
             "auto_merge": self.auto_merge_cb.isChecked(),
             "wait": self.wait_cb.isChecked(),
-            "skip_pre_push": skip_pre_push,
+            "full": full_checks,
             "i18n": i18n_choice,
             "args": args,
             "retry_args": retry_args,
@@ -1119,7 +1119,7 @@ class PublishPrTab(QWidget):
         self.bottom_tabs.show_activity("local", self.terminal, force=True)
 
         self._pr_poll_timer.start(10000)
-        if not pending["skip_pre_push"]:
+        if pending["full"]:
             self._start_waiting_checks()
         self._poll_waiting_pr()
 
@@ -1143,8 +1143,8 @@ class PublishPrTab(QWidget):
             return
         pending = self._waiting_pending
         args = self._waiting_args
-        env_vars = dict(self._waiting_env_vars)
-        if not pending["skip_pre_push"]:
+        env_vars = self._waiting_env_vars
+        if pending["full"]:
             try:
                 inputs = pending_inputs(self.git_mgr.repo_path, pending["branch"], pending["paths"])
                 if inputs != self._waiting_check_inputs:
@@ -1158,9 +1158,8 @@ class PublishPrTab(QWidget):
             except (OSError, subprocess.CalledProcessError) as error:
                 self._fail_pr_wait(f"Cannot read pending changes: {error}")
                 return
-            env_vars["RUFIN_SKIP_PRE_PUSH_HOOK"] = "1"
-            env_vars["RUFIN_SKIP_CLIPPY_HOOK"] = "0"
-            env_vars["RUFIN_PRECHECKED_HEAD"] = inputs[1]
+            # The full gate already passed on these inputs.
+            args = [arg for arg in args if arg != "--full"]
         if not self._waiting_pr_merged:
             self.terminal.set_status(f"Waiting for PR #{self._waiting_pr_num}", "running")
             return

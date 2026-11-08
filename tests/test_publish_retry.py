@@ -119,10 +119,9 @@ class PublishRetryTests(unittest.TestCase):
         self.assertTrue(self.tab.body_input.document().isModified())
         self.assertEqual(self.tab.title_input.text(), "fix: another change")
 
-    def test_manual_pre_push_skip_is_passed_without_check_results(self):
-        self.tab.skip_pre_push_cb.setChecked(True)
-        call = self.publish_arguments()
-        self.assertEqual(call.kwargs["env_vars"], {"RUFIN_SKIP_PRE_PUSH_HOOK": "1"})
+    def test_full_checks_pass_the_full_flag(self):
+        self.tab.full_checks_cb.setChecked(True)
+        self.assertIn("--full", self.publish_arguments().args[1])
 
     def save_job(self, code=1, output="", pending=None):
         directory = jobs_root() / "saved"
@@ -136,7 +135,7 @@ class PublishRetryTests(unittest.TestCase):
         if pending is not None:
             saved = {
                 "base": "main", "auto_merge": self.tab.auto_merge_cb.isChecked(),
-                "wait": self.tab.wait_cb.isChecked(), "skip_pre_push": False, "i18n": "none",
+                "wait": self.tab.wait_cb.isChecked(), "full": False, "i18n": "none",
                 **pending, "repo_path": str(self.repo), "job_id": directory.name,
             }
             StateManager.update(rufin_publish_pending=saved)

@@ -47,6 +47,7 @@ args = sys.argv[1:]
 prepare = args and args[0] == "--prepare-only"
 if prepare:
     args.pop(0)
+full = "--full" in args
 branch = "topic"
 while args and args[0].startswith("--"):
     option = args.pop(0)
@@ -66,14 +67,12 @@ print("Publishing branch: " + branch, flush=True)
 if prepare:
     print("Prepared PR worktree: " + os.getcwd(), flush=True)
 else:
-    subprocess.run(["git", "push", "-q", "origin", branch], check=True)
-    Path(".git/published").write_text(os.environ.get("RUFIN_SKIP_PRE_PUSH_HOOK", "0"))
-    Path(".git/prechecked-head").write_text(os.environ.get("RUFIN_PRECHECKED_HEAD", ""))
+    subprocess.run(["git", "push", "-q", *([] if full else ["--no-verify"]), "origin", branch], check=True)
+    Path(".git/published").write_text("full" if full else "light")
 ''')
         script.chmod(0o755)
         hook = self.repo / ".git" / "hooks" / "pre-push"
         hook.write_text('''#!/bin/sh
-if [ "$RUFIN_SKIP_PRE_PUSH_HOOK" = 1 ]; then exit 0; fi
 echo check >> .git/checks
 while [ -f .git/hold ]; do sleep 0.01; done
 if [ -f .git/fail ]; then exit 1; fi
@@ -116,10 +115,10 @@ if [ -f .git/fail ]; then exit 1; fi
             QTest.qWait(20)
         self.assertTrue(condition(), self.tab.terminal.console.toPlainText())
 
-    def schedule(self, paths=None, skip=False, dirty=True):
+    def schedule(self, paths=None, full=True, dirty=True):
         if dirty:
             (self.repo / "source.txt").write_text("pending\n")
-        args = ["--branch", "topic"]
+        args = ["--branch", "topic", *(["--full"] if full else [])]
         retry_args = list(args)
         if dirty:
             args += ["feat: pending work", *(paths or [])]
@@ -127,27 +126,23 @@ if [ -f .git/fail ]; then exit 1; fi
             "repo_path": str(self.repo), "branch": "topic", "base": "main",
             "args": args, "retry_args": retry_args, "env": {}, "paths": paths,
             "title": "feat: pending work" if dirty else "", "body": "",
-            "skip_pre_push": skip,
+            "full": full,
         }
-        env = {"RUFIN_SKIP_PRE_PUSH_HOOK": "1"} if skip else {}
-        self.tab._start_waiting_for_pr("7", self.script, args, env, pending)
+        self.tab._start_waiting_for_pr("7", self.script, args, {}, pending)
 
     def checks(self):
         path = self.repo / ".git" / "checks"
         return len(path.read_text().splitlines()) if path.exists() else 0
 
-    def test_checks_finish_before_merge_and_publish_skips_hook(self):
+    def test_checks_finish_before_merge_and_publish_without_full(self):
         self.schedule()
         self.until(lambda: not self.tab.runner.is_running)
         self.assertEqual(self.checks(), 1)
         self.assertFalse((self.repo / ".git/published").exists())
         self.tab._on_pr_status_fetched({"state": "MERGED"})
         self.until(lambda: not self.tab.runner.is_running)
-        self.assertEqual((self.repo / ".git/published").read_text(), "1")
-        self.assertEqual((self.repo / ".git/prechecked-head").read_text(), self.git("rev-parse", "HEAD").strip())
+        self.assertEqual((self.repo / ".git/published").read_text(), "light")
         self.assertEqual(self.checks(), 1)
-        self.assertNotIn("RUFIN_SKIP_PRE_PUSH_HOOK", self.tab._waiting_pending["env"])
-        self.assertNotIn("RUFIN_PRECHECKED_HEAD", self.tab._waiting_pending["env"])
 
     def test_merge_during_checks_waits_for_success(self):
         (self.repo / ".git/hold").touch()
@@ -201,12 +196,12 @@ if [ -f .git/fail ]; then exit 1; fi
         self.until(lambda: not self.tab.runner.is_running)
         self.assertFalse((self.repo / ".git/published").exists())
 
-    def test_manual_skip_preserves_the_existing_wait(self):
-        self.schedule(skip=True)
+    def test_focused_checks_publish_without_waiting_checks(self):
+        self.schedule(full=False)
         self.assertEqual(self.checks(), 0)
         self.tab._on_pr_status_fetched({"state": "MERGED"})
         self.until(lambda: not self.tab.runner.is_running)
-        self.assertEqual((self.repo / ".git/published").read_text(), "1")
+        self.assertEqual((self.repo / ".git/published").read_text(), "light")
         self.assertEqual(self.checks(), 0)
 
     def test_selected_contents_detect_edits_without_touching_index(self):

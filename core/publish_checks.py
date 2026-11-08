@@ -81,10 +81,9 @@ def run_checks(repo, script, pending):
     head = git(prepared_repo, "rev-parse", "HEAD")
     remote_head = git(prepared_repo, "ls-remote", "origin", f"refs/heads/{branch}").split()
     old_head = remote_head[0] if remote_head else "0" * len(head)
-    env = dict(os.environ, RUFIN_SKIP_PRE_PUSH_HOOK="0", RUFIN_SKIP_CLIPPY_HOOK="0")
     return subprocess.run(
         ["git", "hook", "run", "--ignore-missing", "pre-push", "--", "origin", remote],
-        cwd=prepared_repo, env=env, text=True,
+        cwd=prepared_repo, text=True,
         input=f"refs/heads/{branch} {head} refs/heads/{branch} {old_head}\n",
         check=False,
     ).returncode

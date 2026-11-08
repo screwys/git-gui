@@ -15,7 +15,7 @@ A clean, fast, and extendable PyQt6 GUI designed for managing Git pull requests 
   - Commit subject and multi-line PR description. The first subject names the PR; follow-up commits keep its title.
   - Restores the publish script's saved PR description after a failed push or restart. Clean retries publish existing commits; descriptions are sent only when edited.
   - Check-watcher phase label.
-  - Toggles for squash auto-merge (`--no-auto-merge`), wait for CI (`--wait`), and i18n catalog options (`--include-i18n-catalogs`, `--sync-i18n-catalogs`).
+  - Toggles for squash auto-merge (`--no-auto-merge`), wait for CI (`--wait`), full pre-push checks (`--full`), and i18n catalog options (`--include-i18n-catalogs`, `--sync-i18n-catalogs`).
 - **Release Orchestrator Workflow**:
   - Automatically detects latest git tag and suggests next patch/minor version.
   - Expanding changelog / release summary markdown editor.
