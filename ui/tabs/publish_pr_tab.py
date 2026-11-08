@@ -28,7 +28,6 @@ from core.git_manager import GitManager
 from core.runner import ProcessRunner
 from core.publish_checks import CHECK_INPUT, has_pending_edits, pending_inputs
 from core.notifications import send_desktop_notification
-from ui.components.commit_draft import CommitDraft
 from ui.components.activity_tabs import ActivityTabs
 from core.state import StateManager
 from ui.components.file_list import FileListWidget
@@ -268,8 +267,6 @@ class PublishPrTab(QWidget):
         self.body_input.setFixedHeight(45)
         self.body_input.setPlaceholderText("Description (optional markdown)...")
         pr_layout.addWidget(self.body_input)
-        self.commit_draft = CommitDraft(self.title_input, self.body_input, self._draft_diff)
-        h_title_phase.insertWidget(2, self.commit_draft)
 
         form_layout.addWidget(pr_grp)
 
@@ -863,6 +860,14 @@ class PublishPrTab(QWidget):
         title = pr_data.get("title", "")
         url = pr_data.get("url", "")
         state = pr_data.get("state", "")
+        pending = StateManager.get("rufin_publish_pending") or {}
+        if (context is not None and state in ("MERGED", "CLOSED")
+                and pending.get("repo_path") == context[0] and pending.get("branch") == context[1]
+                and not self.runner.is_running and not self._is_waiting_for_pr):
+            # The saved publish ended with its PR; the form returns to new work.
+            self._complete_pending_publish(pending)
+            self.refresh()
+            return
         if context is not None:
             self.pr_title_label.setText(f"PR: {title}")
             self.pr_title_label.setVisible(True)
@@ -904,10 +909,6 @@ class PublishPrTab(QWidget):
         adds = item.additions if item else 0
         dels = item.deletions if item else 0
         self.diff_viewer.set_diff(diff_text, path, adds, dels, rel_path=path)
-
-    def _draft_diff(self):
-        paths = self.file_list.get_selected_paths()
-        return self.git_mgr.get_diff(paths) if paths else ""
 
     def _show_multi_file_diff(self, paths: List[str]):
         if self._branch_comparison and set(paths) == self.file_list.selectable_paths:

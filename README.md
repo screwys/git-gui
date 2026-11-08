@@ -35,7 +35,9 @@ A clean, fast, and extendable PyQt6 GUI designed for managing Git pull requests 
   - Draggable top bar with native Wayland/X11 system dragging (`startSystemMove`) and mouse tracking fallback.
   - Automatically obeys system GTK / Niri window decoration rules (shows only the circular close button on Niri / GNOME).
   - Double-click to toggle maximize / restore.
-  - Quick Git controls: **⟳ Refresh**, **📥 Fetch**, and **⬇ Pull**.
+  - Quick Git controls: **⟳ Refresh**, **📥 Fetch**, and **⬇ Pull**. Rufin shows **Sync** instead
+    (`publish-pr.sh --sync`) and an Android button that runs `just build apk-dev` and
+    `just install android`.
 
 ## Running
 
@@ -117,14 +119,6 @@ Igloo and added projects use **Commit & Push** to fetch remote changes and rebas
 Other working-tree edits are kept through Git's autostash. If conflicts occur, resolve or abort
 the rebase before retrying. On a clean working tree, **Push** retries existing commits without
 requiring a new message or creating another commit. The pre-push skip option still applies.
-
-In either commit form, click the **Fill with Codex** icon beside the commit message to fill
-the subject and description from the selected diff. Both fields remain editable before confirmation.
-Click it again to request another draft, or click the stop icon during generation to cancel.
-This uses `codex exec` with `gpt-6-luna`, low reasoning,
-and your existing Codex login.
-Install Codex CLI and run `codex login` first. It makes no background generation requests and
-keeps edits made while generation is running. Release notes remain manually written.
 
 Enable **Settings > Close to tray** to keep notifications active when you close the window.
 Use **Open Git GUI** in the tray menu, or launch the app again, to show the same window.

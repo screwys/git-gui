@@ -21,7 +21,6 @@ from core.runner import ProcessRunner
 from ui.components.file_list import FileListWidget
 from ui.components.diff_viewer import DiffViewer
 from ui.components.terminal_view import TerminalWidget
-from ui.components.commit_draft import CommitDraft
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
 
 
@@ -85,8 +84,6 @@ class CommitTab(QWidget):
         self.desc_input.setFixedHeight(45)
         self.desc_input.setPlaceholderText("Extended description (optional markdown)...")
         commit_layout.addWidget(self.desc_input)
-        self.commit_draft = CommitDraft(self.summary_input, self.desc_input, self._draft_diff)
-        h_summary.addWidget(self.commit_draft)
 
         form_layout.addWidget(commit_grp)
 
@@ -209,10 +206,6 @@ class CommitTab(QWidget):
         adds = item.additions if item else 0
         dels = item.deletions if item else 0
         self.diff_viewer.set_diff(diff_text, path, adds, dels, rel_path=path)
-
-    def _draft_diff(self):
-        paths = self.file_list.get_selected_paths()
-        return self.git_mgr.get_diff(paths) if paths else ""
 
     def _show_multi_file_diff(self, paths: List[str]):
         selected_items = [i for i in self.file_list.items if i.path in paths]

@@ -174,6 +174,16 @@ class DraggableTopBar(QWidget):
         self.igloo_tools_widget.setVisible(False)
         layout.addWidget(self.igloo_tools_widget)
 
+        self.btn_rufin_android = QPushButton()
+        self.btn_rufin_android.setIcon(create_android_icon())
+        self.btn_rufin_android.setIconSize(QSize(16, 16))
+        self.btn_rufin_android.setFixedSize(28, 24)
+        self.btn_rufin_android.setToolTip("Build & Install Android App (just build apk-dev, just install android)")
+        self.btn_rufin_android.clicked.connect(lambda: self.main_window._run_command(
+            "bash", ["-c", "just build apk-dev && just install android"]))
+        self.btn_rufin_android.setVisible(False)
+        layout.addWidget(self.btn_rufin_android)
+
         # Git Actions
         self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.setFixedHeight(24)
@@ -192,6 +202,13 @@ class DraggableTopBar(QWidget):
         self.btn_pull.setToolTip("git pull --ff-only")
         self.btn_pull.clicked.connect(self.main_window._do_pull)
         layout.addWidget(self.btn_pull)
+
+        self.btn_sync = QPushButton("Sync")
+        self.btn_sync.setFixedHeight(24)
+        self.btn_sync.setToolTip("publish-pr.sh --sync: bring main up to origin/main, merging local edits")
+        self.btn_sync.clicked.connect(self.main_window._do_sync)
+        self.btn_sync.setVisible(False)
+        layout.addWidget(self.btn_sync)
 
         # Settings button
         self.btn_settings = QPushButton("Settings")
@@ -636,11 +653,16 @@ class MainWindow(QMainWindow):
     def update_repo_display(self):
         mgr = self.active_git_mgr
         name = self.active_repo_name
-        is_igloo = bool(self.project_tabs.currentIndex() == 1)
+        is_rufin = self.project_tabs.currentWidget() is self.rufin_view
+        is_igloo = self.project_tabs.currentWidget() is self.igloo_view
 
         self.top_bar.repo_badge.setText(name)
         self.top_bar.repo_badge.setToolTip(f"Repository path: {mgr.repo_path}")
         self.top_bar.igloo_tools_widget.setVisible(is_igloo)
+        self.top_bar.btn_rufin_android.setVisible(is_rufin)
+        self.top_bar.btn_sync.setVisible(is_rufin)
+        self.top_bar.btn_fetch.setVisible(not is_rufin)
+        self.top_bar.btn_pull.setVisible(not is_rufin)
 
         if not mgr.is_git_repo():
             self.top_bar.branch_badge.setText("not a git repo")
@@ -681,12 +703,15 @@ class MainWindow(QMainWindow):
             tab.refresh_working_tree()
 
     def _do_fetch(self):
-        self._run_git_command(["fetch", "--prune", "origin"])
+        self._run_command("git", ["fetch", "--prune", "origin"])
 
     def _do_pull(self):
-        self._run_git_command(["pull", "--ff-only"])
+        self._run_command("git", ["pull", "--ff-only"])
 
-    def _run_git_command(self, args):
+    def _do_sync(self):
+        self._run_command(self.config.resolve_publish_script(), ["--sync"])
+
+    def _run_command(self, program, args):
         if self.runner.is_running:
             self.git_dock.show()
             return
@@ -694,7 +719,7 @@ class MainWindow(QMainWindow):
         self.git_terminal.clear_terminal()
         self.git_terminal.set_status("Running", "running")
         self.git_dock.show()
-        self.runner.start("git", args, cwd=self.active_git_mgr.repo_path)
+        self.runner.start(program, args, cwd=self.active_git_mgr.repo_path)
 
 
 def main():
