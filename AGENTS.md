@@ -1,12 +1,10 @@
 # Working in this repository
 
-- This is Git GUI, a separate project from Rufin. Do not apply Rufin's publish workflow here.
 - Work directly on `main`; do not create a branch unless the user asks for one.
 - After making edits, run the relevant checks, commit the changes, and push them to `origin/main`.
-- If `origin/main` advanced, fetch and rebase before pushing. Do not force-push.
-- Keep commits focused. Write scoped subjects, as Linux, Go and nixpkgs do: `area: description`,
-  about 50 characters, where the area is the part of the code that changed (`daemon:`,
-  `ui/publish:`, `packages:`). No Conventional Commit types such as `feat:` or `fix(...)`.
+- If `origin/main` advanced, fetch and rebase before pushing. 
+- Write scoped subjects, `area: description`, where the area is the part of the code that changed (`daemon:`,
+  `ui/publish:`, `packages:`).
 - The repository is public. Keep the README user-facing and put implementation notes here.
 
 ## Checks
@@ -17,8 +15,7 @@ go build -o git-gui . && ./git-gui install
 ```
 
 gotk4 prints cgo `free` warnings while building; filter them with
-`grep -v "cgo-generated\|^# github.com/diamondburned"`. The first build compiles gotk4 for
-several minutes and needs a few GB of memory, so run it at low priority. `git-gui install`
+`grep -v "cgo-generated\|^# github.com/diamondburned"`. `git-gui install`
 restarts the daemon; running commands keep going because each has its own supervisor process and
 the unit uses `KillMode=process`.
 
@@ -27,26 +24,6 @@ To look at the window without a desktop, run it under Broadway:
 open http://localhost:8099. A second instance needs its own session bus (`dbus-run-session`),
 because the app ID is single-instance. Never click buttons that commit, push, publish or release
 while testing against real repositories.
-
-## Layout
-
-```
-main.go                 Dispatches: window, install, daemon, supervise, publish-checks, push, release
-internal/daemon/        The user service: jobs.go (supervised commands), watch.go (PR watch and
-                        notifications), schedule.go (run after a PR merges, early full checks),
-                        releases.go (followed releases), server.go (socket ops), main.go (state)
-internal/client/        The window's side: socket requests, daemon.json, job records, outside helpers
-internal/git/           Quick Git reads. One comparison: Compare and Diff, right side WorkingTree = disk
-internal/config/        config.json and state.json, in the format the Python version wrote
-internal/packages/      Package list discovery, layout-keeping edits, nocblue mirrors, commit subjects
-internal/tasks/         Commands run as jobs (push, release) and install
-internal/ui/            The window. Shared: terminal.go, runner.go, console.go, filelist.go,
-                        diffview.go, confirm.go, schedule.go (ScheduleFollower, PRPicker),
-                        daemonstate.go (one daemon.json watcher), style.go. Tabs: commit.go,
-                        publish.go and checks.go, rufin_release.go, igloo_release.go,
-                        generic_release.go and releasejobs.go, packages.go, changes.go, settings.go.
-                        window.go builds the projects and wires the tabs.
-```
 
 ## Window and daemon
 
