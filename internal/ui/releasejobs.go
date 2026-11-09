@@ -523,6 +523,7 @@ func newReleaseOutput(repo, kind, program string) *releaseOutput {
 	o.jobs = NewReleaseJobs(repo, kind, o.term.Runner)
 	o.Root.AppendPage(o.jobs.Root, gtk.NewLabel("Jobs and Progress"))
 	o.Root.AppendPage(o.term.Root, gtk.NewLabel("Terminal Log"))
+	o.term.OnShow = func() { o.Root.SetCurrentPage(1) }
 	o.jobs.OnWorkflowStarted = func() {
 		if o.stage != "failed" {
 			o.show("remote", false)

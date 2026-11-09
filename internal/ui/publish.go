@@ -201,6 +201,7 @@ func NewPublishTab(repo string) *PublishTab {
 	t.bottom = gtk.NewNotebook()
 	t.bottom.AppendPage(t.checks.Root, gtk.NewLabel("PR Checks"))
 	t.bottom.AppendPage(t.term.Root, gtk.NewLabel("Terminal Log"))
+	t.term.OnShow = func() { t.bottom.SetCurrentPage(1) }
 	split := gtk.NewPaned(gtk.OrientationVertical)
 	split.SetStartChild(t.diff.Root)
 	split.SetEndChild(t.bottom)

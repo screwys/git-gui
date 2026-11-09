@@ -20,7 +20,8 @@ type tab struct {
 	label   string
 	widget  gtk.Widgetter
 	refresh func()
-	local   func() // the 30 s working-tree reload; nil when the tab has none
+	local   func()    // the 30 s working-tree reload; nil when the tab has none
+	term    *Terminal // where the project's Commands page shows while the tab is current
 }
 
 // project is one repository's set of subtabs.
@@ -29,7 +30,8 @@ type project struct {
 	stateKey         string // where the selected subtab is saved
 	notebook         *gtk.Notebook
 	tabs             []tab
-	dock             *Terminal // top-bar commands: fetch, pull, sync, Android
+	commands         *jobPage  // top-bar commands: fetch, pull, sync, Android, restart
+	host             *Terminal // the terminal showing commands
 }
 
 // Window is the main window.
@@ -39,8 +41,6 @@ type Window struct {
 	title    *adw.WindowTitle
 	projects []*project
 	notebook *gtk.Notebook
-	docks    *gtk.Stack
-	reveal   *gtk.Revealer
 	buttons  map[string]*gtk.Button
 }
 
@@ -99,18 +99,9 @@ func newWindow(app *adw.Application) *Window {
 	plus.ConnectClicked(w.addProject)
 	w.notebook.SetActionWidget(plus, gtk.PackEnd)
 
-	w.docks = gtk.NewStack()
-	w.reveal = gtk.NewRevealer()
-	w.reveal.SetChild(w.docks)
-	w.reveal.SetRevealChild(false)
-	paned := gtk.NewPaned(gtk.OrientationVertical)
-	paned.SetStartChild(w.notebook)
-	paned.SetEndChild(w.reveal)
-	paned.SetResizeEndChild(false)
-
 	toolbar := adw.NewToolbarView()
 	toolbar.AddTopBar(header)
-	toolbar.SetContent(paned)
+	toolbar.SetContent(w.notebook)
 	w.SetContent(toolbar)
 
 	w.buildProjects()
@@ -129,7 +120,7 @@ func newWindow(app *adw.Application) *Window {
 	glib.TimeoutAdd(30000, func() bool {
 		if w.IsActive() {
 			p := w.active()
-			if i := p.notebook.CurrentPage(); i >= 0 && i < len(p.tabs) && p.tabs[i].local != nil && !p.dock.Runner.Running() {
+			if i := p.notebook.CurrentPage(); i >= 0 && i < len(p.tabs) && p.tabs[i].local != nil && !p.commands.Runner.Running() {
 				p.tabs[i].local()
 			}
 		}
@@ -166,9 +157,6 @@ func (w *Window) rebuildProjects() {
 	for w.notebook.NPages() > 0 {
 		w.notebook.RemovePage(-1)
 	}
-	for _, p := range w.projects {
-		w.docks.Remove(p.dock.Root)
-	}
 	w.projects = nil
 	w.buildProjects()
 }
@@ -180,25 +168,27 @@ func (w *Window) addProjectView(name, repo, kind, stateKey string) *project {
 	}
 	p := &project{name: name, repo: repo, kind: kind, stateKey: stateKey, notebook: gtk.NewNotebook()}
 	changes := NewChangesTab(repo)
-	changesTab := tab{"Changes", changes.Root, changes.Refresh, changes.Refresh}
+	changesTab := withTerminal(repo, tab{"Changes", changes.Root, changes.Refresh, changes.Refresh, nil})
 	switch kind {
 	case "rufin":
 		publish := NewPublishTab(repo)
 		release := NewRufinReleaseTab(repo)
-		p.tabs = []tab{{"Publish PR", publish.Root, publish.Refresh, publish.RefreshFiles}, {"Release", release.Root, release.Refresh, nil}, changesTab}
+		p.tabs = []tab{{"Publish PR", publish.Root, publish.Refresh, publish.RefreshFiles, publish.term},
+			{"Release", release.Root, release.Refresh, nil, release.out.term}, changesTab}
 	case "igloo":
 		commit := NewCommitTab(repo)
 		release := NewIglooReleaseTab(repo)
-		p.tabs = []tab{{"Commit & Push", commit.Root, commit.Refresh, commit.Refresh}, {"Release", release.Root, release.Refresh, nil}, changesTab}
+		p.tabs = []tab{{"Commit & Push", commit.Root, commit.Refresh, commit.Refresh, commit.term},
+			{"Release", release.Root, release.Refresh, nil, release.out.term}, changesTab}
 	default:
 		commit := NewCommitTab(repo)
-		p.tabs = []tab{{"Commit & Push", commit.Root, commit.Refresh, commit.Refresh}}
+		p.tabs = []tab{{"Commit & Push", commit.Root, commit.Refresh, commit.Refresh, commit.term}}
 		if name == "nocblue" || appConfig.HasPackages(repo) {
 			packages := NewPackagesTab(repo, name == "nocblue", commit.FillSubject)
-			p.tabs = append(p.tabs, tab{"Packages", packages.Root, packages.Refresh, nil})
+			p.tabs = append(p.tabs, withTerminal(repo, tab{"Packages", packages.Root, packages.Refresh, nil, nil}))
 		}
 		release := NewGenericReleaseTab(repo)
-		p.tabs = append(p.tabs, tab{"Release", release.Root, release.Refresh, nil}, changesTab)
+		p.tabs = append(p.tabs, tab{"Release", release.Root, release.Refresh, nil, release.out.term}, changesTab)
 	}
 	for _, t := range p.tabs {
 		p.notebook.AppendPage(t.widget, gtk.NewLabel(t.label))
@@ -214,29 +204,48 @@ func (w *Window) addProjectView(name, repo, kind, stateKey string) *project {
 	p.notebook.ConnectSwitchPage(func(_ gtk.Widgetter, page uint) {
 		if int(page) < len(p.tabs) {
 			config.Set(p.stateKey, p.tabs[page].label)
+			p.showCommands(p.tabs[page].term)
 			glib.IdleAdd(func() { p.tabs[page].refresh() })
 		}
 	})
-	p.dock = NewTerminal(repo, "git-tools", "")
-	p.dock.Root.SetSizeRequest(-1, 220)
-	p.dock.OnStarted = func() { w.reveal.SetRevealChild(true) }
-	p.dock.OnRestored = func(_ daemon.Record, running, _ bool) {
-		if running {
-			w.reveal.SetRevealChild(true)
-		}
-	}
-	p.dock.OnFinished = func(int, daemon.Record) {
+	p.commands = newCommandsPage(repo)
+	p.commands.OnFinished = func(int, daemon.Record) {
 		if w.active() == p {
 			w.refreshActive()
 		}
 	}
-	w.docks.AddNamed(p.dock.Root, repo)
+	p.showCommands(p.tabs[max(0, p.notebook.CurrentPage())].term)
 	label := gtk.NewLabel(name)
 	label.SetTooltipText(repo)
 	w.notebook.AppendPage(p.notebook, label)
 	w.projects = append(w.projects, p)
-	p.dock.Attach()
+	p.commands.Runner.Attach()
 	return p
+}
+
+// withTerminal puts a terminal below a tab that has none of its own.
+func withTerminal(repo string, t tab) tab {
+	t.term = NewShellTerminal(repo)
+	t.term.Root.SetSizeRequest(-1, 220)
+	t.term.Root.SetMarginStart(6)
+	t.term.Root.SetMarginEnd(6)
+	t.term.Root.SetMarginBottom(6)
+	paned := gtk.NewPaned(gtk.OrientationVertical)
+	paned.SetStartChild(t.widget)
+	paned.SetEndChild(t.term.Root)
+	paned.SetResizeEndChild(false)
+	paned.SetShrinkEndChild(false)
+	t.widget = paned
+	t.term.Attach()
+	return t
+}
+
+// showCommands moves the Commands page into the terminal of the tab being shown.
+func (p *project) showCommands(term *Terminal) {
+	if p.host != term {
+		term.host(p.commands, p.host)
+		p.host = term
+	}
 }
 
 func (w *Window) active() *project {
@@ -271,23 +280,22 @@ func (w *Window) refreshActive() {
 	} else {
 		w.buttons["android"].SetTooltipText("Build & Install Android App (just build apk-dev, just install android)")
 	}
-	w.docks.SetVisibleChildName(p.repo)
-	w.reveal.SetRevealChild(p.dock.Runner.Running() || w.reveal.RevealChild() && p.dock.Runner.Path != "")
 	if i := p.notebook.CurrentPage(); i >= 0 && i < len(p.tabs) {
+		p.showCommands(p.tabs[i].term)
 		p.tabs[i].refresh()
 	}
-	p.dock.Attach()
+	p.commands.Runner.Attach()
 }
 
-// runTool runs a top-bar command for the active project in its Git commands dock.
+// runTool runs a top-bar command for the active project on its Commands page.
 func (w *Window) runTool(command ...string) {
 	p := w.active()
-	w.reveal.SetRevealChild(true)
-	if p.dock.Runner.Running() {
+	if p.commands.Runner.Running() {
+		p.commands.show()
 		return
 	}
-	p.dock.Clear()
-	p.dock.Runner.Start(command, nil)
+	p.commands.Clear()
+	p.commands.Runner.Start(command, nil)
 }
 
 // addProject asks for a folder and adds its repository as a project.

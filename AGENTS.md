@@ -61,6 +61,10 @@ internal/ui/            The window. Shared: terminal.go, runner.go, console.go, 
   pause and resume are `signal` requests.
 - Rufin publish or release helpers started outside the app show as observed processes, without
   output or exit codes.
+- Every tab has a terminal notebook. Top-bar commands (fetch, pull, sync, Android, restart) run in
+  the project's `git-tools` slot and show on one Commands page that moves into the visible tab's
+  terminal, so they never share a slot with the tab's own job. Changes and Packages have no job of
+  their own and get a shell-only terminal on `git-tools-shell`.
 - Every view that reads `daemon.json` registers with `onDaemonState`; the daemon replaces the file
   on every pass. Separate GIO monitors per view stopped delivering events, so keep one.
 - The 30 s timer reloads only the working tree of the visible tab (`tab.local`). It must not call
