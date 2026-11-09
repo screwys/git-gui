@@ -32,12 +32,7 @@ type CommitTab struct {
 func NewCommitTab(repo string) *CommitTab {
 	t := &CommitTab{repo: repo, files: NewFileList(true, "Commit & Push"), diff: NewDiffView(repo), term: NewTerminal(repo, "commit", "")}
 	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
-	left := gtk.NewBox(gtk.OrientationVertical, 8)
-	left.SetMarginStart(8)
-	left.SetMarginTop(8)
-	left.SetMarginBottom(8)
 	t.files.Button.SetTooltipText("Commit selected changes and push to origin")
-	left.Append(t.files.Root)
 
 	message := group("Commit Message")
 	t.summary = gtk.NewEntry()
@@ -47,10 +42,11 @@ func NewCommitTab(repo string) *CommitTab {
 	bodyScroll := gtk.NewScrolledWindow()
 	bodyScroll.SetChild(t.body)
 	bodyScroll.SetMinContentHeight(60)
+	bodyScroll.SetVExpand(true)
 	bodyScroll.AddCSSClass("card")
 	message.Append(row("Summary:", t.summary))
 	message.Append(bodyScroll)
-	left.Append(message)
+	message.SetVExpand(true)
 
 	options := group("Options")
 	t.push = gtk.NewCheckButtonWithLabel("Push to origin upon commit")
@@ -61,7 +57,21 @@ func NewCommitTab(repo string) *CommitTab {
 	options.Append(t.push)
 	options.Append(t.amend)
 	options.Append(t.skipHook)
-	left.Append(options)
+
+	// The message and options share a pane below the file list, so a handle resizes the message.
+	bottom := gtk.NewBox(gtk.OrientationVertical, 8)
+	bottom.SetMarginTop(8)
+	bottom.Append(message)
+	bottom.Append(options)
+	left := gtk.NewPaned(gtk.OrientationVertical)
+	left.SetMarginStart(8)
+	left.SetMarginTop(8)
+	left.SetMarginBottom(8)
+	left.SetStartChild(t.files.Root)
+	left.SetEndChild(bottom)
+	left.SetShrinkStartChild(false)
+	left.SetShrinkEndChild(false)
+	left.SetResizeEndChild(false)
 
 	right := gtk.NewPaned(gtk.OrientationVertical)
 	right.SetStartChild(t.diff.Root)
