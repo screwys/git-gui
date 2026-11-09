@@ -89,7 +89,22 @@ tests/                      unittest suites, Qt tests run offscreen
   Keep `updated` and `prs[].repo`, `number`, `title`, `url`, `branch`, `status` and `failed`
   stable. `status` is one of `running`, `passing`, `behind`, `updating`, `failing` or `conflict`.
 
+## Releases for other projects
+
+- Release tags are annotated and created at the commit the user confirms. A retry reuses a tag at
+  the same commit; a tag at another commit is never replaced.
+- Unticking **Push tag to origin** publishes a release for a tag already on GitHub, which must
+  point at the selected commit. Unticking both options only creates the tag locally.
+- A tag workflow that runs `gh release create` or `softprops/action-gh-release` is detected and
+  selected as the publisher; the app waits for it, then sets the notes. Otherwise `gh` creates
+  the release.
+
 ## Packages
+
+- Package lists come from BlueBuild recipes (DNF and rpm-ostree install and remove lists),
+  `Brewfile`s and plain lists such as `manifests/nix-profile.txt`. Edits keep the file's layout
+  and fill a subject such as `feat(packages): add postgres and postgres-server` unless the user
+  wrote one.
 
 - RPM completion runs `dnf --cacheonly repoquery` once per app session, on first use, and shares
   the result across project tabs. It never downloads metadata.
