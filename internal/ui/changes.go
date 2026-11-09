@@ -53,7 +53,7 @@ type ChangesTab struct {
 
 // NewChangesTab builds the tab for repo.
 func NewChangesTab(repo string) *ChangesTab {
-	c := &ChangesTab{repo: repo, limit: commitPage, files: NewFileList(false, ""), diff: NewDiffView(repo)}
+	c := &ChangesTab{repo: repo, limit: commitPage, files: NewFileList("", false), diff: NewDiffView(repo)}
 	c.diff.ReadOnly = true
 	c.diff.updateControls()
 	c.Root = gtk.NewBox(gtk.OrientationVertical, 6)
@@ -101,11 +101,9 @@ func NewChangesTab(repo string) *ChangesTab {
 	baseField.Append(refs)
 	c.include = gtk.NewCheckButtonWithLabel("Include uncommitted")
 	c.include.SetActive(true)
-	all := gtk.NewButtonWithLabel("All changes")
 	c.options.Append(gtk.NewLabel("Base"))
 	c.options.Append(baseField)
 	c.options.Append(c.include)
-	c.options.Append(all)
 	c.Root.Append(c.options)
 
 	left := gtk.NewBox(gtk.OrientationVertical, 6)
@@ -164,10 +162,6 @@ func NewChangesTab(repo string) *ChangesTab {
 	focus.ConnectLeave(c.applyBase)
 	c.base.AddController(focus)
 	c.include.ConnectToggled(c.changed(c.load))
-	all.ConnectClicked(func() {
-		c.files.ClearSelection()
-		c.show(nil)
-	})
 	c.more.ConnectClicked(func() {
 		c.limit += commitPage
 		c.Refresh()
@@ -180,6 +174,7 @@ func NewChangesTab(repo string) *ChangesTab {
 	})
 	c.files.OnActivate = func(path string) { c.show([]string{path}) }
 	c.files.OnView = c.show
+	c.files.OnChecked = func() { c.show(c.files.Checked()) }
 	c.setScopeControls()
 	return c
 }
@@ -402,6 +397,9 @@ func (c *ChangesTab) load() {
 		if slices.ContainsFunc(files, func(f git.File) bool { return f.Path == path }) {
 			keep = append(keep, path)
 		}
+	}
+	if len(keep) == 0 {
+		keep = c.files.Checked() // the checked files when the previewed ones left
 	}
 	c.show(keep)
 }

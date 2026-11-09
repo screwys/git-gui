@@ -30,7 +30,7 @@ type CommitTab struct {
 
 // NewCommitTab builds the tab for repo.
 func NewCommitTab(repo string) *CommitTab {
-	t := &CommitTab{repo: repo, files: NewFileList(true, "Commit & Push"), diff: NewDiffView(repo), term: NewTerminal(repo, "commit", "")}
+	t := &CommitTab{repo: repo, files: NewFileList("Commit & Push", true), diff: NewDiffView(repo), term: NewTerminal(repo, "commit", "")}
 	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
 	t.files.Button.SetTooltipText("Commit selected changes and push to origin")
 

@@ -3,14 +3,15 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 
 	"github.com/screwys/git-gui/internal/git"
 )
 
-// FileList shows changed files. Editable lists have checkboxes on selectable rows; the
-// read-only list allows multi-select instead.
+// FileList shows changed files with a checkbox on each selectable row, a select-all box and a
+// file name filter. Checks stay until the user unticks them or the file leaves the list.
 type FileList struct {
 	Root     *gtk.Box
 	Title    *gtk.Label
@@ -19,8 +20,10 @@ type FileList struct {
 	list     *gtk.ListBox
 	scroll   *gtk.ScrolledWindow
 	all      *gtk.CheckButton
+	filter   *gtk.SearchEntry
+	count    *gtk.Label
 	totals   *gtk.Label
-	editable bool
+	checkNew bool
 
 	Files      []git.File
 	selectable map[string]bool
@@ -33,37 +36,46 @@ type FileList struct {
 	OnChecked  func()               // the checked set changed
 }
 
-// NewFileList builds a list; editable adds checkboxes and the select-all box.
-func NewFileList(editable bool, action string) *FileList {
-	f := &FileList{Root: gtk.NewBox(gtk.OrientationVertical, 4), list: gtk.NewListBox(), editable: editable,
+// NewFileList builds a list. With checkNew, new rows arrive checked while every row is checked.
+func NewFileList(action string, checkNew bool) *FileList {
+	f := &FileList{Root: gtk.NewBox(gtk.OrientationVertical, 4), list: gtk.NewListBox(), checkNew: checkNew,
 		checked: map[string]bool{}, checks: map[string]*gtk.CheckButton{}, selectable: map[string]bool{}}
 	header := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	f.Title = gtk.NewLabel("Changes (0)")
 	f.Title.AddCSSClass("heading")
+	f.count = gtk.NewLabel("")
+	f.count.AddCSSClass("dim")
 	f.totals = gtk.NewLabel("")
 	spacer := gtk.NewBox(gtk.OrientationHorizontal, 0)
 	spacer.SetHExpand(true)
 	header.Append(f.Title)
+	header.Append(f.count)
 	header.Append(spacer)
 	header.Append(f.totals)
-	if editable {
-		f.all = gtk.NewCheckButton()
-		f.all.SetTooltipText("Select / Deselect All")
-		f.all.ConnectToggled(func() {
-			if f.updating {
-				return
-			}
-			for path := range f.selectable {
-				f.checked[path] = f.all.Active()
-			}
-			f.syncChecks()
-			if f.OnChecked != nil {
-				f.OnChecked()
-			}
-		})
-		header.Append(f.all)
-	}
 	f.Root.Append(header)
+
+	// The select-all box ticks or unticks the rows the filter shows.
+	filterRow := gtk.NewBox(gtk.OrientationHorizontal, 6)
+	filterRow.SetMarginStart(4)
+	f.all = gtk.NewCheckButton()
+	f.all.SetTooltipText("Select / Deselect All")
+	f.all.ConnectToggled(func() {
+		if f.updating {
+			return
+		}
+		f.setVisible(f.all.Active())
+	})
+	f.filter = gtk.NewSearchEntry()
+	f.filter.SetPlaceholderText("Filter files")
+	f.filter.SetHExpand(true)
+	f.filter.ConnectSearchChanged(func() {
+		f.list.InvalidateFilter()
+		f.syncAll()
+	})
+	filterRow.Append(f.all)
+	filterRow.Append(f.filter)
+	f.Root.Append(filterRow)
+
 	buttons := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	f.Button = gtk.NewButtonWithLabel(action)
 	f.Button.AddCSSClass("suggested-action")
@@ -71,17 +83,17 @@ func NewFileList(editable bool, action string) *FileList {
 	f.View = gtk.NewButtonWithLabel("View Diff")
 	f.View.ConnectClicked(func() {
 		if f.OnView != nil {
-			f.OnView(f.chosen())
+			f.OnView(f.Checked())
 		}
 	})
 	buttons.Append(f.Button)
 	buttons.Append(f.View)
 	f.Root.Append(buttons)
-	if editable {
-		f.list.SetSelectionMode(gtk.SelectionSingle)
-	} else {
-		f.list.SetSelectionMode(gtk.SelectionMultiple)
-	}
+	f.list.SetSelectionMode(gtk.SelectionSingle)
+	f.list.SetFilterFunc(func(row *gtk.ListBoxRow) bool {
+		i := row.Index()
+		return i < 0 || i >= len(f.Files) || f.shows(f.Files[i].Path)
+	})
 	f.list.ConnectRowActivated(func(row *gtk.ListBoxRow) {
 		if f.OnActivate != nil && row.Index() < len(f.Files) {
 			f.OnActivate(f.Files[row.Index()].Path)
@@ -96,17 +108,26 @@ func NewFileList(editable bool, action string) *FileList {
 	return f
 }
 
-// SetFiles replaces the rows. Only paths in selectable get a checkbox; nil makes every row
-// selectable. Checked and selected rows survive; when every row was checked, new rows arrive
-// checked.
-func (f *FileList) SetFiles(files []git.File, selectable []string) {
-	wasAll := f.allChecked()
-	keepScroll := f.scroll.VAdjustment().Value()
-	selected := map[string]bool{}
-	for _, row := range f.list.SelectedRows() {
-		if i := row.Index(); i < len(f.Files) {
-			selected[f.Files[i].Path] = true
+// shows reports whether the filter lets path through: every word must appear in it, ignoring case.
+func (f *FileList) shows(path string) bool {
+	path = strings.ToLower(path)
+	for _, word := range strings.Fields(strings.ToLower(f.filter.Text())) {
+		if !strings.Contains(path, word) {
+			return false
 		}
+	}
+	return true
+}
+
+// SetFiles replaces the rows. Only paths in selectable get a checkbox; nil makes every row
+// selectable. Checked and selected rows survive; with checkNew and every row checked, new
+// rows arrive checked.
+func (f *FileList) SetFiles(files []git.File, selectable []string) {
+	wasAll := f.checkNew && f.allChecked(false)
+	keepScroll := f.scroll.VAdjustment().Value()
+	selected := ""
+	if row := f.list.SelectedRow(); row != nil && row.Index() < len(f.Files) {
+		selected = f.Files[row.Index()].Path
 	}
 	f.Files = files
 	f.selectable = map[string]bool{}
@@ -121,24 +142,22 @@ func (f *FileList) SetFiles(files []git.File, selectable []string) {
 	}
 	checked := map[string]bool{}
 	for path := range f.selectable {
-		checked[path] = f.checked[path] || (wasAll && f.editable)
+		checked[path] = f.checked[path] || wasAll
 	}
 	f.checked = checked
 	f.checks = map[string]*gtk.CheckButton{}
 	f.list.RemoveAll()
 	adds, dels := 0, 0
-	for _, file := range files {
+	for i, file := range files {
 		adds += file.Adds
 		dels += file.Dels
 		f.list.Append(f.row(file))
-	}
-	f.Title.SetText(fmt.Sprintf("Changes (%d)", len(files)))
-	f.totals.SetMarkup(fmt.Sprintf(`<span foreground="#3fb950">+%d</span> <span foreground="#f85149">-%d</span>`, adds, dels))
-	for i, file := range files {
-		if selected[file.Path] {
+		if file.Path == selected {
 			f.list.SelectRow(f.list.RowAtIndex(i))
 		}
 	}
+	f.Title.SetText(fmt.Sprintf("Changes (%d)", len(files)))
+	f.totals.SetMarkup(fmt.Sprintf(`<span foreground="#3fb950">+%d</span> <span foreground="#f85149">-%d</span>`, adds, dels))
 	f.syncChecks()
 	f.scroll.VAdjustment().SetValue(keepScroll)
 }
@@ -147,27 +166,25 @@ func (f *FileList) row(file git.File) gtk.Widgetter {
 	box := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	box.SetMarginStart(4)
 	box.SetMarginEnd(4)
-	if f.editable {
-		check := gtk.NewCheckButton()
-		if f.selectable[file.Path] {
-			path := file.Path
-			check.ConnectToggled(func() {
-				if f.updating {
-					return
-				}
-				f.checked[path] = check.Active()
-				f.syncAll()
-				if f.OnChecked != nil {
-					f.OnChecked()
-				}
-			})
-			f.checks[file.Path] = check
-		} else {
-			check.SetSensitive(false)
-			check.SetOpacity(0)
-		}
-		box.Append(check)
+	check := gtk.NewCheckButton()
+	if f.selectable[file.Path] {
+		path := file.Path
+		check.ConnectToggled(func() {
+			if f.updating {
+				return
+			}
+			f.checked[path] = check.Active()
+			f.syncAll()
+			if f.OnChecked != nil {
+				f.OnChecked()
+			}
+		})
+		f.checks[file.Path] = check
+	} else {
+		check.SetSensitive(false)
+		check.SetOpacity(0)
 	}
+	box.Append(check)
 	letter := gtk.NewLabel(file.Status)
 	letter.AddCSSClass("status-letter")
 	letter.AddCSSClass(statusClass(file.Status))
@@ -200,6 +217,19 @@ func (f *FileList) row(file git.File) gtk.Widgetter {
 	return box
 }
 
+// setVisible ticks or unticks every selectable row the filter shows.
+func (f *FileList) setVisible(on bool) {
+	for path := range f.selectable {
+		if f.shows(path) {
+			f.checked[path] = on
+		}
+	}
+	f.syncChecks()
+	if f.OnChecked != nil {
+		f.OnChecked()
+	}
+}
+
 func (f *FileList) syncChecks() {
 	f.updating = true
 	for path, check := range f.checks {
@@ -209,28 +239,35 @@ func (f *FileList) syncChecks() {
 	f.syncAll()
 }
 
+// syncAll sets the select-all box from the shown rows and counts the checked ones.
 func (f *FileList) syncAll() {
-	if f.all == nil {
-		return
+	some := false
+	for path := range f.selectable {
+		some = some || (f.checked[path] && f.shows(path))
 	}
 	f.updating = true
-	f.all.SetActive(f.allChecked())
+	all := f.allChecked(true)
+	f.all.SetActive(all)
+	f.all.SetInconsistent(some && !all)
 	f.updating = false
+	if n := len(f.Checked()); n > 0 {
+		f.count.SetText(fmt.Sprintf("%d selected", n))
+	} else {
+		f.count.SetText("")
+	}
 }
 
-func (f *FileList) allChecked() bool {
-	if len(f.selectable) == 0 {
-		return true
-	}
+// allChecked reports whether every selectable row, or every one the filter shows, is checked.
+func (f *FileList) allChecked(shown bool) bool {
 	for path := range f.selectable {
-		if !f.checked[path] {
+		if !f.checked[path] && (!shown || f.shows(path)) {
 			return false
 		}
 	}
 	return true
 }
 
-// Checked lists the checked paths in list order.
+// Checked lists the checked paths in list order, including rows the filter hides.
 func (f *FileList) Checked() []string {
 	var paths []string
 	for _, file := range f.Files {
@@ -251,23 +288,3 @@ func (f *FileList) Selectable() []string {
 	}
 	return paths
 }
-
-// chosen is what View Diff shows: checked rows, or selected rows in a read-only list.
-func (f *FileList) chosen() []string {
-	if f.editable {
-		return f.Checked()
-	}
-	var paths []string
-	for _, row := range f.list.SelectedRows() {
-		if i := row.Index(); i < len(f.Files) {
-			paths = append(paths, f.Files[i].Path)
-		}
-	}
-	return paths
-}
-
-// Selected lists the read-only list's selected paths.
-func (f *FileList) Selected() []string { return f.chosen() }
-
-// ClearSelection unselects every row.
-func (f *FileList) ClearSelection() { f.list.UnselectAll() }

@@ -95,7 +95,7 @@ type PublishTab struct {
 
 // NewPublishTab builds the tab for the Rufin checkout at repo.
 func NewPublishTab(repo string) *PublishTab {
-	t := &PublishTab{repo: repo, files: NewFileList(true, "Publish PR"), diff: NewDiffView(repo),
+	t := &PublishTab{repo: repo, files: NewFileList("Publish PR", true), diff: NewDiffView(repo),
 		term: NewTerminal(repo, "publish", appConfig.PublishScript()), checks: NewChecksView(repo),
 		schedule: NewScheduleFollower(repo, "publish"), picker: NewPRPicker(repo, "Publish after PR merges:")}
 	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
