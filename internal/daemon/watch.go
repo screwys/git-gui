@@ -51,6 +51,7 @@ type PR struct {
 	Title  string   `json:"title"`
 	URL    string   `json:"url"`
 	Branch string   `json:"branch"`
+	Head   string   `json:"head"`   // the head commit the status describes
 	Status string   `json:"status"` // running, passing, behind, updating, failing or conflict
 	Failed []string `json:"failed"`
 	Checks []Check  `json:"checks"` // the head commit's checks, for git-gui's checks view
@@ -178,7 +179,7 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 		if node.Number == 0 {
 			continue
 		}
-		pr := PR{Repo: node.Repository.NameWithOwner, Number: node.Number, Title: node.Title, URL: node.URL, Branch: node.HeadRefName,
+		pr := PR{Repo: node.Repository.NameWithOwner, Number: node.Number, Title: node.Title, URL: node.URL, Branch: node.HeadRefName, Head: node.HeadRefOid,
 			Failed: []string{}, Checks: []Check{}}
 		open[pr.key()] = true
 		running := false

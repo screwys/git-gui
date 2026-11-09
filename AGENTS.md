@@ -74,8 +74,9 @@ while testing against real repositories.
   the window asked, every 5 minutes while only the window lives, and stops once the runs finished
   and the window is gone.
 - `daemon.json` is a contract with its readers (the window and Rufin's session startup report).
-  Keep `updated`, `prs[].repo`, `number`, `title`, `url`, `branch`, `status`, `failed` and
-  `checks`, `schedules[]` and `releases` stable. A PR's `status` is one of `running`, `passing`,
+  Keep `updated`, `prs[].repo`, `number`, `title`, `url`, `branch`, `head`, `status`, `failed`
+  and `checks`, `schedules[]` and `releases` stable. `git-gui wait-pr`, which agents run in the
+  background after publishing, waits on `prs[]` and exits on failing, conflict, merged or closed. A PR's `status` is one of `running`, `passing`,
   `behind`, `updating`, `failing` or `conflict`.
 
 ## Releases for other projects
