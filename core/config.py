@@ -6,10 +6,10 @@ from typing import Optional
 
 @dataclass
 class AppConfig:
-    rufin_repo_path: str = "/var/home/screwy/Projects/Rufin"
-    igloo_repo_path: str = "/var/home/screwy/Projects/Igloo"
-    nocblue_repo_path: str = "/var/home/screwy/Projects/nocblue"
-    repo_path: str = "/var/home/screwy/Projects/Rufin"  # backward compat
+    rufin_repo_path: str = os.path.expanduser("~/Projects/Rufin")
+    igloo_repo_path: str = os.path.expanduser("~/Projects/Igloo")
+    nocblue_repo_path: str = os.path.expanduser("~/Projects/nocblue")
+    repo_path: str = os.path.expanduser("~/Projects/Rufin")  # backward compat
     publish_pr_script: str = ".local/scripts/publish-pr.sh"
     release_script: str = ".local/scripts/release-rufin.sh"
     default_base_branch: str = "main"

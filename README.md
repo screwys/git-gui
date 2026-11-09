@@ -126,8 +126,9 @@ python3 install-desktop.py
 application menu, builds `prwatchd` into `~/.local/bin` and enables and restarts its user service.
 Run it again after pulling updates or moving the checkout.
 
-Start the app with `git-gui` or from your application menu. The default repository paths are mine,
-so set yours in **Settings** first. Settings also holds the Rufin script paths (relative to the
+Start the app with `git-gui` or from your application menu. The default projects are expected in
+`~/Projects/Rufin`, `~/Projects/Igloo` and `~/Projects/nocblue`; change them in **Settings**.
+Settings also holds the Rufin script paths (relative to the
 repository or absolute) and the defaults for base branch, auto-merge and waiting for CI.
 
 ## Where things live

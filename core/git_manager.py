@@ -66,7 +66,7 @@ class GitCommit:
 
 
 class GitManager:
-    def __init__(self, repo_path: str = "/var/home/screwy/Projects/Rufin"):
+    def __init__(self, repo_path: str = os.path.expanduser("~/Projects/Rufin")):
         self.repo_path = repo_path
 
     def _run_git(self, args: List[str], check: bool = False) -> Tuple[int, str, str]:
