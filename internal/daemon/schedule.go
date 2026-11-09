@@ -1,4 +1,4 @@
-package main
+package daemon
 
 import (
 	"bufio"
@@ -134,8 +134,8 @@ func (d *daemon) runSchedules(ctx context.Context) {
 
 func (d *daemon) advance(s *Schedule, prState string) {
 	if s.Status == "checking" {
-		record, err := readRecord(s.JobPath)
-		if err != nil || running(record) {
+		record, err := ReadRecord(s.JobPath)
+		if err != nil || JobRunning(record) {
 			return
 		}
 		inputs := checksResult(s.JobPath)

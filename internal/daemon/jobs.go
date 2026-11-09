@@ -1,4 +1,4 @@
-package main
+package daemon
 
 import (
 	"crypto/rand"
@@ -46,9 +46,9 @@ type Record struct {
 
 var errBusy = errors.New("this command is already running")
 
-func jobsRoot() string { return filepath.Join(stateHome(), "git-gui", "jobs") }
+func JobsRoot() string { return filepath.Join(stateHome(), "git-gui", "jobs") }
 
-func readRecord(path string) (Record, error) {
+func ReadRecord(path string) (Record, error) {
 	var record Record
 	data, err := os.ReadFile(path)
 	if err == nil {
@@ -70,7 +70,7 @@ func writeRecord(path string, record Record) error {
 }
 
 // processIdentity is the boot ID and start time, or "" for a missing or zombie process.
-func processIdentity(pid int) string {
+func ProcessIdentity(pid int) string {
 	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return ""
@@ -87,10 +87,11 @@ func processIdentity(pid int) string {
 	return strings.TrimSpace(string(boot)) + ":" + fields[19]
 }
 
-func alive(p *Proc) bool { return p != nil && p.Identity != "" && processIdentity(p.Pid) == p.Identity }
+func Alive(p *Proc) bool { return p != nil && p.Identity != "" && ProcessIdentity(p.Pid) == p.Identity }
 
-func running(record Record) bool {
-	return record.ExitCode == nil && (alive(&Proc{record.Pid, record.Identity}) || alive(record.Child))
+// JobRunning reports whether a job has not ended and its supervisor or command is alive.
+func JobRunning(record Record) bool {
+	return record.ExitCode == nil && (Alive(&Proc{record.Pid, record.Identity}) || Alive(record.Child))
 }
 
 // startJob writes the job record and starts its supervisor, unless the same command slot is busy.
@@ -99,7 +100,7 @@ func startJob(spec JobSpec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root := jobsRoot()
+	root := JobsRoot()
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", err
 	}
@@ -161,21 +162,21 @@ func jobEnv(env map[string]string) []string {
 
 // signalJob stops, pauses or resumes a job's command and its child processes.
 func signalJob(path, action string) error {
-	record, err := readRecord(path)
+	record, err := ReadRecord(path)
 	if err != nil {
 		return err
 	}
 	switch action {
 	case "stop":
-		if supervisor := (&Proc{record.Pid, record.Identity}); alive(supervisor) {
+		if supervisor := (&Proc{record.Pid, record.Identity}); Alive(supervisor) {
 			return syscall.Kill(record.Pid, syscall.SIGTERM)
 		}
-		if alive(record.Child) {
+		if Alive(record.Child) {
 			return syscall.Kill(-record.Child.Pid, syscall.SIGTERM)
 		}
 		return nil
 	case "pause", "resume":
-		if !alive(record.Child) {
+		if !Alive(record.Child) {
 			return nil
 		}
 		signum := syscall.SIGSTOP
@@ -189,14 +190,14 @@ func signalJob(path, action string) error {
 
 // supervise runs one job's command, writes its output to output.log and records how it ended.
 func supervise(path string) int {
-	record, err := readRecord(path)
+	record, err := ReadRecord(path)
 	if err != nil {
 		return 1
 	}
 	// Keep the slot lock (fd 3) here: the command and anything it leaves behind must not hold it.
 	syscall.CloseOnExec(3)
 	record.Pid = os.Getpid()
-	record.Identity = processIdentity(record.Pid)
+	record.Identity = ProcessIdentity(record.Pid)
 	stops := make(chan os.Signal, 1)
 	signal.Notify(stops, syscall.SIGTERM, syscall.SIGINT)
 	_ = writeRecord(path, record)
@@ -213,7 +214,7 @@ func supervise(path string) int {
 	if err := child.Start(); err != nil {
 		fmt.Fprintf(output, "\n[ERROR] %v\n", err)
 	} else {
-		record.Child = &Proc{child.Process.Pid, processIdentity(child.Process.Pid)}
+		record.Child = &Proc{child.Process.Pid, ProcessIdentity(child.Process.Pid)}
 		_ = writeRecord(path, record)
 		done := make(chan struct{})
 		go func() { _ = child.Wait(); close(done) }()
@@ -254,6 +255,15 @@ func supervise(path string) int {
 	}
 	fmt.Fprintf(output, "\n[%s] Exit %d\n", label, code)
 	_ = writeRecord(path, record)
+	status := "Completed"
+	switch {
+	case stopped:
+		status = "Stopped"
+	case code != 0:
+		status = "Failed"
+	}
+	words := record.Command[:min(2, len(record.Command))]
+	notify(status+": "+record.Key, filepath.Base(record.Cwd)+": "+strings.Join(words, " "))
 	return 0
 }
 

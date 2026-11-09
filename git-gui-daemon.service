@@ -3,7 +3,7 @@ Description=git-gui commands and pull request watcher
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/git-gui-daemon
+ExecStart=%h/.local/bin/git-gui-daemon daemon
 Restart=on-failure
 # Restarts replace the daemon only; commands keep running under their own supervisors.
 KillMode=process

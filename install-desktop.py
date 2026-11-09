@@ -29,12 +29,12 @@ print(f"Installed {applications / 'git-gui.desktop'}")
 
 # git-gui-daemon runs commands and watches PRs as an always-on user service.
 # A rebuilt binary takes effect on restart; running commands keep their own supervisors.
-subprocess.run(["go", "build", "-o", str(bin_dir / "git-gui-daemon"), "."], cwd=root / "daemon", check=True)
+subprocess.run(["go", "build", "-o", str(bin_dir / "git-gui-daemon"), "."], cwd=root, check=True)
 units = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "systemd/user"
 units.mkdir(parents=True, exist_ok=True)
 unit = units / "git-gui-daemon.service"
 unit.unlink(missing_ok=True)
-unit.symlink_to(root / "daemon/git-gui-daemon.service")
+unit.symlink_to(root / "git-gui-daemon.service")
 # prwatchd was the daemon's first, PR-only version.
 subprocess.run(["systemctl", "--user", "disable", "--now", "prwatchd.service"], check=False,
                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

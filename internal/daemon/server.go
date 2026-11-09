@@ -1,4 +1,4 @@
-package main
+package daemon
 
 import (
 	"encoding/json"
@@ -21,13 +21,13 @@ type Request struct {
 	Titles   []string  `json:"titles,omitempty"`
 }
 
-type response struct {
+type Response struct {
 	Error   string `json:"error,omitempty"`
 	JobPath string `json:"job_path,omitempty"`
 	ID      string `json:"id,omitempty"`
 }
 
-func socketPath() string {
+func SocketPath() string {
 	runtime := os.Getenv("XDG_RUNTIME_DIR")
 	if runtime == "" {
 		runtime = filepath.Join(os.TempDir(), fmt.Sprintf("git-gui-%d", os.Getuid()))
@@ -37,7 +37,7 @@ func socketPath() string {
 }
 
 func (d *daemon) serve() error {
-	path := socketPath()
+	path := SocketPath()
 	_ = os.Remove(path)
 	listener, err := net.Listen("unix", path)
 	if err != nil {
@@ -62,7 +62,7 @@ func (d *daemon) serve() error {
 func (d *daemon) handle(conn net.Conn) {
 	defer conn.Close()
 	var req Request
-	var resp response
+	var resp Response
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
 		resp.Error = err.Error()
 	} else if err := d.apply(req, &resp); err != nil {
@@ -71,7 +71,7 @@ func (d *daemon) handle(conn net.Conn) {
 	_ = json.NewEncoder(conn).Encode(resp)
 }
 
-func (d *daemon) apply(req Request, resp *response) error {
+func (d *daemon) apply(req Request, resp *Response) error {
 	switch req.Op {
 	case "start":
 		if req.Job == nil || len(req.Job.Command) == 0 {

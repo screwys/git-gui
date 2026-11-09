@@ -1,4 +1,4 @@
-// Command git-gui-daemon does git-gui's work that is not drawing the window.
+// Package daemon does git-gui's work that is not drawing the window.
 //
 // It runs commands under detached supervisors, so they outlive the window and the daemon.
 // It watches the user's open pull requests: a passing PR whose branch is behind its base gets
@@ -6,7 +6,7 @@
 // checkout. It holds commands scheduled to run after a PR merges, and for publishes it can run
 // the full checks while it waits. git-gui talks to it over a Unix socket and reads its state
 // file, $XDG_STATE_HOME/git-gui/daemon.json.
-package main
+package daemon
 
 import (
 	"context"
@@ -19,20 +19,18 @@ import (
 	"time"
 )
 
-func main() {
+// Supervise runs one job's command; the daemon starts it as "<binary> supervise <job.json>".
+func Supervise(path string) int { return supervise(path) }
+
+// PublishChecks runs a scheduled publish's full checks; the daemon starts it as a job.
+func PublishChecks(repo, helper, request string) int { return publishChecks(repo, helper, request) }
+
+// Run serves git-gui until the process ends.
+func Run() {
 	log.SetFlags(0)
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "supervise":
-			os.Exit(supervise(os.Args[2]))
-		case "publish-checks":
-			os.Exit(publishChecks(os.Args[2], os.Args[3], os.Args[4]))
-		}
-		log.Fatalf("unknown command %q", os.Args[1])
-	}
 	d := &daemon{
 		client:    &http.Client{Timeout: 30 * time.Second},
-		statePath: filepath.Join(stateHome(), "git-gui", "daemon.json"),
+		statePath: StatePath(),
 		notified:  map[string]bool{},
 		syncError: map[string]string{},
 		wake:      make(chan struct{}, 1),
@@ -118,6 +116,9 @@ func (d *daemon) save() error {
 	}
 	return os.Rename(tmp, d.statePath)
 }
+
+// StatePath is the state file the window and other readers use.
+func StatePath() string { return filepath.Join(stateHome(), "git-gui", "daemon.json") }
 
 func stateHome() string {
 	if home := os.Getenv("XDG_STATE_HOME"); home != "" {
