@@ -1,203 +1,143 @@
 # Git GUI
 
-A clean, fast, and extendable PyQt6 GUI designed for managing Git pull requests and releases with the Rufin scripts (`publish-pr.sh` and `release-rufin.sh`).
+A Linux desktop app for committing, publishing pull requests and cutting releases in a handful
+of my repositories, plus `prwatchd`, a small service that keeps an eye on my open pull requests.
+The app is Python with PyQt6. The watcher is Go.
 
-## Features
+It is built around my own projects. Rufin gets tabs that drive Rufin's own publish and release
+scripts. Igloo, nocblue and any repository you add get a commit tab, a release tab and, when they
+keep package lists, a package editor. Other repositories work fine with the generic tabs. The
+Rufin tabs expect Rufin's scripts.
 
-- **Changes & File Picker**:
-  - Live status for modified, added, untracked, and deleted files.
-  - Per-file additions/deletions stats badge (`+X -Y`).
-  - Checkboxes to select individual files or "Select All".
-  - Click any file to view its unified diff.
-  - "View Diff" button to preview the combined diff of all selected files.
-- **Publish PR Workflow**:
-  - Configure topic branch and base branch (defaults to `main`).
-  - Commit subject and multi-line PR description. The first subject names the PR; follow-up commits keep its title.
-  - Restores the publish script's saved PR description after a failed push or restart. Clean retries publish existing commits; descriptions are sent only when edited.
-  - Check-watcher phase label.
-  - Toggles for squash auto-merge (`--no-auto-merge`), wait for CI (`--wait`), full pre-push checks (`--full`), and i18n catalog options (`--include-i18n-catalogs`, `--sync-i18n-catalogs`).
-- **Release Orchestrator Workflow**:
-  - Automatically detects latest git tag and suggests next patch/minor version.
-  - Expanding changelog / release summary markdown editor.
-  - Flags for `--push`, `--dry-run`, `--replace`, `--skip-flathub`, `--skip-github-release`, and `--resume-after-prep`.
-- **Live Terminal Monitor**:
-  - Streams script execution in real-time with full ANSI color decoding and carriage-return handling.
-  - Execution status pill (`Running`, `Success`, `Exit code`).
-  - "Stop / Terminate" button to safely abort running scripts.
-  - "Clear", "Copy", and "Auto-scroll" controls.
-- **Settings & Configuration**:
-  - Dedicated **⚙ Settings** dialog accessible directly from the top bar.
-  - Configurable script paths (supports paths relative to repository or absolute paths).
-  - Configurable workflow defaults (default base branch, auto-merge, CI wait).
-  - Persisted to `~/.config/git-gui/config.json`.
-  - Optional close to tray, with background completion and failure notifications.
-- **Window Controls & Dragging**:
-  - Draggable top bar with native Wayland/X11 system dragging (`startSystemMove`) and mouse tracking fallback.
-  - Automatically obeys system GTK / Niri window decoration rules (shows only the circular close button on Niri / GNOME).
-  - Double-click to toggle maximize / restore.
-  - Quick Git controls: **⟳ Refresh**, **📥 Fetch**, and **⬇ Pull**. Rufin shows **Sync** instead
-    (`publish-pr.sh --sync`) and an Android button that runs `just build apk-dev` and
-    `just install android`.
+## What it does
 
-## Running
+### Projects and changes
 
-Launch directly from anywhere:
+Each project has its own tab. Rufin, Igloo and nocblue are there by default, and **+** adds any
+Git repository. The app remembers added projects and the last one you had open.
+
+The file list shows modified, added, deleted and untracked files with their line counts. Click a
+file to see its diff, or tick several and press **View Diff** to see them together. You can edit a
+file from the diff view.
+
+### Rufin
+
+**Publish PR** runs Rufin's `publish-pr.sh`. Tick the files, write a commit subject and an
+optional PR description, then publish. Options cover squash auto-merge, waiting for CI, the full
+pre-push checks (`--full`) and translation catalogs. The first subject names the PR, and later
+publishes to the same branch add commits under that title. The PR's checks appear next to the log.
+
+A failed or cancelled publish keeps its form. **Resume PR** retries it and reuses a commit the
+first run already made. **Publish after PR merges** takes a PR number and publishes once that PR
+has merged. When its PR merges or closes, a saved publish is cleared and the form starts fresh.
+
+**Release** runs `release-rufin.sh`. It suggests the next patch or minor version from the latest
+tag, gives you a release notes editor, and passes `--push`, `--dry-run`, `--replace`,
+`--skip-flathub`, `--skip-github-release` or `--resume-after-prep`. **Jobs and Progress** follows
+the release's workflow runs, its Flathub PR and its COPR builds. **Resume selected release** fills
+the form for a release you started earlier.
+
+In the top bar, **Sync** runs `publish-pr.sh --sync` instead of Fetch and Pull. The Android button
+builds the development APK and installs it on the connected phone (`just build apk-dev`, then
+`just install android`).
+
+### Other projects
+
+**Commit & Push** commits the ticked files, fetches, rebases your commits onto the remote and
+pushes. Git's autostash keeps your other edits. If the rebase stops on a conflict, resolve or abort
+it before trying again. With nothing to commit, **Push** pushes the commits you already have.
+There's an option to skip the pre-push hook.
+
+**Release** creates an annotated tag at the commit you pick, pushes it and publishes a GitHub
+release with your notes. Patch, Minor and Major suggest a version, and any valid tag name works.
+The confirmation shows the exact commit, so commit version bumps first.
+
+- Untick **Push tag to origin** to publish a release for a tag that's already on GitHub. That tag
+  must point at the selected commit.
+- Untick both options to only create the tag locally.
+- A retry reuses a tag that already points at the same commit. A tag at another commit is never
+  replaced.
+- If the repository's tag workflow publishes releases itself (`gh release create` or
+  `softprops/action-gh-release`), the app waits for that workflow and then sets your notes.
+  Otherwise the GitHub CLI creates the release. You can change the publisher in the form.
+
+**Packages** edits package lists. nocblue shows it by default. For other projects, turn it on in
+Settings. Pick RPM, Brew or Nix and a source file, then add packages with the plus button or tick
+entries and delete them. The tab shows the resulting diff and fills in a commit subject such as
+`feat(packages): add postgres and postgres-server`, unless you already wrote one. Commit it from
+**Commit & Push**.
+
+The app finds package lists in BlueBuild recipes (DNF and rpm-ostree install and remove lists),
+`Brewfile`s and plain lists such as `manifests/nix-profile.txt`. **Add source** registers another
+file. RPM names autocomplete from your local DNF cache. It never downloads metadata, so run
+`dnf makecache` if the cache is empty. In nocblue, editing a manifest also updates its copy under
+`files/system/usr/share/nocblue/manifests`.
+
+### Commands keep running
+
+Every command the app starts runs in its own process session. Closing the window, quitting or
+restarting the app leaves it running. When you open the app again, it reattaches and shows the
+saved output and exit status.
+
+- **Cancel** stops the command and its child processes.
+- **Pause** freezes it and **Resume** continues from the same point.
+- **History** lists earlier commands with their results.
+- The terminal shows the last 10,000 lines. The full log stays on disk.
+
+If you start Rufin's publish or release helper from a terminal, the app shows it as an observed
+process. It can't recover that output or exit code, and it can't stop it.
+
+### Tray and notifications
+
+With **Settings > Close to tray**, closing the window keeps the app in the tray. It still notifies
+you when a command finishes or fails, and it checks remote status once a minute. **Open Git GUI**
+in the tray menu, or launching the app again, brings the window back. Without a system tray,
+closing the window quits.
+
+### prwatchd
+
+`prwatchd` runs as a user service whether or not the app is open. Every 30 seconds it reads your
+open pull requests on GitHub, across all repositories, with one search.
+
+- A PR with auto-merge on, passing checks and a branch behind its base gets its branch updated on
+  GitHub. Repositories that require up-to-date branches would otherwise leave auto-merge waiting.
+- Failed checks and merge conflicts send one desktop notification per pushed commit.
+- After a Rufin PR merges, it syncs your Rufin checkout with `publish-pr.sh --sync`.
+
+## Requirements
+
+- Linux with a systemd user session and a notification daemon (`notify-send`)
+- Python 3 with PyQt6 and PyYAML (see `requirements.txt`)
+- Git and the GitHub CLI, logged in with `gh auth login`
+- Go, to build `prwatchd`
+- DNF, only for RPM name completion
+
+## Setup
+
 ```bash
-git-gui
-# Or targeting a specific repository directory:
-git-gui /path/to/repo
-```
-
-You can also launch it from your application launcher / Noctalia via the installed `.desktop` entry.
-
-To install or update the launcher for this checkout, run:
-
-```bash
+git clone https://github.com/screwys/git-gui.git
+cd git-gui
+python3 -m pip install --user -r requirements.txt   # or your distribution's PyQt6 and PyYAML
+gh auth login
 python3 install-desktop.py
 ```
 
-The installer creates command links in `~/.local/bin` and installs the repository's
-`git-gui.desktop` entry in your application menu, with paths to this checkout and its icon.
-Run it again if you move the checkout. Python 3, PyQt6, and PyYAML must be installed on the system.
-The Python dependencies are listed in `requirements.txt`.
+`install-desktop.py` links the `git-gui` command into `~/.local/bin`, adds the app to your
+application menu, builds `prwatchd` into `~/.local/bin` and enables and restarts its user service.
+Run it again after pulling updates or moving the checkout.
 
-The installer also builds `prwatchd` (Go) into `~/.local/bin` and enables it as the
-`prwatchd.service` user service. Every 30 seconds it reads your open pull requests with one
-GitHub search, using the `gh` login:
+Start the app with `git-gui` or from your application menu. The default repository paths are mine,
+so set yours in **Settings** first. Settings also holds the Rufin script paths (relative to the
+repository or absolute) and the defaults for base branch, auto-merge and waiting for CI.
 
-- A PR with auto-merge on, passing checks and a branch behind its base is updated on GitHub, so
-  rulesets that require up-to-date branches do not leave auto-merge waiting.
-- Failed checks and merge conflicts raise one desktop notification per head commit.
-- After a Rufin PR merges, the Rufin checkout is synced with its publish helper (`--sync`).
+## Where things live
 
-The state is written to `~/.local/state/git-gui/pr-watch.json` for readers such as git-gui.
-Its log is `journalctl --user -u prwatchd`.
+| What | Where |
+| --- | --- |
+| Settings | `~/.config/git-gui/config.json` |
+| Window and form state | `~/.config/git-gui/state.json` |
+| Command logs and history | `~/.local/state/git-gui/jobs` |
+| prwatchd state | `~/.local/state/git-gui/pr-watch.json` |
+| prwatchd log | `journalctl --user -u prwatchd` |
 
-## Background commands and recovery
-
-Click **+** after the project tabs to open the folder picker and select a Git repository.
-The app saves added projects and restores the last selected project after restarting.
-Each added project has a **Commit & Push** tab with file selection, diffs, an editor, and a terminal.
-
-Added projects also have a **Release** tab. Enter a tag and a commit, write release notes,
-then confirm **Release** to create an annotated tag, push it to origin, and publish on GitHub.
-Patch, Minor, and Major suggest a version from the latest local tag; any valid Git tag is accepted.
-The confirmation shows the exact commit. Commit version file changes before tagging.
-Uncheck both publication options to create the tag locally. Retries reuse a tag at the same commit
-and keep its annotation. Tags at another commit are never replaced.
-
-**Push tag to origin** and **Create GitHub release** are selected by default.
-To publish an existing remote tag, keep **Create GitHub release** selected and uncheck
-**Push tag to origin**. The remote tag must point to the selected commit.
-The app detects tag workflows that publish with `gh release create` or `softprops/action-gh-release`
-and selects them as the **Publisher**. For pdrive-sync-rs and rescue, use a `v*` tag.
-The app waits for their workflow to build the binaries and publish, then applies the entered
-release notes. For other projects, **GitHub CLI** creates the release directly.
-The publisher remains selectable. Unchecking **Create GitHub release** skips the app's publication
-step; a repository's tag workflow can still publish when its tag is pushed.
-**Jobs and Progress** shows the selected tag's workflows and release link. GitHub status and
-publication require GitHub CLI authentication.
-
-Rufin, Igloo, and nocblue are default projects. Their repository paths are configurable in Settings.
-An existing added nocblue project appears once.
-
-Nocblue has a **Packages** tab by default. For a custom project, enable **Packages** in
-Settings to show it. Projects with previously configured package sources keep it enabled.
-Select RPM, Brew, or Nix, choose a
-source, then add a package with the plus icon or check entries and click the trash icon.
-The tab shows the resulting Git diff
-and fills the commit subject. A subject you wrote manually is kept. Use **Commit & Push**
-to review and commit the changes.
-Generated subjects list the changed names, such as `feat(packages): add postgres and postgres-server`.
-
-Package sources are detected in BlueBuild recipes, `Brewfile`, and plain package lists such as
-`manifests/nix-profile.txt` or `restore/packages/brew.txt`. **Add source** saves another source
-file for that repository. RPM recipes support DNF and rpm-ostree install and remove lists;
-Nix lists retain full references and pinned revisions. Brewfiles accept a formula name or a
-declaration such as `cask "firefox"`. Package edits update the repository files.
-
-RPM autocomplete reads package names with `dnf --cacheonly repoquery` when you first type
-a package name. Projects share that list for the current app session, and typing matches
-the names locally. **Reload** reads the DNF cache again. The field reports whether a name
-is in cached metadata; names absent from the cache remain addable for repositories with
-other package sources. This lookup does not download metadata. If the cache is empty,
-run `dnf makecache` separately. DNF completion applies to RPM sources.
-
-For nocblue, edits to a manifest also update its matching runtime copy under
-`files/system/usr/share/nocblue/manifests`. Its current package sources are RPM recipes and
-the Nix profile manifest. Brew sources appear when a Brewfile or Brew package list is present.
-
-Igloo and added projects use **Commit & Push** to fetch remote changes and rebase local commits before pushing.
-Other working-tree edits are kept through Git's autostash. If conflicts occur, resolve or abort
-the rebase before retrying. On a clean working tree, **Push** retries existing commits without
-requiring a new message or creating another commit. The pre-push skip option still applies.
-
-Enable **Settings > Close to tray** to keep notifications active when you close the window.
-Use **Open Git GUI** in the tray menu, or launch the app again, to show the same window.
-**Quit** exits the GUI. If the desktop has no system tray, closing the window also exits the GUI.
-
-Commands started by the app run in a separate Linux process session. Closing the window, quitting,
-or restarting the GUI does not cancel them. Reopening attaches to running commands and restores
-their saved output and exit status. **Cancel** terminates the command's process group, including child
-processes. **Pause** freezes the running command, and **Resume** continues it from the same point.
-Completed logs do not change the selected PR or force the terminal open. A completed publish clears
-its saved branch target so discovery follows the current checkout again.
-Cancelled PR runs keep their form and branch details; **Resume PR** retries the saved publish step,
-using an existing commit when the original run already created one. Notifications require the GUI to
-remain open or in the tray.
-
-**History** shows earlier commands and their recorded results. Logs and command records live in
-`$XDG_STATE_HOME/git-gui/jobs`, or `~/.local/state/git-gui/jobs` by default. The terminal
-keeps the latest 10,000 displayed lines; full logs remain on disk.
-
-The app also detects Rufin publish and release helpers started elsewhere. Those helpers are shown
-as observed processes. Their unsaved output and exit codes cannot be recovered, and their Stop
-button is disabled. A disappeared process without a recorded result is reported as unknown.
-
-On startup and refresh, PR discovery queries the repository instead of keeping an old selection.
-Release monitoring reads GitHub release tags, drafts, release preparation PRs, the matching Flathub
-PR state, and workflow runs. Select a release in **Jobs and Progress** to inspect it. **Resume
-selected release** fills the release form for that version; the usual confirmation is still required
-before execution.
-Remote request failures remain visible, and unmatched workflow results are marked unknown.
-
-Output tabs follow the current stage. Local preparation and pre-push checks show the terminal.
-Available PR checks and dispatched release workflows show remote progress. Local failures return
-to the log. Automatic selection happens when the stage changes, so repeated updates preserve a
-tab you selected manually.
-
-In tray mode, remote status checks run once a minute. Background monitoring does not scan the
-working tree or generate diffs. Opening or refreshing a repository updates its changes and diffs.
-
-## Architecture & Extensibility
-
-```
-git-gui/
-├── main.py                     # Main window, draggable top bar, tab host
-├── core/
-│   ├── config.py               # Settings manager (reads/writes ~/.config/git-gui/config.json)
-│   ├── git_manager.py          # Git status, additions/deletions stats, diffs, branches, fetch, pull
-│   ├── runner.py               # Attach to commands and stream saved output
-│   ├── jobs.py                 # Detached command supervisor and durable records
-│   └── instance.py             # Single window activation through a local socket
-├── ui/
-│   ├── style.py                # Dark theme stylesheet
-│   ├── dialogs/
-│   │   └── settings_dialog.py  # Script locations and workflow defaults modal dialog
-│   ├── components/
-│   │   ├── file_list.py        # File list with checkboxes and diff stats
-│   │   ├── diff_viewer.py      # Syntax-highlighted diff viewer
-│   │   └── terminal_view.py    # ANSI-colored terminal console
-│   └── tabs/
-│       ├── publish_pr_tab.py   # PR publication workflow
-│       └── release_tab.py      # Release workflow
-└── git-gui               # Shell wrapper script
-```
-
-### Adding New Workflows / Tabs
-
-To add a new workflow, create a widget in `ui/tabs/` and add it to `MainWindow`:
-```python
-new_tab = MyCustomScriptTab(self.git_mgr, self.config)
-self.add_workflow_tab("🔧 My Tool", new_tab)
-```
+The state paths follow `$XDG_STATE_HOME` when it's set.
