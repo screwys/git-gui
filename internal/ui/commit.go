@@ -31,7 +31,6 @@ type CommitTab struct {
 // NewCommitTab builds the tab for repo.
 func NewCommitTab(repo string) *CommitTab {
 	t := &CommitTab{repo: repo, files: NewFileList("Commit & Push", true), diff: NewDiffView(repo), term: NewTerminal(repo, "commit", "")}
-	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
 	t.files.Button.SetTooltipText("Commit selected changes and push to origin")
 
 	message := group("Commit Message")
@@ -64,10 +63,7 @@ func NewCommitTab(repo string) *CommitTab {
 	bottom.Append(message)
 	bottom.Append(options)
 	left := gtk.NewPaned(gtk.OrientationVertical)
-	left.SetMarginStart(8)
-	left.SetMarginEnd(8)
-	left.SetMarginTop(8)
-	left.SetMarginBottom(8)
+	margins(left, 8)
 	left.SetStartChild(t.files.Root)
 	left.SetEndChild(bottom)
 	left.SetShrinkStartChild(false)
@@ -75,16 +71,11 @@ func NewCommitTab(repo string) *CommitTab {
 	left.SetResizeEndChild(false)
 
 	right := gtk.NewPaned(gtk.OrientationVertical)
-	right.SetMarginStart(8)
-	right.SetMarginEnd(8)
-	right.SetMarginTop(8)
-	right.SetMarginBottom(8)
+	margins(right, 8)
 	right.SetStartChild(t.diff.Root)
 	right.SetEndChild(t.term.Root)
 	right.SetPosition(420)
-	t.Root.SetStartChild(left)
-	t.Root.SetEndChild(right)
-	t.Root.SetPosition(420)
+	t.Root = split(left, right)
 
 	t.files.OnActivate = func(path string) { t.showFiles([]string{path}) }
 	t.files.OnView = func(paths []string) { t.showFiles(paths) }

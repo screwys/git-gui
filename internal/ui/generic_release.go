@@ -58,10 +58,7 @@ func NewGenericReleaseTab(repo string) *GenericReleaseTab {
 	t := &GenericReleaseTab{repo: repo, stateKey: "project_release_form:" + real, out: newReleaseOutput(repo, "generic", ""),
 		workflows: tasks.ReleaseWorkflows(repo)}
 	left := gtk.NewBox(gtk.OrientationVertical, 12)
-	left.SetMarginStart(8)
-	left.SetMarginEnd(8)
-	left.SetMarginTop(8)
-	left.SetMarginBottom(8)
+	margins(left, 8)
 
 	tag := group("Tag")
 	t.tag = gtk.NewEntry()
@@ -120,10 +117,7 @@ func NewGenericReleaseTab(repo string) *GenericReleaseTab {
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	scroll.SetChild(left)
-	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
-	t.Root.SetStartChild(scroll)
-	t.Root.SetEndChild(t.out.Root)
-	t.Root.SetPosition(380)
+	t.Root = split(scroll, t.out.Root)
 
 	t.readTags()
 	form := releaseForm{Tag: t.tag.Text(), Target: "HEAD", Push: true, GitHub: true, Workflow: t.workflow()}

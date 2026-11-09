@@ -48,6 +48,29 @@ func newPill() *gtk.Label {
 	return label
 }
 
+// split puts a list or form beside the diff or output it drives. The start pane keeps its width
+// when the window resizes and the end pane takes the change, so hidden projects and tabs, which
+// are not allocated while hidden, show the same split when they come back.
+func split(start, end gtk.Widgetter) *gtk.Paned {
+	p := gtk.NewPaned(gtk.OrientationHorizontal)
+	p.SetStartChild(start)
+	p.SetEndChild(end)
+	p.SetResizeStartChild(false)
+	p.SetShrinkStartChild(false)
+	p.SetShrinkEndChild(false)
+	p.SetPosition(420)
+	return p
+}
+
+// margins sets the same margin on all four sides of w.
+func margins(w gtk.Widgetter, n int) {
+	b := gtk.BaseWidget(w)
+	b.SetMarginStart(n)
+	b.SetMarginEnd(n)
+	b.SetMarginTop(n)
+	b.SetMarginBottom(n)
+}
+
 // statusClass is the CSS class for a file status letter.
 func statusClass(status string) string {
 	switch status {

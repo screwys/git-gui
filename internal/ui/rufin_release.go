@@ -63,10 +63,7 @@ func NewRufinReleaseTab(repo string) *RufinReleaseTab {
 	t := &RufinReleaseTab{repo: repo, out: newReleaseOutput(repo, "rufin", appConfig.ReleaseHelper()),
 		follower: NewScheduleFollower(repo, "release"), picker: NewPRPicker(repo, "Release after PR merges:")}
 	left := gtk.NewBox(gtk.OrientationVertical, 12)
-	left.SetMarginStart(8)
-	left.SetMarginEnd(8)
-	left.SetMarginTop(8)
-	left.SetMarginBottom(8)
+	margins(left, 8)
 
 	mode := group("Release Mode")
 	t.modes = adw.NewToggleGroup()
@@ -152,10 +149,7 @@ func NewRufinReleaseTab(repo string) *RufinReleaseTab {
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	scroll.SetChild(left)
-	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
-	t.Root.SetStartChild(scroll)
-	t.Root.SetEndChild(t.out.Root)
-	t.Root.SetPosition(420)
+	t.Root = split(scroll, t.out.Root)
 
 	t.modes.NotifyProperty("active-name", func() {
 		if name := t.modes.ActiveName(); name != t.mode {

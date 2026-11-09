@@ -34,10 +34,7 @@ type IglooReleaseTab struct {
 func NewIglooReleaseTab(repo string) *IglooReleaseTab {
 	t := &IglooReleaseTab{repo: repo, out: newReleaseOutput(repo, "igloo", "")}
 	left := gtk.NewBox(gtk.OrientationVertical, 12)
-	left.SetMarginStart(8)
-	left.SetMarginEnd(8)
-	left.SetMarginTop(8)
-	left.SetMarginBottom(8)
+	margins(left, 8)
 
 	bump := group("Version Bump")
 	t.bumps = adw.NewToggleGroup()
@@ -95,10 +92,7 @@ func NewIglooReleaseTab(repo string) *IglooReleaseTab {
 	scroll := gtk.NewScrolledWindow()
 	scroll.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	scroll.SetChild(left)
-	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
-	t.Root.SetStartChild(scroll)
-	t.Root.SetEndChild(t.out.Root)
-	t.Root.SetPosition(420)
+	t.Root = split(scroll, t.out.Root)
 
 	t.bumps.NotifyProperty("active-name", t.computeVersion)
 	term := t.out.term

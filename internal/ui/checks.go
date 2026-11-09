@@ -59,10 +59,7 @@ type ChecksView struct {
 // NewChecksView builds the view for repo's pull requests.
 func NewChecksView(repo string) *ChecksView {
 	v := &ChecksView{Root: gtk.NewBox(gtk.OrientationVertical, 6), repo: repo, slug: git.RemoteSlug(repo)}
-	v.Root.SetMarginStart(6)
-	v.Root.SetMarginEnd(6)
-	v.Root.SetMarginTop(6)
-	v.Root.SetMarginBottom(6)
+	margins(v.Root, 6)
 	header := gtk.NewBox(gtk.OrientationHorizontal, 8)
 	v.title = gtk.NewLabel("No active PR detected")
 	v.title.AddCSSClass("heading")

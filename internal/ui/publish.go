@@ -98,12 +98,8 @@ func NewPublishTab(repo string) *PublishTab {
 	t := &PublishTab{repo: repo, files: NewFileList("Publish PR", true), diff: NewDiffView(repo),
 		term: NewTerminal(repo, "publish", appConfig.PublishScript()), checks: NewChecksView(repo),
 		schedule: NewScheduleFollower(repo, "publish"), picker: NewPRPicker(repo, "Publish after PR merges:")}
-	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
 	left := gtk.NewBox(gtk.OrientationVertical, 8)
-	left.SetMarginStart(8)
-	left.SetMarginEnd(8)
-	left.SetMarginTop(8)
-	left.SetMarginBottom(8)
+	margins(left, 8)
 	left.Append(t.files.Root)
 	t.branchError = gtk.NewLabel("Branch diff unavailable")
 	t.branchError.AddCSSClass("deleted")
@@ -202,15 +198,13 @@ func NewPublishTab(repo string) *PublishTab {
 	t.bottom.AppendPage(t.checks.Root, gtk.NewLabel("PR Checks"))
 	t.bottom.AppendPage(t.term.Root, gtk.NewLabel("Terminal Log"))
 	t.term.OnShow = func() { t.bottom.SetCurrentPage(1) }
-	split := gtk.NewPaned(gtk.OrientationVertical)
-	split.SetStartChild(t.diff.Root)
-	split.SetEndChild(t.bottom)
-	split.SetPosition(340)
-	split.SetVExpand(true)
-	right.Append(split)
-	t.Root.SetStartChild(left)
-	t.Root.SetEndChild(right)
-	t.Root.SetPosition(420)
+	rightSplit := gtk.NewPaned(gtk.OrientationVertical)
+	rightSplit.SetStartChild(t.diff.Root)
+	rightSplit.SetEndChild(t.bottom)
+	rightSplit.SetPosition(340)
+	rightSplit.SetVExpand(true)
+	right.Append(rightSplit)
+	t.Root = split(left, right)
 
 	t.files.OnActivate = func(path string) { t.showFiles([]string{path}) }
 	t.files.OnView = func(chosen []string) {
