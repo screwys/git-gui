@@ -263,7 +263,11 @@ func supervise(path string) int {
 		status = "Failed"
 	}
 	words := record.Command[:min(2, len(record.Command))]
-	notify(status+": "+record.Key, filepath.Base(record.Cwd)+": "+strings.Join(words, " "))
+	urgency := "critical"
+	if code == 0 && !stopped {
+		urgency = "normal"
+	}
+	notify(urgency, status+": "+record.Key, filepath.Base(record.Cwd)+": "+strings.Join(words, " "))
 	return 0
 }
 

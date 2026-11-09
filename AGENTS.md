@@ -10,95 +10,90 @@
 ## Checks
 
 ```bash
-python3 -m unittest discover -s tests
-cd daemon && gofmt -l . && go vet ./... && go build -o /dev/null .
+gofmt -l . ; go vet ./... ; go test ./...
+go build -o git-gui . && ./git-gui install
 ```
 
-After changing the daemon, run `python3 install-desktop.py` so the running service uses the new
-binary. Commands that are running keep going: each has its own supervisor process, and the unit
-uses `KillMode=process`.
+gotk4 prints cgo `free` warnings while building; filter them with
+`grep -v "cgo-generated\|^# github.com/diamondburned"`. The first build compiles gotk4 for
+several minutes and needs a few GB of memory, so run it at low priority. `git-gui install`
+restarts the daemon; running commands keep going because each has its own supervisor process and
+the unit uses `KillMode=process`.
+
+To look at the window without a desktop, run it under Broadway:
+`gtk4-broadwayd --port 8099 :9 &` then `GDK_BACKEND=broadway BROADWAY_DISPLAY=:9 ./git-gui` and
+open http://localhost:8099. A second instance needs its own session bus (`dbus-run-session`),
+because the app ID is single-instance. Never click buttons that commit, push, publish or release
+while testing against real repositories.
 
 ## Layout
 
 ```
-main.py                     Main window, top bar, project tabs, Fetch/Pull/Sync, Android button
-git-gui                     Launcher script
-install-desktop.py          Launcher link, desktop entry, daemon build and user service
-core/
-  config.py                 AppConfig, stored in ~/.config/git-gui/config.json
-  state.py                  UI and form state, stored in ~/.config/git-gui/state.json
-  git_manager.py            Status, diff stats, diffs, branch comparison, PR drafts
-  daemon.py                 Socket client for git-gui-daemon and reader of its state
-  jobs.py                   Reads job records
-  runner.py                 Starts jobs through the daemon, attaches and replays their output
-  instance.py               Single window activation through a local socket
-  push.py                   Fetch and rebase before a normal push
-  release.py                Release tags without touching the working tree
-  packages.py               Reads and edits package lists without rewriting recipes
-  notifications.py          notify-send wrapper
-ui/tabs/                    publish_pr_tab (Rufin), release_tab (Rufin), igloo_release_tab,
-                            commit_tab, generic_release_tab, packages_tab, changes_tab
-ui/components/              File list, diff viewer, terminal, PR checks, release jobs,
-                            RPM catalog, output tab selection, schedule follower, toast, icons
-ui/dialogs/                 Settings and confirmation dialogs
-daemon/                     git-gui-daemon (Go, standard library only) and its systemd unit
-tests/                      unittest suites, Qt tests run offscreen
+main.go                 Dispatches: window, install, daemon, supervise, publish-checks, push, release
+internal/daemon/        The user service: jobs.go (supervised commands), watch.go (PR watch and
+                        notifications), schedule.go (run after a PR merges, early full checks),
+                        releases.go (followed releases), server.go (socket ops), main.go (state)
+internal/client/        The window's side: socket requests, daemon.json, job records, outside helpers
+internal/git/           Quick Git reads. One comparison: Compare and Diff, right side WorkingTree = disk
+internal/config/        config.json and state.json, in the format the Python version wrote
+internal/packages/      Package list discovery, layout-keeping edits, nocblue mirrors, commit subjects
+internal/tasks/         Commands run as jobs (push, release) and install
+internal/ui/            The window. Shared: terminal.go, runner.go, console.go, filelist.go,
+                        diffview.go, confirm.go, schedule.go (ScheduleFollower, PRPicker),
+                        daemonstate.go (one daemon.json watcher), style.go. Tabs: commit.go,
+                        publish.go and checks.go, rufin_release.go, igloo_release.go,
+                        generic_release.go and releasejobs.go, packages.go, changes.go, settings.go.
+                        window.go builds the projects and wires the tabs.
 ```
 
-## Commands
+## Window and daemon
 
-- The GUI asks git-gui-daemon to start a command (`start` over `$XDG_RUNTIME_DIR/git-gui-daemon.sock`)
-  with its own environment, so commands find the user's tools. The daemon starts
-  `git-gui-daemon supervise`, a separate process in its own session that runs the command, holds
-  the command slot's lock and writes `job.json` and `output.log` under
-  `$XDG_STATE_HOME/git-gui/jobs`. The runner attaches to running jobs and replays saved output.
-  Stop, pause and resume are `signal` requests.
-- Running Rufin publish or release helpers started outside the app show as observed processes. Their
-  output and exit codes can't be recovered. A process that disappears without a record is reported
-  as unknown.
-- Output tabs follow the stage (`ui/components/activity_tabs.py`): local preparation and checks show
-  the terminal, PR checks and dispatched workflows show remote progress, local failures return to
-  the log. Automatic selection only happens on stage changes, so a tab the user picked stays.
-
-## Polling
-
-- PR checks: every 12 s while visible, every 60 s in the tray.
-- Release jobs: every 15 s while visible, every 60 s in the tray.
-- Working tree: every 30 s while visible and idle. Background monitoring never scans the working
-  tree or builds diffs.
-- PR discovery runs on startup and refresh instead of trusting a saved selection.
+- The window draws and sends requests. Anything that watches GitHub in the background, runs a
+  command or must work with the window closed belongs to the daemon. The window never sends
+  notifications; the daemon does.
+- The window starts commands with `start` over `$XDG_RUNTIME_DIR/git-gui-daemon.sock`, sending its
+  own environment so commands find the user's tools. The daemon starts `git-gui supervise`, a
+  separate process in its own session that runs the command, holds the slot's lock (one job per
+  repo and key), writes `job.json` and `output.log` under `$XDG_STATE_HOME/git-gui/jobs` and sends
+  the finished notification. The runner attaches to running jobs and replays saved output. Stop,
+  pause and resume are `signal` requests.
+- Rufin publish or release helpers started outside the app show as observed processes, without
+  output or exit codes.
+- Every view that reads `daemon.json` registers with `onDaemonState`; the daemon replaces the file
+  on every pass. Separate GIO monitors per view stopped delivering events, so keep one.
+- The 30 s timer reloads only the working tree of the visible tab (`tab.local`). It must not call
+  anything that queries GitHub.
 
 ## Rufin publishing
 
 - The form state of a publish lives in `state.json` as `rufin_publish_pending`. It is cleared when
-  the publish completes or when branch detection finds the branch's PR merged or closed.
-- **Publish after PR merges** and **Release after PR merges** are daemon schedules. The tabs follow
-  them through `ScheduleFollower`, which reads `daemon.json`.
-- With full checks, the schedule runs `git-gui-daemon publish-checks` as a job: `--prepare-only`,
-  then the pre-push hook inside a capped `systemd-run` scope. If the inputs are unchanged when the PR
-  merges, the publish runs without `--full`, so the gate does not run twice. Changed inputs run the
-  checks again.
+  the publish completes or when PR discovery finds the branch's PR merged or closed.
+- **Publish after PR merges** and **Release after PR merges** are daemon schedules followed through
+  `ScheduleFollower`. With full checks, the schedule runs `git-gui publish-checks` as a job:
+  `--prepare-only`, then the pre-push hook inside a capped `systemd-run` scope. Unchanged inputs at
+  merge time publish without `--full`; changed inputs run the checks again.
 - PR titles and bodies saved by `publish-pr.sh` in branch config are read back as drafts.
 
 ## git-gui-daemon
 
-- One GraphQL search (`is:pr is:open author:@me`) every 30 s with the `gh auth token`. The token is
-  read again after a 401 and never stored.
+- One GraphQL search (`is:pr is:open author:@me`) every 30 s, 10 s while a schedule is active, with
+  the `gh auth token`. The token is read again after a 401 and never stored.
 - Branch updates use `PUT /repos/{repo}/pulls/{n}/update-branch` with `expected_head_sha`, only for
   PRs with auto-merge, completed passing checks and `mergeStateStatus == BEHIND`.
-- Notifications are keyed by repository, PR, head commit and status and persisted in the state
-  file, so a restart does not repeat them.
-- A PR that leaves the open search stays in `leaving` until GitHub reports it merged or closed,
-  so a failed lookup is retried instead of missing a merge.
-- Sync applies to the checkout at `rufin_repo_path` in git-gui's config, using its publish helper.
-  It waits while the helper's `.local/publish-checkout.lock` is held and retries on the next pass.
-- Schedules are checked every 10 s while one is active. A schedule's `status` is `waiting`,
-  `checking`, `checked`, `started`, `failed`, `closed` or `cancelled`. A new schedule for the same
-  command slot cancels the old one. Finished schedules are dropped after a day.
-- `daemon.json` is a contract with its readers (git-gui and Rufin's session startup report).
-  Keep `updated`, `prs[].repo`, `number`, `title`, `url`, `branch`, `status` and `failed`, and
-  `schedules[]` stable. A PR's `status` is one of `running`, `passing`, `behind`, `updating`,
-  `failing` or `conflict`.
+- Notifications: failing and conflicting PRs once per head commit (keys persisted), checks passing,
+  merges (unless a schedule announces it), schedule outcomes, release workflow conclusions and
+  finished jobs. Failures are critical, the rest normal.
+- Every PR that leaves the open search stays in `leaving` until GitHub reports it merged or closed.
+  A Rufin merge syncs the checkout at `rufin_repo_path` with its publish helper, waiting while
+  `.local/publish-checkout.lock` is held.
+- Releases: the window calls `follow_release` with repo, kind, tag, its pid and the job path. The
+  daemon polls a followed release every pass while a release job runs, a workflow is unfinished or
+  the window asked, every 5 minutes while only the window lives, and stops once the runs finished
+  and the window is gone.
+- `daemon.json` is a contract with its readers (the window and Rufin's session startup report).
+  Keep `updated`, `prs[].repo`, `number`, `title`, `url`, `branch`, `status`, `failed` and
+  `checks`, `schedules[]` and `releases` stable. A PR's `status` is one of `running`, `passing`,
+  `behind`, `updating`, `failing` or `conflict`.
 
 ## Releases for other projects
 
@@ -107,17 +102,16 @@ tests/                      unittest suites, Qt tests run offscreen
 - Unticking **Push tag to origin** publishes a release for a tag already on GitHub, which must
   point at the selected commit. Unticking both options only creates the tag locally.
 - A tag workflow that runs `gh release create` or `softprops/action-gh-release` is detected and
-  selected as the publisher; the app waits for it, then sets the notes. Otherwise `gh` creates
-  the release.
+  selected as the publisher; the job waits for it, then sets the notes. Otherwise `gh` creates the
+  release.
 
 ## Packages
 
 - Package lists come from BlueBuild recipes (DNF and rpm-ostree install and remove lists),
   `Brewfile`s and plain lists such as `manifests/nix-profile.txt`. Edits keep the file's layout
   and fill a subject such as `feat(packages): add postgres and postgres-server` unless the user
-  wrote one.
-
+  wrote one. `go test ./internal/packages` covers the edits and the mirror restore.
 - RPM completion runs `dnf --cacheonly repoquery` once per app session, on first use, and shares
   the result across project tabs. It never downloads metadata.
 - In nocblue, a manifest edit also rewrites its runtime copy under
-  `files/system/usr/share/nocblue/manifests`.
+  `files/system/usr/share/nocblue/manifests`, and restores both files if a write fails.

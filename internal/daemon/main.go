@@ -68,6 +68,7 @@ type State struct {
 	SyncPending []string    `json:"sync_pending"`
 	Notified    []string    `json:"notified"`
 	Schedules   []*Schedule `json:"schedules"`
+	Releases    []*Release  `json:"releases"` // what each project's release jobs view follows
 }
 
 type daemon struct {
@@ -86,6 +87,7 @@ type daemon struct {
 func (d *daemon) pass(ctx context.Context) error {
 	watchErr := d.watchPRs(ctx)
 	d.runSchedules(ctx)
+	d.pollReleases(ctx)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.state.Updated = time.Now().Unix()

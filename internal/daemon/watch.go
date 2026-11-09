@@ -28,8 +28,8 @@ const searchQuery = `query {
         repository { nameWithOwner }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           __typename
-          ... on CheckRun { name status conclusion }
-          ... on StatusContext { context state }
+          ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
+          ... on StatusContext { context state targetUrl startedAt: createdAt }
         } } } } } }
       }
     }
@@ -53,6 +53,45 @@ type PR struct {
 	Branch string   `json:"branch"`
 	Status string   `json:"status"` // running, passing, behind, updating, failing or conflict
 	Failed []string `json:"failed"`
+	Checks []Check  `json:"checks"` // the head commit's checks, for git-gui's checks view
+}
+
+// Check is one check run or commit status of a PR's head commit.
+type Check struct {
+	Name string `json:"name"`
+	// Status is a check run's (QUEUED, IN_PROGRESS, COMPLETED, ...); a commit status is
+	// COMPLETED once it succeeded or failed and PENDING before.
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion,omitempty"` // SUCCESS, FAILURE, SKIPPED, ...; a commit status's state
+	URL        string `json:"url,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`  // RFC 3339
+	FinishedAt string `json:"finished_at,omitempty"` // RFC 3339
+}
+
+// CheckNode is a check as GitHub lists it, in GraphQL and in `gh pr view --json statusCheckRollup`.
+type CheckNode struct {
+	Typename    string `json:"__typename"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion"`
+	DetailsURL  string `json:"detailsUrl"`
+	StartedAt   string `json:"startedAt"`
+	CompletedAt string `json:"completedAt"`
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	TargetURL   string `json:"targetUrl"`
+}
+
+// Check gives check runs and commit statuses one shape.
+func (n CheckNode) Check() Check {
+	if n.Typename != "StatusContext" {
+		return Check{n.Name, n.Status, n.Conclusion, n.DetailsURL, n.StartedAt, n.CompletedAt}
+	}
+	c := Check{Name: n.Context, Status: "PENDING", URL: n.TargetURL, StartedAt: n.StartedAt}
+	if n.State != "PENDING" && n.State != "EXPECTED" {
+		c.Status, c.Conclusion = "COMPLETED", n.State
+	}
+	return c
 }
 
 func (p PR) key() string { return fmt.Sprintf("%s#%d", p.Repo, p.Number) }
@@ -73,16 +112,7 @@ type searchResult struct {
 				Nodes []struct {
 					Commit struct {
 						StatusCheckRollup *struct {
-							Contexts struct {
-								Nodes []struct {
-									Typename   string `json:"__typename"`
-									Name       string
-									Status     string
-									Conclusion string
-									Context    string
-									State      string
-								}
-							}
+							Contexts struct{ Nodes []CheckNode }
 						}
 					}
 				}
@@ -137,30 +167,33 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 	previous := append(append([]PR{}, d.state.PRs...), d.state.Leaving...)
 	d.mu.Unlock()
 
+	before := map[string]string{}
+	for _, pr := range previous {
+		before[pr.key()] = pr.Status
+	}
 	open := map[string]bool{}
 	prs := []PR{}
-	var notices [][2]string
+	var notices [][3]string
 	for _, node := range result.Search.Nodes {
 		if node.Number == 0 {
 			continue
 		}
-		pr := PR{Repo: node.Repository.NameWithOwner, Number: node.Number, Title: node.Title, URL: node.URL, Branch: node.HeadRefName, Failed: []string{}}
+		pr := PR{Repo: node.Repository.NameWithOwner, Number: node.Number, Title: node.Title, URL: node.URL, Branch: node.HeadRefName,
+			Failed: []string{}, Checks: []Check{}}
 		open[pr.key()] = true
 		running := false
 		for _, commit := range node.Commits.Nodes {
 			if commit.Commit.StatusCheckRollup == nil {
 				continue
 			}
-			for _, check := range commit.Commit.StatusCheckRollup.Contexts.Nodes {
-				name, outcome := check.Name, check.Conclusion
-				if check.Typename == "StatusContext" {
-					name, outcome = check.Context, check.State
-				}
+			for _, raw := range commit.Commit.StatusCheckRollup.Contexts.Nodes {
+				check := raw.Check()
+				pr.Checks = append(pr.Checks, check)
 				switch {
-				case check.Typename == "CheckRun" && check.Status != "COMPLETED", outcome == "PENDING", outcome == "EXPECTED":
+				case check.Status != "COMPLETED":
 					running = true
-				case slices.Contains(failedOutcomes, outcome) && !slices.Contains(pr.Failed, name):
-					pr.Failed = append(pr.Failed, name)
+				case slices.Contains(failedOutcomes, check.Conclusion) && !slices.Contains(pr.Failed, check.Name):
+					pr.Failed = append(pr.Failed, check.Name)
 				}
 			}
 		}
@@ -195,19 +228,23 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 			d.notified[key] = true
 			d.mu.Unlock()
 			if fresh {
-				notices = append(notices, [2]string{fmt.Sprintf("#%d %s: %s", pr.Number, pr.Status, pr.Title), detail})
+				notices = append(notices, [3]string{"critical", fmt.Sprintf("#%d %s: %s", pr.Number, pr.Status, pr.Title), detail})
 			}
+		}
+		// Checks that were running or failing have all passed.
+		if was := before[pr.key()]; (was == "running" || was == "failing") && slices.Contains([]string{"passing", "behind", "updating"}, pr.Status) {
+			notices = append(notices, [3]string{"normal", fmt.Sprintf("#%d: checks passed", pr.Number), pr.Title})
 		}
 		prs = append(prs, pr)
 	}
 	for _, notice := range notices {
-		notify(notice[0], notice[1])
+		notify(notice[0], notice[1], notice[2])
 	}
 
 	leaving := []PR{}
 	merged := map[string]bool{}
 	for _, gone := range previous {
-		if open[gone.key()] || d.checkouts[gone.Repo] == "" {
+		if open[gone.key()] {
 			continue
 		}
 		state, err := d.prState(ctx, gone.Repo, gone.Number)
@@ -216,7 +253,12 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 			log.Printf("%s: read state: %v", gone.key(), err)
 			leaving = append(leaving, gone)
 		case state == "MERGED":
-			merged[gone.Repo] = true
+			if !d.scheduledAfter(gone.Repo, gone.Number) {
+				notify("normal", fmt.Sprintf("#%d merged", gone.Number), gone.Title)
+			}
+			if d.checkouts[gone.Repo] != "" {
+				merged[gone.Repo] = true
+			}
 		case state != "CLOSED":
 			leaving = append(leaving, gone)
 		}
@@ -245,6 +287,18 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 	d.state.SyncPending = pending
 	d.mu.Unlock()
 	return nil
+}
+
+// scheduledAfter reports a schedule waiting on the PR; its own notice announces the merge.
+func (d *daemon) scheduledAfter(repo string, number int) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, s := range d.state.Schedules {
+		if !s.done() && s.Repo == repo && s.Number == number {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *daemon) prState(ctx context.Context, repo string, number int) (string, error) {
@@ -287,7 +341,7 @@ func (d *daemon) sync(repo string) bool {
 	}
 	if d.syncError[repo] != message {
 		d.syncError[repo] = message
-		go notify(repo+" not synced", message)
+		go notify("critical", repo+" not synced", message)
 	}
 	return false
 }
@@ -354,8 +408,9 @@ func (d *daemon) request(ctx context.Context, method, url string, body []byte) (
 	}
 }
 
-func notify(summary, body string) {
-	if err := exec.Command("notify-send", "--app-name=Git GUI", summary, body).Run(); err != nil {
+// notify sends a desktop notification; urgency is low, normal or critical.
+func notify(urgency, summary, body string) {
+	if err := exec.Command("notify-send", "--app-name=Git GUI", "--urgency="+urgency, summary, body).Run(); err != nil {
 		log.Printf("notify-send: %v", err)
 	}
 }

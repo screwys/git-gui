@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20250703085337-e94555b846b6
 	github.com/diamondburned/gotk4/pkg v0.3.2-0.20250703063411-16654385f59a
+	go.yaml.in/yaml/v3 v3.0.4
 )
 
 require (

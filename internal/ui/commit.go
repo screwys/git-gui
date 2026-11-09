@@ -25,6 +25,7 @@ type CommitTab struct {
 	amend    *gtk.CheckButton
 	skipHook *gtk.CheckButton
 	working  []git.File
+	subject  string // the last package-edit subject filled in
 }
 
 // NewCommitTab builds the tab for repo.
@@ -97,6 +98,15 @@ func NewCommitTab(repo string) *CommitTab {
 	}
 	t.term.Attach()
 	return t
+}
+
+// FillSubject puts a package edit's commit subject in Summary, unless the user wrote another.
+func (t *CommitTab) FillSubject(subject string) {
+	if text := t.summary.Text(); text == "" || text == t.subject {
+		t.summary.SetText(subject)
+	}
+	t.subject = subject
+	t.Refresh()
 }
 
 // Refresh reloads the working tree.

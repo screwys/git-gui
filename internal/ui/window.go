@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 
@@ -19,6 +20,7 @@ type tab struct {
 	label   string
 	widget  gtk.Widgetter
 	refresh func()
+	local   func() // the 30 s working-tree reload; nil when the tab has none
 }
 
 // project is one repository's set of subtabs.
@@ -33,6 +35,7 @@ type project struct {
 // Window is the main window.
 type Window struct {
 	*adw.ApplicationWindow
+	building bool // projects are being (re)built; tab switches are not the user's
 	title    *adw.WindowTitle
 	projects []*project
 	notebook *gtk.Notebook
@@ -104,6 +107,36 @@ func newWindow(app *adw.Application) *Window {
 	toolbar.SetContent(paned)
 	w.SetContent(toolbar)
 
+	w.buildProjects()
+	w.notebook.ConnectSwitchPage(func(_ gtk.Widgetter, page uint) {
+		if !w.building && int(page) < len(w.projects) {
+			p := w.projects[page]
+			if p.kind == "generic" {
+				config.Set("selected_project", p.repo)
+			} else {
+				config.Set("selected_project", p.name)
+			}
+			glib.IdleAdd(func() { w.refreshActive() })
+		}
+	})
+	// The current subtab's working tree follows the disk while the window is shown.
+	glib.TimeoutAdd(30000, func() bool {
+		if w.IsActive() {
+			p := w.active()
+			if i := p.notebook.CurrentPage(); i >= 0 && i < len(p.tabs) && p.tabs[i].local != nil && !p.dock.Runner.Running() {
+				p.tabs[i].local()
+			}
+		}
+		return true
+	})
+	w.refreshActive()
+	return w
+}
+
+// buildProjects adds the built-in and added projects and selects the saved one.
+func (w *Window) buildProjects() {
+	w.building = true
+	defer func() { w.building = false }()
 	w.addProjectView("Rufin", appConfig.RufinRepoPath, "rufin", "rufin_subtab")
 	w.addProjectView("Igloo", appConfig.IglooRepoPath, "igloo", "igloo_subtab")
 	w.addProjectView("nocblue", appConfig.NocblueRepoPath, "generic", "")
@@ -119,29 +152,19 @@ func newWindow(app *adw.Application) *Window {
 			w.notebook.SetCurrentPage(i)
 		}
 	}
-	w.notebook.ConnectSwitchPage(func(_ gtk.Widgetter, page uint) {
-		if int(page) < len(w.projects) {
-			p := w.projects[page]
-			if p.kind == "generic" {
-				config.Set("selected_project", p.repo)
-			} else {
-				config.Set("selected_project", p.name)
-			}
-			glib.IdleAdd(func() { w.refreshActive() })
-		}
-	})
-	// The current subtab's working tree follows the disk while the window is shown.
-	glib.TimeoutAdd(30000, func() bool {
-		if w.IsActive() {
-			p := w.active()
-			if i := p.notebook.CurrentPage(); i >= 0 && i < len(p.tabs) && !p.dock.Runner.Running() {
-				p.tabs[i].refresh()
-			}
-		}
-		return true
-	})
-	w.refreshActive()
-	return w
+}
+
+// rebuildProjects replaces every project view, after Settings changed paths or tabs.
+func (w *Window) rebuildProjects() {
+	w.building = true
+	for w.notebook.NPages() > 0 {
+		w.notebook.RemovePage(-1)
+	}
+	for _, p := range w.projects {
+		w.docks.Remove(p.dock.Root)
+	}
+	w.projects = nil
+	w.buildProjects()
 }
 
 func (w *Window) addProjectView(name, repo, kind, stateKey string) *project {
@@ -150,19 +173,26 @@ func (w *Window) addProjectView(name, repo, kind, stateKey string) *project {
 		stateKey = "project_subtab:" + real
 	}
 	p := &project{name: name, repo: repo, kind: kind, stateKey: stateKey, notebook: gtk.NewNotebook()}
+	changes := NewChangesTab(repo)
+	changesTab := tab{"Changes", changes.Root, changes.Refresh, changes.Refresh}
 	switch kind {
 	case "rufin":
-		p.tabs = []tab{placeholder("Publish PR"), placeholder("Release"), placeholder("Changes")}
+		publish := NewPublishTab(repo)
+		release := NewRufinReleaseTab(repo)
+		p.tabs = []tab{{"Publish PR", publish.Root, publish.Refresh, publish.RefreshFiles}, {"Release", release.Root, release.Refresh, nil}, changesTab}
 	case "igloo":
 		commit := NewCommitTab(repo)
-		p.tabs = []tab{{"Commit & Push", commit.Root, commit.Refresh}, placeholder("Release"), placeholder("Changes")}
+		release := NewIglooReleaseTab(repo)
+		p.tabs = []tab{{"Commit & Push", commit.Root, commit.Refresh, commit.Refresh}, {"Release", release.Root, release.Refresh, nil}, changesTab}
 	default:
 		commit := NewCommitTab(repo)
-		p.tabs = []tab{{"Commit & Push", commit.Root, commit.Refresh}}
+		p.tabs = []tab{{"Commit & Push", commit.Root, commit.Refresh, commit.Refresh}}
 		if name == "nocblue" || appConfig.HasPackages(repo) {
-			p.tabs = append(p.tabs, placeholder("Packages"))
+			packages := NewPackagesTab(repo, name == "nocblue", commit.FillSubject)
+			p.tabs = append(p.tabs, tab{"Packages", packages.Root, packages.Refresh, nil})
 		}
-		p.tabs = append(p.tabs, placeholder("Release"), placeholder("Changes"))
+		release := NewGenericReleaseTab(repo)
+		p.tabs = append(p.tabs, tab{"Release", release.Root, release.Refresh, nil}, changesTab)
 	}
 	for _, t := range p.tabs {
 		p.notebook.AppendPage(t.widget, gtk.NewLabel(t.label))
@@ -201,13 +231,6 @@ func (w *Window) addProjectView(name, repo, kind, stateKey string) *project {
 	w.projects = append(w.projects, p)
 	p.dock.Attach()
 	return p
-}
-
-func placeholder(label string) tab {
-	page := adw.NewStatusPage()
-	page.SetTitle(label)
-	page.SetDescription("Not ported yet.")
-	return tab{label, page, func() {}}
 }
 
 func (w *Window) active() *project {
@@ -305,5 +328,19 @@ func sameDir(a, b string) bool {
 	return err1 == nil && err2 == nil && ra == rb
 }
 
-// openSettings is filled in with the Settings step.
-func (w *Window) openSettings() {}
+// openSettings edits the settings and rebuilds the projects when their paths or tabs changed.
+func (w *Window) openSettings() {
+	before := projectLayout()
+	showSettings(w, w.active().repo, func() {
+		if projectLayout() != before {
+			w.rebuildProjects()
+		}
+		w.refreshActive()
+	})
+}
+
+// projectLayout is what decides which projects and tabs exist.
+func projectLayout() string {
+	return fmt.Sprint(appConfig.RufinRepoPath, appConfig.IglooRepoPath, appConfig.NocblueRepoPath,
+		appConfig.ProjectPaths, appConfig.PackageProjectPaths, appConfig.PublishPRScript, appConfig.ReleaseScript)
+}

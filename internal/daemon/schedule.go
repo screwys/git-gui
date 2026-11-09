@@ -141,7 +141,7 @@ func (d *daemon) advance(s *Schedule, prState string) {
 		inputs := checksResult(s.JobPath)
 		if record.ExitCode == nil || *record.ExitCode != 0 || record.Stopped || inputs == nil {
 			s.set("failed", "Pending checks failed. Publication stopped.")
-			go notify(fmt.Sprintf("Publish after #%d stopped", s.Number), "The pending checks failed.")
+			go notify("critical", fmt.Sprintf("Publish after #%d stopped", s.Number), "The pending checks failed.")
 			return
 		}
 		s.Inputs = inputs
@@ -150,7 +150,7 @@ func (d *daemon) advance(s *Schedule, prState string) {
 	switch prState {
 	case "CLOSED":
 		s.set("closed", fmt.Sprintf("#%d closed without merging", s.Number))
-		go notify(fmt.Sprintf("#%d closed", s.Number), "The scheduled command will not run.")
+		go notify("critical", fmt.Sprintf("#%d closed", s.Number), "The scheduled command will not run.")
 		return
 	case "MERGED":
 	default:
@@ -198,12 +198,12 @@ func (d *daemon) advance(s *Schedule, prState string) {
 	}
 	if err != nil {
 		s.set("failed", "Could not start: "+err.Error())
-		go notify(fmt.Sprintf("#%d merged", s.Number), "The scheduled command could not start.")
+		go notify("critical", fmt.Sprintf("#%d merged", s.Number), "The scheduled command could not start.")
 		return
 	}
 	s.JobPath = path
 	s.set("started", fmt.Sprintf("#%d merged; started %s", s.Number, filepath.Base(command[0])))
-	go notify(fmt.Sprintf("#%d merged", s.Number), "Started "+filepath.Base(command[0])+".")
+	go notify("normal", fmt.Sprintf("#%d merged", s.Number), "Started "+filepath.Base(command[0])+".")
 }
 
 func (d *daemon) startChecks(s *Schedule) {

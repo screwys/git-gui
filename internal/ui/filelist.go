@@ -97,13 +97,16 @@ func NewFileList(editable bool, action string) *FileList {
 }
 
 // SetFiles replaces the rows. Only paths in selectable get a checkbox; nil makes every row
-// selectable. Checked rows survive; when every row was checked, new rows arrive checked.
+// selectable. Checked and selected rows survive; when every row was checked, new rows arrive
+// checked.
 func (f *FileList) SetFiles(files []git.File, selectable []string) {
 	wasAll := f.allChecked()
 	keepScroll := f.scroll.VAdjustment().Value()
-	current := ""
-	if row := f.list.SelectedRow(); row != nil && row.Index() < len(f.Files) {
-		current = f.Files[row.Index()].Path
+	selected := map[string]bool{}
+	for _, row := range f.list.SelectedRows() {
+		if i := row.Index(); i < len(f.Files) {
+			selected[f.Files[i].Path] = true
+		}
 	}
 	f.Files = files
 	f.selectable = map[string]bool{}
@@ -132,7 +135,7 @@ func (f *FileList) SetFiles(files []git.File, selectable []string) {
 	f.Title.SetText(fmt.Sprintf("Changes (%d)", len(files)))
 	f.totals.SetMarkup(fmt.Sprintf(`<span foreground="#3fb950">+%d</span> <span foreground="#f85149">-%d</span>`, adds, dels))
 	for i, file := range files {
-		if file.Path == current {
+		if selected[file.Path] {
 			f.list.SelectRow(f.list.RowAtIndex(i))
 		}
 	}

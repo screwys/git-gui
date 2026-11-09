@@ -44,16 +44,17 @@ func home() string {
 func Defaults() Config {
 	projects := filepath.Join(home(), "Projects")
 	return Config{
-		RufinRepoPath:     filepath.Join(projects, "Rufin"),
-		IglooRepoPath:     filepath.Join(projects, "Igloo"),
-		NocblueRepoPath:   filepath.Join(projects, "nocblue"),
-		PublishPRScript:   ".local/scripts/publish-pr.sh",
-		ReleaseScript:     ".local/scripts/release-rufin.sh",
-		DefaultBaseBranch: "main",
-		DefaultAutoMerge:  true,
-		WrapDiff:          true,
-		ProjectPaths:      []string{},
-		PackageSources:    map[string][]Source{},
+		RufinRepoPath:       filepath.Join(projects, "Rufin"),
+		IglooRepoPath:       filepath.Join(projects, "Igloo"),
+		NocblueRepoPath:     filepath.Join(projects, "nocblue"),
+		PublishPRScript:     ".local/scripts/publish-pr.sh",
+		ReleaseScript:       ".local/scripts/release-rufin.sh",
+		DefaultBaseBranch:   "main",
+		DefaultAutoMerge:    true,
+		WrapDiff:            true,
+		ProjectPaths:        []string{},
+		PackageSources:      map[string][]Source{},
+		PackageProjectPaths: []string{},
 	}
 }
 
@@ -66,8 +67,15 @@ func Load() Config {
 		return c
 	}
 	_ = json.Unmarshal(data, &c)
+	// A null list or map in the file must stay empty, not null, when saved again.
+	if c.ProjectPaths == nil {
+		c.ProjectPaths = []string{}
+	}
 	if c.PackageSources == nil {
 		c.PackageSources = map[string][]Source{}
+	}
+	if c.PackageProjectPaths == nil {
+		c.PackageProjectPaths = []string{}
 	}
 	return c
 }

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Git GUI
+Comment=Commit, publish pull requests and cut releases
+Exec=git-gui
+Icon=io.github.screwys.GitGui
+Terminal=false
+Categories=Development;RevisionControl;
+StartupWMClass=io.github.screwys.GitGui

@@ -19,12 +19,12 @@ import (
 var finishedSchedule = []string{"started", "failed", "closed", "cancelled"}
 
 // ScheduleFollower asks the daemon to run a command after a PR merges and reports the
-// schedule's progress by reading daemon.json.
+// schedule's progress as the daemon rewrites daemon.json.
 type ScheduleFollower struct {
 	cwd, key  string
 	Schedule  daemon.Schedule
 	id        string
-	timer     glib.SourceHandle
+	listening bool
 	OnChanged func(daemon.Schedule)
 }
 
@@ -71,13 +71,12 @@ func (f *ScheduleFollower) Cancel() error {
 func (f *ScheduleFollower) follow(id string) {
 	f.id, f.Schedule = id, daemon.Schedule{}
 	f.poll()
-	if f.timer == 0 {
-		f.timer = glib.TimeoutAdd(2000, func() bool {
-			if f.poll() {
-				return true
+	if !f.listening {
+		f.listening = true
+		onDaemonState(func(daemon.State) {
+			if f.id != "" {
+				f.poll()
 			}
-			f.timer = 0
-			return false
 		})
 	}
 }
@@ -127,15 +126,19 @@ var prNumber = regexp.MustCompile(`(?:^#?(\d+)$)|(?:/pull/(\d+))|(?:^#(\d+) - )`
 
 // NewPRPicker builds the row; label is such as "Publish after PR merges:".
 func NewPRPicker(repo, label string) *PRPicker {
-	p := &PRPicker{Root: gtk.NewBox(gtk.OrientationHorizontal, 6), Wait: gtk.NewCheckButtonWithLabel(label),
+	p := &PRPicker{Root: gtk.NewBox(gtk.OrientationVertical, 2), Wait: gtk.NewCheckButtonWithLabel(label),
 		combo: gtk.NewComboBoxTextWithEntry(), Status: gtk.NewLabel(""), repo: repo}
 	entry := p.entry()
 	entry.SetPlaceholderText("PR #")
 	entry.SetWidthChars(18)
 	p.Status.AddCSSClass("dim")
-	p.Status.SetEllipsize(3)
-	p.Root.Append(p.Wait)
-	p.Root.Append(p.combo)
+	p.Status.SetXAlign(0)
+	p.Status.SetWrap(true)
+	// The status gets its own line so a narrow form doesn't cut it to "…".
+	line := gtk.NewBox(gtk.OrientationHorizontal, 6)
+	line.Append(p.Wait)
+	line.Append(p.combo)
+	p.Root.Append(line)
 	p.Root.Append(p.Status)
 	entry.ConnectChanged(func() {
 		_, ok := p.Number()

@@ -234,7 +234,8 @@ func (r *Runner) poll() bool {
 			r.OnFinished(code, r.Record)
 		}
 	}
-	return false
+	// The hook may have started or attached the next job; this timer follows it.
+	return r.running || r.offset < r.logSize()
 }
 
 func (r *Runner) logPath() string {

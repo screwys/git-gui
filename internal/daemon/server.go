@@ -11,7 +11,7 @@ import (
 
 // Request is one call from git-gui. Each connection carries one request and one response.
 type Request struct {
-	Op       string    `json:"op"` // start, signal, schedule, cancel or cancel_runs
+	Op       string    `json:"op"` // start, signal, schedule, cancel, cancel_runs or follow_release
 	Job      *JobSpec  `json:"job,omitempty"`
 	JobPath  string    `json:"job_path,omitempty"`
 	Action   string    `json:"action,omitempty"` // stop, pause or resume
@@ -19,6 +19,11 @@ type Request struct {
 	ID       string    `json:"id,omitempty"`
 	Cwd      string    `json:"cwd,omitempty"`
 	Titles   []string  `json:"titles,omitempty"`
+	// follow_release: Cwd's jobs view shows Tag (empty for the newest) of a Kind release, from
+	// window process Pid, with the release job at JobPath.
+	Kind string `json:"kind,omitempty"`
+	Tag  string `json:"tag,omitempty"`
+	Pid  int    `json:"pid,omitempty"`
 }
 
 type Response struct {
@@ -97,6 +102,8 @@ func (d *daemon) apply(req Request, resp *Response) error {
 	case "cancel_runs":
 		go cancelRuns(req.Cwd, req.Titles)
 		return nil
+	case "follow_release":
+		return d.followRelease(req)
 	}
 	return fmt.Errorf("unknown op %q", req.Op)
 }

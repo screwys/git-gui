@@ -1,12 +1,2 @@
-__pycache__/
-*.py[cod]
-*$py.class
-.venv/
-env/
-venv/
-*.egg-info/
-dist/
-build/
-.DS_Store
+/git-gui
 .local/
-/git-gui-bin

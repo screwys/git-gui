@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Git GUI
-Comment=Manage pull requests, releases, and background commands
-Exec=git-gui
-Icon=git-gui
-Terminal=false
-Categories=Development;RevisionControl;
-StartupWMClass=git-gui
