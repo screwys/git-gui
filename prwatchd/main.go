@@ -69,7 +69,9 @@ type State struct {
 	Updated     int64    `json:"updated"`
 	PRs         []PR     `json:"prs"`
 	SyncPending []string `json:"sync_pending"`
-	Notified    []string `json:"notified"`
+	// Leaving holds PRs gone from the open search until GitHub reports them merged or closed.
+	Leaving  []PR     `json:"leaving"`
+	Notified []string `json:"notified"`
 }
 
 type searchResult struct {
@@ -239,17 +241,25 @@ func (w *watcher) pass(ctx context.Context) error {
 	for _, repo := range w.state.SyncPending {
 		pending[repo] = true
 	}
-	for _, previous := range w.state.PRs {
+	leaving := []PR{}
+	for _, previous := range append(w.state.PRs, w.state.Leaving...) {
 		if open[previous.key()] || w.checkouts[previous.Repo] == "" {
 			continue
 		}
 		owner, name, _ := strings.Cut(previous.Repo, "/")
-		var merged struct {
+		var closed struct {
 			Repository struct{ PullRequest struct{ State string } }
 		}
 		vars := map[string]any{"owner": owner, "name": name, "number": previous.Number}
-		if err := w.graphql(ctx, stateQuery, vars, &merged); err == nil && merged.Repository.PullRequest.State == "MERGED" {
+		err := w.graphql(ctx, stateQuery, vars, &closed)
+		switch state := closed.Repository.PullRequest.State; {
+		case err != nil:
+			log.Printf("%s: read state: %v", previous.key(), err)
+			leaving = append(leaving, previous)
+		case state == "MERGED":
 			pending[previous.Repo] = true
+		case state != "CLOSED":
+			leaving = append(leaving, previous)
 		}
 	}
 	stillPending := []string{}
@@ -264,7 +274,7 @@ func (w *watcher) pass(ctx context.Context) error {
 			delete(w.notified, key)
 		}
 	}
-	w.state = State{Updated: time.Now().Unix(), PRs: prs, SyncPending: stillPending, Notified: sortedKeys(w.notified)}
+	w.state = State{Updated: time.Now().Unix(), PRs: prs, SyncPending: stillPending, Leaving: leaving, Notified: sortedKeys(w.notified)}
 	return w.save()
 }
 

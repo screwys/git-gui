@@ -81,6 +81,8 @@ tests/                      unittest suites, Qt tests run offscreen
   PRs with auto-merge, completed passing checks and `mergeStateStatus == BEHIND`.
 - Notifications are keyed by repository, PR, head commit and status and persisted in the state
   file, so a restart does not repeat them.
+- A PR that leaves the open search stays in `leaving` until GitHub reports it merged or closed,
+  so a failed lookup is retried instead of missing a merge.
 - Sync applies to the checkout at `rufin_repo_path` in git-gui's config, using its publish helper.
   It waits while the helper's `.local/publish-checkout.lock` is held and retries on the next pass.
 - `pr-watch.json` is a contract with its readers (git-gui and Rufin's session startup report).
