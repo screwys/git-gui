@@ -203,10 +203,12 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 			pr.Status = "conflict"
 		case len(pr.Failed) > 0:
 			pr.Status = "failing"
-		case running:
-			pr.Status = "running"
+		// A behind PR is updated even while checks run: main requires up-to-date branches, so a run
+		// on the old head would have to happen again after the update anyway.
 		case node.MergeStateStatus == "BEHIND":
 			pr.Status = "behind"
+		case running:
+			pr.Status = "running"
 		default:
 			pr.Status = "passing"
 		}

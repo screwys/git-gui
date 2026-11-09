@@ -62,7 +62,8 @@ while testing against real repositories.
 - One GraphQL search (`is:pr is:open author:@me`) every 30 s, 10 s while a schedule is active, with
   the `gh auth token`. The token is read again after a 401 and never stored.
 - Branch updates use `PUT /repos/{repo}/pulls/{n}/update-branch` with `expected_head_sha`, only for
-  PRs with auto-merge, completed passing checks and `mergeStateStatus == BEHIND`.
+  PRs with auto-merge, no failing checks and `mergeStateStatus == BEHIND`, also while checks run.
+  A failing PR gets main merged in by its fix push instead.
 - Notifications: failing and conflicting PRs once per head commit (keys persisted), checks passing,
   merges (unless a schedule announces it), schedule outcomes, release workflow conclusions and
   finished jobs. Failures are critical, the rest normal.
