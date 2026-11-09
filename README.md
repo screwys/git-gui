@@ -10,8 +10,8 @@ with PyQt6; the watcher is Go.
   and **+** adds any Git repository.
 - Rufin: publish PRs and releases through Rufin's own scripts, sync `main`, and build and install
   the Android app.
-- Other projects: commit and push with a rebase onto the remote, tag and publish GitHub releases,
-  and edit RPM, Brew and Nix package lists.
+- nocblue: simple package management, with live rpm search
+- Other projects: commit and push with a rebase onto the remote, tag and publish GitHub releases
 - Commands keep running when the window closes, and the app reattaches to them later. History,
   pause, resume and cancel included.
 - Optional tray mode with notifications when commands finish or fail.
