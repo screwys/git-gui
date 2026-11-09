@@ -143,6 +143,7 @@ func NewChangesTab(repo string) *ChangesTab {
 	left.Append(c.files.Root)
 	panes := gtk.NewPaned(gtk.OrientationHorizontal)
 	panes.SetStartChild(left)
+	c.diff.Root.SetMarginStart(6)
 	panes.SetEndChild(c.diff.Root)
 	panes.SetShrinkStartChild(false)
 	panes.SetShrinkEndChild(false)

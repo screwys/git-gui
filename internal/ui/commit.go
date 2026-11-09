@@ -65,6 +65,7 @@ func NewCommitTab(repo string) *CommitTab {
 	bottom.Append(options)
 	left := gtk.NewPaned(gtk.OrientationVertical)
 	left.SetMarginStart(8)
+	left.SetMarginEnd(8)
 	left.SetMarginTop(8)
 	left.SetMarginBottom(8)
 	left.SetStartChild(t.files.Root)
@@ -74,6 +75,10 @@ func NewCommitTab(repo string) *CommitTab {
 	left.SetResizeEndChild(false)
 
 	right := gtk.NewPaned(gtk.OrientationVertical)
+	right.SetMarginStart(8)
+	right.SetMarginEnd(8)
+	right.SetMarginTop(8)
+	right.SetMarginBottom(8)
 	right.SetStartChild(t.diff.Root)
 	right.SetEndChild(t.term.Root)
 	right.SetPosition(420)

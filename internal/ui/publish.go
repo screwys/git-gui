@@ -101,6 +101,7 @@ func NewPublishTab(repo string) *PublishTab {
 	t.Root = gtk.NewPaned(gtk.OrientationHorizontal)
 	left := gtk.NewBox(gtk.OrientationVertical, 8)
 	left.SetMarginStart(8)
+	left.SetMarginEnd(8)
 	left.SetMarginTop(8)
 	left.SetMarginBottom(8)
 	left.Append(t.files.Root)
@@ -175,6 +176,7 @@ func NewPublishTab(repo string) *PublishTab {
 	left.Append(options)
 
 	right := gtk.NewBox(gtk.OrientationVertical, 6)
+	right.SetMarginStart(8)
 	right.SetMarginTop(8)
 	right.SetMarginEnd(8)
 	t.banner = gtk.NewBox(gtk.OrientationHorizontal, 6)
