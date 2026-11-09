@@ -555,7 +555,7 @@ func Save(repo string, source Source, before, add string, remove []int, mirrors 
 }
 
 // CommitSubject describes what the sources gained and lost against HEAD, such as
-// "feat(packages): add a and b".
+// "packages: add a and b".
 func CommitSubject(repo string, sources []Source) string {
 	added, removed := map[string]bool{}, map[string]bool{}
 	for _, source := range sources {
@@ -597,11 +597,11 @@ func CommitSubject(repo string, sources []Source) string {
 func Subject(added, removed map[string]bool) string {
 	switch {
 	case len(added) > 0 && len(removed) > 0:
-		return "chore(packages): add " + describe(added) + " and remove " + describe(removed)
+		return "packages: add " + describe(added) + " and remove " + describe(removed)
 	case len(added) > 0:
-		return "feat(packages): add " + describe(added)
+		return "packages: add " + describe(added)
 	case len(removed) > 0:
-		return "chore(packages): remove " + describe(removed)
+		return "packages: remove " + describe(removed)
 	}
 	return ""
 }

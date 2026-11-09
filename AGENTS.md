@@ -4,7 +4,9 @@
 - Work directly on `main`; do not create a branch unless the user asks for one.
 - After making edits, run the relevant checks, commit the changes, and push them to `origin/main`.
 - If `origin/main` advanced, fetch and rebase before pushing. Do not force-push.
-- Keep commits focused and use Conventional Commit subjects.
+- Keep commits focused. Write scoped subjects, as Linux, Go and nixpkgs do: `area: description`,
+  about 50 characters, where the area is the part of the code that changed (`daemon:`,
+  `ui/publish:`, `packages:`). No Conventional Commit types such as `feat:` or `fix(...)`.
 - The repository is public. Keep the README user-facing and put implementation notes here.
 
 ## Checks
@@ -109,7 +111,7 @@ internal/ui/            The window. Shared: terminal.go, runner.go, console.go, 
 
 - Package lists come from BlueBuild recipes (DNF and rpm-ostree install and remove lists),
   `Brewfile`s and plain lists such as `manifests/nix-profile.txt`. Edits keep the file's layout
-  and fill a subject such as `feat(packages): add postgres and postgres-server` unless the user
+  and fill a subject such as `packages: add postgres and postgres-server` unless the user
   wrote one. `go test ./internal/packages` covers the edits and the mirror restore.
 - RPM completion runs `dnf --cacheonly repoquery` once per app session, on first use, and shares
   the result across project tabs. It never downloads metadata.

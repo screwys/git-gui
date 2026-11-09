@@ -128,7 +128,7 @@ func NewPublishTab(repo string) *PublishTab {
 	t.prLabel.SetWrap(true)
 	t.prLabel.SetVisible(false)
 	t.title = gtk.NewEntry()
-	t.title.SetPlaceholderText("e.g. feat(ui): add modern PR and release GUI")
+	t.title.SetPlaceholderText("e.g. ui/player: add a sleep timer")
 	t.title.SetTooltipText("The first commit names the PR. Follow-up commits keep the PR title. Leave empty to retry existing commits.")
 	t.phase = gtk.NewEntry()
 	t.phase.SetPlaceholderText("Defaults to TITLE")

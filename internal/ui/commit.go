@@ -36,7 +36,7 @@ func NewCommitTab(repo string) *CommitTab {
 
 	message := group("Commit Message")
 	t.summary = gtk.NewEntry()
-	t.summary.SetPlaceholderText("e.g. feat(feed): add interactive media cards")
+	t.summary.SetPlaceholderText("e.g. feed: add interactive media cards")
 	t.body = gtk.NewTextView()
 	t.body.SetWrapMode(gtk.WrapWordChar)
 	bodyScroll := gtk.NewScrolledWindow()
