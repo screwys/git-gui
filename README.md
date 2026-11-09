@@ -61,6 +61,18 @@ The installer creates command links in `~/.local/bin` and installs the repositor
 Run it again if you move the checkout. Python 3, PyQt6, and PyYAML must be installed on the system.
 The Python dependencies are listed in `requirements.txt`.
 
+The installer also builds `prwatchd` (Go) into `~/.local/bin` and enables it as the
+`prwatchd.service` user service. Every 30 seconds it reads your open pull requests with one
+GitHub search, using the `gh` login:
+
+- A PR with auto-merge on, passing checks and a branch behind its base is updated on GitHub, so
+  rulesets that require up-to-date branches do not leave auto-merge waiting.
+- Failed checks and merge conflicts raise one desktop notification per head commit.
+- After a Rufin PR merges, the Rufin checkout is synced with its publish helper (`--sync`).
+
+The state is written to `~/.local/state/git-gui/pr-watch.json` for readers such as git-gui.
+Its log is `journalctl --user -u prwatchd`.
+
 ## Background commands and recovery
 
 Click **+** after the project tabs to open the folder picker and select a Git repository.

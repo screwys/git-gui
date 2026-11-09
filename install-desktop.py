@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Install the local launcher and desktop entry for this checkout."""
+"""Install the local launcher, desktop entry and PR watcher service for this checkout."""
 import os
+import subprocess
 from pathlib import Path
 
 root = Path(__file__).resolve().parent
@@ -25,3 +26,15 @@ entry = entry.replace("Icon=git-gui\n", f"Icon={root / 'git-gui.svg'}\n")
 (applications / "git-gui.desktop").write_text(entry)
 (applications / "rufin-git-gui.desktop").unlink(missing_ok=True)
 print(f"Installed {applications / 'git-gui.desktop'}")
+
+# prwatchd runs as an always-on user service; a rebuilt binary takes effect on restart.
+subprocess.run(["go", "build", "-o", str(bin_dir / "prwatchd"), "."], cwd=root / "prwatchd", check=True)
+units = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "systemd/user"
+units.mkdir(parents=True, exist_ok=True)
+unit = units / "prwatchd.service"
+unit.unlink(missing_ok=True)
+unit.symlink_to(root / "prwatchd/prwatchd.service")
+subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+subprocess.run(["systemctl", "--user", "enable", "prwatchd.service"], check=True)
+subprocess.run(["systemctl", "--user", "restart", "prwatchd.service"], check=True)
+print("Installed and restarted prwatchd.service")
