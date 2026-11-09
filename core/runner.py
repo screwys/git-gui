@@ -1,18 +1,13 @@
 import codecs
-import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
 import shlex
-import signal
-import subprocess
-import sys
 import time
-import uuid
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
-from core.jobs import external_process, is_alive, is_stopped, job_running, jobs_root, records, write_record
+from core import daemon
+from core.jobs import external_process, is_stopped, job_running, records
 from core.notifications import send_desktop_notification
 
 
@@ -35,7 +30,6 @@ class ProcessRunner(QObject):
         self.replaying_output = False
         self._replay_end = 0
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        self._child = None
         self._stop_requested = False
         self._paused = False
         self.timer = QTimer(self)
@@ -99,37 +93,13 @@ class ProcessRunner(QObject):
         if self._is_running or external_process(cwd, self.program):
             self.error_occurred.emit("A command is already running. Refresh to view it.")
             return
-        root = jobs_root()
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        slot = hashlib.sha256(f"{cwd}\0{self.key}".encode()).hexdigest()
-        lock = (root / f"{slot}.lock").open("a")
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock.close()
-            self.error_occurred.emit("This command is already running in another window.")
-            return
-        directory = root / uuid.uuid4().hex
-        directory.mkdir(mode=0o700)
-        self.path = directory / "job.json"
-        self.record = {"cwd": cwd, "key": self.key, "command": [program, *arguments],
-                       "started_at": time.time()}
-        write_record(self.path, self.record)
-        env = dict(os.environ, TERM="xterm-256color", FORCE_COLOR="1", PYTHONUNBUFFERED="1")
-        env.update(env_vars or {})
-        try:
-            self._child = subprocess.Popen(
-                [sys.executable, str(Path(__file__).with_name("jobs.py")), str(self.path), str(lock.fileno())],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                env=env, start_new_session=True, pass_fds=(lock.fileno(),))
-        except OSError as error:
-            self.record.update(exit_code=127, finished_at=time.time())
-            write_record(self.path, self.record)
+            answer = daemon.request("start", job=daemon.job_spec(cwd, self.key, [program, *arguments], env_vars))
+        except daemon.DaemonError as error:
             self.error_occurred.emit(str(error))
-            self.finished.emit(127)
             return
-        finally:
-            lock.close()
+        self.path = Path(answer["job_path"])
+        self.record = json.loads(self.path.read_text())
         self._offset = 0
         self._replay_end = 0
         self._decoder.reset()
@@ -169,7 +139,7 @@ class ProcessRunner(QObject):
         if paused != self._paused or has_child != had_child:
             self._paused = paused
             self.restored.emit(dict(self.record, running=self._is_running, paused=paused))
-        if self._child and self._child.poll() is None and "pid" not in self.record:
+        if self._starting():
             return
         running = job_running(self.record)
         if running:
@@ -179,8 +149,6 @@ class ProcessRunner(QObject):
         if self.path and self.path.with_name("output.log").exists():
             if self._offset < self.path.with_name("output.log").stat().st_size:
                 return
-        if self._child and self._child.poll() is None:
-            return
         was_running = self._is_running
         self._is_running = False
         self.timer.stop()
@@ -196,37 +164,32 @@ class ProcessRunner(QObject):
                     f"{Path(finished_record['cwd']).name}: {shlex.join(finished_record['command'][:2])}",
                     urgency="normal" if code == 0 else "critical")
 
+    def _starting(self):
+        """The daemon wrote the record, and its supervisor has not recorded itself yet."""
+        return (self.path is not None and "pid" not in self.record and "exit_code" not in self.record
+                and time.time() - self.record.get("started_at", 0) < 30)
+
     def stop(self):
-        if self._is_running and not self.record.get("external"):
-            self._stop_requested = True
-            if self.path:
-                self.record = json.loads(self.path.read_text())
-            if is_alive(self.record):
-                try:
-                    os.kill(self.record["pid"], signal.SIGTERM)
-                except ProcessLookupError:
-                    return
-                self._stop_requested = False
-                self.output_received.emit("\n[STOPPING] Terminating the command and its child processes...\n")
-            elif is_alive(self.record.get("child", {})):
-                try:
-                    os.killpg(self.record["child"]["pid"], signal.SIGTERM)
-                except ProcessLookupError:
-                    return
-                self._stop_requested = False
+        if self._is_running and self.path and not self.record.get("external"):
+            self.record = json.loads(self.path.read_text())
+            if self._starting():
+                self._stop_requested = True
+                return
+            self._stop_requested = False
+            try:
+                daemon.request("signal", job_path=str(self.path), action="stop")
+            except daemon.DaemonError as error:
+                self.error_occurred.emit(str(error))
+                return
+            self.output_received.emit("\n[STOPPING] Terminating the command and its child processes...\n")
 
     def toggle_pause(self):
-        if not self._is_running or self.record.get("external"):
+        if not self._is_running or not self.path or self.record.get("external"):
             return
-        if self.path:
-            self.record = json.loads(self.path.read_text())
-        child = self.record.get("child", {})
-        if not is_alive(child):
-            return
-        signum = signal.SIGCONT if self._paused else signal.SIGSTOP
         try:
-            os.killpg(child["pid"], signum)
-        except ProcessLookupError:
+            daemon.request("signal", job_path=str(self.path), action="resume" if self._paused else "pause")
+        except daemon.DaemonError as error:
+            self.error_occurred.emit(str(error))
             return
-        self._paused = signum == signal.SIGSTOP
+        self._paused = not self._paused
         self.restored.emit(dict(self.record, running=True, paused=self._paused))

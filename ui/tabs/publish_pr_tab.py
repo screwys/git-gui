@@ -2,10 +2,9 @@ import os
 import re
 import json
 import subprocess
-import sys
 from pathlib import Path
 from typing import List, Optional
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget,
@@ -26,8 +25,7 @@ from PyQt6.QtWidgets import (
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
-from core.publish_checks import CHECK_INPUT, has_pending_edits, pending_inputs
-from core.notifications import send_desktop_notification
+from core import daemon
 from ui.components.activity_tabs import ActivityTabs
 from core.state import StateManager
 from ui.components.file_list import FileListWidget
@@ -35,7 +33,8 @@ from ui.components.diff_viewer import DiffViewer
 from ui.components.terminal_view import TerminalWidget
 from ui.components.pr_checks_view import PrChecksWidget
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
-from ui.tabs.release_tab import ActivePrsFetchWorker, PrPollWorker
+from ui.components.schedule_follower import ScheduleFollower
+from ui.tabs.release_tab import ActivePrsFetchWorker
 
 
 class BranchPrDetectWorker(QThread):
@@ -162,19 +161,8 @@ class PublishPrTab(QWidget):
         self._submitted_body = ""
         self._output_pending = ""
         self._published_pr = ""
-        self._is_waiting_for_pr = False
-        self._waiting_pr_num = ""
-        self._waiting_script_path = ""
-        self._waiting_args = []
-        self._waiting_env_vars = {}
-        self._waiting_pending = {}
-        self._waiting_check_inputs = None
-        self._waiting_checks_running = False
-        self._waiting_pr_merged = False
-        self._pr_poll_timer = QTimer(self)
-        self._pr_poll_timer.setInterval(10000)
-        self._pr_poll_timer.timeout.connect(self._poll_waiting_pr)
-        self._pr_poll_worker = None
+        self.schedule = ScheduleFollower(self.git_mgr.repo_path, "publish", self)
+        self.schedule.changed.connect(self._on_schedule_changed)
         self._active_prs_worker = None
 
         self._init_ui()
@@ -182,6 +170,7 @@ class PublishPrTab(QWidget):
         self.terminal.bind_runner(self.runner, self.git_mgr.repo_path, "publish", self.config.resolve_publish_script(self.git_mgr.repo_path))
         self._restore_pending_publish()
         self._restore_saved_pr()
+        self.schedule.restore()
         self.refresh()
 
     def _init_ui(self):
@@ -505,7 +494,7 @@ class PublishPrTab(QWidget):
             self.i18n_combo.setCurrentIndex(index)
 
     def _publish_button_clicked(self):
-        if self._is_waiting_for_pr:
+        if self.schedule.active:
             self._cancel_pr_wait()
             return
         if self.wait_pr_cb.isChecked():
@@ -583,8 +572,8 @@ class PublishPrTab(QWidget):
         self._update_publish_button()
 
     def _update_publish_button(self, *_args):
-        if self._is_waiting_for_pr:
-            self.file_list.btn_publish.setText(f"Cancel (PR #{self._waiting_pr_num})")
+        if self.schedule.active:
+            self.file_list.btn_publish.setText(f"Cancel (PR #{self.schedule.schedule['number']})")
             self.file_list.btn_publish.setEnabled(True)
             return
 
@@ -700,10 +689,6 @@ class PublishPrTab(QWidget):
         if "\n" not in self._output_pending:
             return
         text, self._output_pending = self._output_pending.rsplit("\n", 1)
-        if self._waiting_checks_running:
-            for line in text.splitlines():
-                if line.startswith(CHECK_INPUT):
-                    self._waiting_check_inputs = json.loads(line.removeprefix(CHECK_INPUT))
         for branch in re.findall(r"(?m)^Publishing branch: (.+)$", text):
             pending = StateManager.get("rufin_publish_pending") or {}
             job_id = self.runner.path.parent.name if self.runner.path else None
@@ -863,7 +848,7 @@ class PublishPrTab(QWidget):
         pending = StateManager.get("rufin_publish_pending") or {}
         if (context is not None and state in ("MERGED", "CLOSED")
                 and pending.get("repo_path") == context[0] and pending.get("branch") == context[1]
-                and not self.runner.is_running and not self._is_waiting_for_pr):
+                and not self.runner.is_running and not self.schedule.active):
             # The saved publish ended with its PR; the form returns to new work.
             self._complete_pending_publish(pending)
             self.refresh()
@@ -930,7 +915,7 @@ class PublishPrTab(QWidget):
             self.diff_viewer.set_diff(diff_text, f"{len(paths)} files selected", adds, dels, rel_path=None)
 
     def run_publish(self):
-        if self._is_waiting_for_pr:
+        if self.schedule.active:
             self._cancel_pr_wait()
             return
 
@@ -1075,9 +1060,7 @@ class PublishPrTab(QWidget):
                                            capture_output=True, text=True, check=False).stdout.strip(),
         }
         if pr_num:
-            if self.runner.is_running:
-                self.terminal.append_output("[*] Stopping running script to wait for PR...\n")
-            self._stop_and_run(lambda: self._start_waiting_for_pr(pr_num, script_path, args, env_vars, pending))
+            self._start_waiting_for_pr(pr_num, script_path, args, env_vars, pending)
         else:
             self._stop_and_run(lambda: self._start_publish_job(script_path, args, env_vars, pending))
 
@@ -1097,142 +1080,53 @@ class PublishPrTab(QWidget):
         self.runner.stop()
 
     def _start_waiting_for_pr(self, pr_num: str, script_path: str, args: list, env_vars: dict, pending: dict):
-        self._is_waiting_for_pr = True
-        self._waiting_pr_num = pr_num
-        self._waiting_script_path = script_path
-        self._waiting_args = args
-        self._waiting_env_vars = env_vars
-        self._waiting_pending = pending
-        self._waiting_check_inputs = None
-        self._waiting_checks_running = False
-        self._waiting_pr_merged = False
-
-        self.file_list.btn_publish.setEnabled(True)
-        self._update_publish_button()
-        self.wait_pr_status_lbl.setText(f"Waiting for #{pr_num}...")
-        self.wait_pr_status_lbl.setStyleSheet("color: #e3b341; font-size: 11px;")
-
-        self.bottom_tabs.setCurrentWidget(self.terminal)
+        publish = None
+        if pending["full"]:
+            publish = {"helper": script_path, "branch": pending["branch"], "title": pending["title"],
+                       "paths": pending["paths"], "args": args, "retry_args": pending["retry_args"]}
+        job = daemon.job_spec(self.git_mgr.repo_path, "publish", [script_path, *args], env_vars)
         self.terminal.clear_terminal()
-        self.terminal.set_status(f"Waiting for PR #{pr_num}", "running")
-        self.terminal.append_output(f"[*] Publish scheduled: will run automatically once PR #{pr_num} merges.\n")
-        self.terminal.append_output(f"[*] Polling GitHub PR #{pr_num}...\n")
         self.bottom_tabs.show_activity("local", self.terminal, force=True)
-
-        self._pr_poll_timer.start(10000)
-        if pending["full"]:
-            self._start_waiting_checks()
-        self._poll_waiting_pr()
-
-    def _start_waiting_checks(self):
-        self._waiting_check_inputs = None
-        self._waiting_checks_running = True
-        command = str(Path(__file__).resolve().parents[2] / "core" / "publish_checks.py")
-        self._start_publish_job(
-            sys.executable, [command, self._waiting_script_path, json.dumps(self._waiting_pending)],
-            self._waiting_env_vars, self._waiting_pending,
-            checks_only=True,
-        )
-        if self.runner.is_running:
-            self.terminal.set_status("Checking pending changes", "running")
-        elif self._waiting_checks_running:
-            self._waiting_checks_running = False
-            self._fail_pr_wait("Pending checks could not start.")
-
-    def _publish_when_ready(self, checks_passed=True):
-        if not self._is_waiting_for_pr or self._waiting_checks_running or self.runner.is_running:
+        try:
+            self.schedule.submit(int(pr_num), job, publish=publish)
+        except daemon.DaemonError as error:
+            self.terminal.append_output(f"[!] {error}\n")
+            self.terminal.set_status("Not scheduled", "failed")
             return
-        pending = self._waiting_pending
-        args = self._waiting_args
-        env_vars = self._waiting_env_vars
-        if pending["full"]:
-            try:
-                inputs = pending_inputs(self.git_mgr.repo_path, pending["branch"], pending["paths"])
-                if inputs != self._waiting_check_inputs:
-                    self.terminal.append_output("[*] Pending changes edited. Running checks again.\n")
-                    self._start_waiting_checks()
-                    return
-                if not checks_passed:
-                    self._fail_pr_wait("Pending checks failed. Publication stopped.")
-                    return
-                args = pending["args"] if has_pending_edits(self.git_mgr.repo_path, inputs) else pending["retry_args"]
-            except (OSError, subprocess.CalledProcessError) as error:
-                self._fail_pr_wait(f"Cannot read pending changes: {error}")
-                return
-            # The full gate already passed on these inputs.
-            args = [arg for arg in args if arg != "--full"]
-        if not self._waiting_pr_merged:
-            self.terminal.set_status(f"Waiting for PR #{self._waiting_pr_num}", "running")
-            return
-        self._pr_poll_timer.stop()
-        self._is_waiting_for_pr = False
-        self.terminal.append_output("[+] Starting publication after merge.\n")
-        self._start_publish_job(self._waiting_script_path, args, env_vars, pending)
+        StateManager.update(rufin_publish_pending=pending)
+        self.terminal.append_output(f"[*] Publish scheduled: git-gui-daemon starts it once PR #{pr_num} merges.\n")
 
-    def _fail_pr_wait(self, message):
-        self._pr_poll_timer.stop()
-        self._is_waiting_for_pr = False
+    def _on_schedule_changed(self, schedule):
+        status, message = schedule["status"], schedule["message"]
+        colour = {"started": "#3fb950", "failed": "#f85149", "closed": "#f85149", "cancelled": "#8b949e"}
         self.wait_pr_status_lbl.setText(message)
-        self.terminal.append_output(f"[!] {message}\n")
-        self.terminal.set_status(message, "failed")
-        self.bottom_tabs.show_activity("failed", self.terminal)
-        self._update_publish_button()
-
-    def _poll_waiting_pr(self):
-        if not self._is_waiting_for_pr:
-            return
-        self._publish_when_ready()
-        if not self._is_waiting_for_pr or self._waiting_pr_merged:
-            return
-        if self._pr_poll_worker and self._pr_poll_worker.isRunning():
-            return
-        self._pr_poll_worker = PrPollWorker(self.git_mgr.repo_path, self._waiting_pr_num, self)
-        self._pr_poll_worker.pr_status_fetched.connect(self._on_pr_status_fetched)
-        self._pr_poll_worker.start()
-
-    def _on_pr_status_fetched(self, data: dict):
-        if not self._is_waiting_for_pr:
-            return
-        state = (data.get("state") or "").upper()
-        pr_num = self._waiting_pr_num
-
-        if state == "MERGED":
-            self._waiting_pr_merged = True
-            self.wait_pr_status_lbl.setText(f"PR #{pr_num} merged!")
-            self.wait_pr_status_lbl.setStyleSheet("color: #3fb950; font-size: 11px;")
-            self.terminal.append_output(f"\n[+] PR #{pr_num} has merged.\n")
-            send_desktop_notification("PR Merged", f"PR #{pr_num} merged.")
-            self._update_publish_button()
-            self._publish_when_ready()
-        elif state == "CLOSED":
-            self._cancel_pr_wait()
-            self._pr_poll_timer.stop()
-            self._is_waiting_for_pr = False
-            self.wait_pr_status_lbl.setText(f"PR #{pr_num} closed without merge")
-            self.wait_pr_status_lbl.setStyleSheet("color: #f85149; font-size: 11px;")
-            self.terminal.append_output(f"\n[!] PR #{pr_num} was closed without being merged. Publish aborted.\n")
-            self.terminal.set_status(f"PR #{pr_num} Closed", "failed")
-            self._update_publish_button()
-            send_desktop_notification("Publish Aborted", f"PR #{pr_num} was closed without merging.")
+        self.wait_pr_status_lbl.setStyleSheet(f"color: {colour.get(status, '#e3b341')}; font-size: 11px;")
+        self.terminal.append_output(f"[*] {message}\n")
+        if status in ("checking", "started") and schedule["job_path"]:
+            pending = StateManager.get("rufin_publish_pending") or {}
+            if pending.get("repo_path") == self.git_mgr.repo_path:
+                pending["job_id"] = Path(schedule["job_path"]).parent.name
+                pending["checks_only"] = status == "checking"
+                StateManager.update(rufin_publish_pending=pending)
+            if not self.runner.is_running:
+                self.runner.attach(self.git_mgr.repo_path, "publish", self.runner.program)
+        if status in ("failed", "closed"):
+            self.terminal.set_status(message, "failed")
+            self.bottom_tabs.show_activity("failed", self.terminal)
+        elif status == "cancelled":
+            self.terminal.set_status("Cancelled", "normal")
         else:
-            self.wait_pr_status_lbl.setText(f"PR #{pr_num} is OPEN (waiting)")
-            self.wait_pr_status_lbl.setStyleSheet("color: #e3b341; font-size: 11px;")
-            self.terminal.append_output(f"[*] PR #{pr_num} is {state}. Polling again in 10s...\n")
+            self.terminal.set_status(message, "running")
+        self._update_publish_button()
 
     def _cancel_pr_wait(self):
-        self._pr_poll_timer.stop()
-        self._is_waiting_for_pr = False
-        if self._waiting_checks_running:
-            self.runner.stop()
-        self.wait_pr_status_lbl.setText("Wait cancelled")
-        self.wait_pr_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
-        if self._waiting_pr_num:
-            self.terminal.append_output(f"\n[!] Cancelled waiting for PR #{self._waiting_pr_num}.\n")
-        self.terminal.set_status("Cancelled", "normal")
-        self._update_publish_button()
+        try:
+            self.schedule.cancel()
+        except daemon.DaemonError as error:
+            self.terminal.append_output(f"[!] {error}\n")
 
     def _stop_publish(self):
-        if self._is_waiting_for_pr:
+        if self.schedule.active:
             self._cancel_pr_wait()
         else:
             self.runner.stop()
@@ -1241,18 +1135,13 @@ class PublishPrTab(QWidget):
         pending = StateManager.get("rufin_publish_pending") or {}
         checks_only = (pending.get("checks_only") and self.runner.path
                        and pending.get("job_id") == self.runner.path.parent.name)
-        if self._waiting_checks_running or checks_only:
-            self._waiting_checks_running = False
-            if self._is_waiting_for_pr:
-                if self._waiting_check_inputs is None:
-                    self._fail_pr_wait("Pending checks failed. Publication stopped.")
-                else:
-                    self._publish_when_ready(checks_passed=exit_code == 0 and not self.runner.record.get("stopped"))
-            elif checks_only and not self._waiting_pr_num:
-                self.terminal.set_status("Checks passed" if exit_code == 0 else "Checks failed",
-                                         "success" if exit_code == 0 else "failed")
+        if checks_only:
+            # git-gui-daemon decides what follows the checks; the schedule reports it.
+            self.terminal.set_status("Checks passed" if exit_code == 0 else "Checks failed",
+                                     "success" if exit_code == 0 else "failed")
+            self._update_publish_button()
             return
-        if self._is_waiting_for_pr:
+        if self.schedule.active:
             self._update_publish_button()
             return
         if exit_code != 0 or self.runner.record.get("stopped"):

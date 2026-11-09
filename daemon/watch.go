@@ -1,12 +1,3 @@
-// Command prwatchd watches the user's open GitHub pull requests.
-//
-// Every 30 seconds it reads them with one GraphQL search. A PR with auto-merge on, passing
-// checks and a branch behind its base is updated on GitHub: rulesets that require
-// up-to-date branches otherwise leave auto-merge waiting. Failed checks and merge conflicts
-// raise one desktop notification per head commit. After a PR merges in a repository whose
-// local checkout has a publish helper, that checkout is synced with the helper.
-//
-// The result is written to $XDG_STATE_HOME/git-gui/pr-watch.json, which git-gui reads.
 package main
 
 import (
@@ -27,8 +18,6 @@ import (
 	"syscall"
 	"time"
 )
-
-const interval = 30 * time.Second
 
 const searchQuery = `query {
   search(query: "is:pr is:open author:@me archived:false", type: ISSUE, first: 50) {
@@ -53,6 +42,8 @@ const stateQuery = `query($owner: String!, $name: String!, $number: Int!) {
 
 var failedOutcomes = []string{"FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}
 
+var githubRemote = regexp.MustCompile(`github\.com[:/]([^/]+/[^/]+?)(\.git)?$`)
+
 // PR is one open pull request as written to the state file.
 type PR struct {
 	Repo   string   `json:"repo"`
@@ -64,15 +55,7 @@ type PR struct {
 	Failed []string `json:"failed"`
 }
 
-// State is the file other programs read.
-type State struct {
-	Updated     int64    `json:"updated"`
-	PRs         []PR     `json:"prs"`
-	SyncPending []string `json:"sync_pending"`
-	// Leaving holds PRs gone from the open search until GitHub reports them merged or closed.
-	Leaving  []PR     `json:"leaving"`
-	Notified []string `json:"notified"`
-}
+func (p PR) key() string { return fmt.Sprintf("%s#%d", p.Repo, p.Number) }
 
 type searchResult struct {
 	Search struct {
@@ -108,43 +91,22 @@ type searchResult struct {
 	}
 }
 
-type watcher struct {
-	client    *http.Client
-	token     string
-	statePath string
-	checkouts map[string]string // "owner/name" -> local checkout with a publish helper
-	helper    map[string]string // "owner/name" -> publish helper path
-	state     State
-	notified  map[string]bool
-	syncError map[string]string
-}
-
-func main() {
-	log.SetFlags(0)
-	w := &watcher{client: &http.Client{Timeout: 30 * time.Second}, notified: map[string]bool{}, syncError: map[string]string{}}
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		stateHome = filepath.Join(os.Getenv("HOME"), ".local", "state")
+// repoSlug returns "owner/name" for a checkout's GitHub origin.
+func repoSlug(checkout string) string {
+	out, err := exec.Command("git", "-C", checkout, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
 	}
-	w.statePath = filepath.Join(stateHome, "git-gui", "pr-watch.json")
-	if data, err := os.ReadFile(w.statePath); err == nil {
-		_ = json.Unmarshal(data, &w.state)
+	match := githubRemote.FindStringSubmatch(strings.TrimSpace(string(out)))
+	if match == nil {
+		return ""
 	}
-	for _, key := range w.state.Notified {
-		w.notified[key] = true
-	}
-	w.loadCheckouts()
-	for {
-		if err := w.pass(context.Background()); err != nil {
-			log.Print(err)
-		}
-		time.Sleep(interval)
-	}
+	return match[1]
 }
 
 // loadCheckouts reads git-gui's configuration for the checkout that publishes through a helper.
-func (w *watcher) loadCheckouts() {
-	w.checkouts, w.helper = map[string]string{}, map[string]string{}
+func (d *daemon) loadCheckouts() {
+	d.checkouts, d.helper = map[string]string{}, map[string]string{}
 	var config struct {
 		RufinRepoPath   string `json:"rufin_repo_path"`
 		PublishPRScript string `json:"publish_pr_script"`
@@ -160,25 +122,24 @@ func (w *watcher) loadCheckouts() {
 	if !filepath.IsAbs(helper) {
 		helper = filepath.Join(config.RufinRepoPath, helper)
 	}
-	out, err := exec.Command("git", "-C", config.RufinRepoPath, "remote", "get-url", "origin").Output()
-	if err != nil {
-		return
+	if slug := repoSlug(config.RufinRepoPath); slug != "" {
+		d.checkouts[slug] = config.RufinRepoPath
+		d.helper[slug] = helper
 	}
-	match := regexp.MustCompile(`github\.com[:/]([^/]+/[^/]+?)(\.git)?$`).FindStringSubmatch(strings.TrimSpace(string(out)))
-	if match == nil {
-		return
-	}
-	w.checkouts[match[1]] = config.RufinRepoPath
-	w.helper[match[1]] = helper
 }
 
-func (w *watcher) pass(ctx context.Context) error {
+func (d *daemon) watchPRs(ctx context.Context) error {
 	var result searchResult
-	if err := w.graphql(ctx, searchQuery, nil, &result); err != nil {
+	if err := d.graphql(ctx, searchQuery, nil, &result); err != nil {
 		return err
 	}
+	d.mu.Lock()
+	previous := append(append([]PR{}, d.state.PRs...), d.state.Leaving...)
+	d.mu.Unlock()
+
 	open := map[string]bool{}
 	prs := []PR{}
+	var notices [][2]string
 	for _, node := range result.Search.Nodes {
 		if node.Number == 0 {
 			continue
@@ -216,7 +177,7 @@ func (w *watcher) pass(ctx context.Context) error {
 			pr.Status = "passing"
 		}
 		if pr.Status == "behind" && node.AutoMergeRequest != nil && !node.IsDraft {
-			if err := w.updateBranch(ctx, pr, node.HeadRefOid); err != nil {
+			if err := d.updateBranch(ctx, pr, node.HeadRefOid); err != nil {
 				log.Printf("%s: update branch: %v", pr.key(), err)
 			} else {
 				pr.Status = "updating"
@@ -225,64 +186,80 @@ func (w *watcher) pass(ctx context.Context) error {
 		}
 		if pr.Status == "failing" || pr.Status == "conflict" {
 			key := fmt.Sprintf("%s:%s:%s", pr.key(), node.HeadRefOid, pr.Status)
-			if !w.notified[key] {
-				w.notified[key] = true
-				detail := strings.Join(pr.Failed, ", ")
-				if pr.Status == "conflict" {
-					detail = "Merge conflict with its base branch"
-				}
-				notify(fmt.Sprintf("#%d %s: %s", pr.Number, pr.Status, pr.Title), detail)
+			detail := strings.Join(pr.Failed, ", ")
+			if pr.Status == "conflict" {
+				detail = "Merge conflict with its base branch"
+			}
+			d.mu.Lock()
+			fresh := !d.notified[key]
+			d.notified[key] = true
+			d.mu.Unlock()
+			if fresh {
+				notices = append(notices, [2]string{fmt.Sprintf("#%d %s: %s", pr.Number, pr.Status, pr.Title), detail})
 			}
 		}
 		prs = append(prs, pr)
 	}
-
-	pending := map[string]bool{}
-	for _, repo := range w.state.SyncPending {
-		pending[repo] = true
+	for _, notice := range notices {
+		notify(notice[0], notice[1])
 	}
+
 	leaving := []PR{}
-	for _, previous := range append(w.state.PRs, w.state.Leaving...) {
-		if open[previous.key()] || w.checkouts[previous.Repo] == "" {
+	merged := map[string]bool{}
+	for _, gone := range previous {
+		if open[gone.key()] || d.checkouts[gone.Repo] == "" {
 			continue
 		}
-		owner, name, _ := strings.Cut(previous.Repo, "/")
-		var closed struct {
-			Repository struct{ PullRequest struct{ State string } }
-		}
-		vars := map[string]any{"owner": owner, "name": name, "number": previous.Number}
-		err := w.graphql(ctx, stateQuery, vars, &closed)
-		switch state := closed.Repository.PullRequest.State; {
+		state, err := d.prState(ctx, gone.Repo, gone.Number)
+		switch {
 		case err != nil:
-			log.Printf("%s: read state: %v", previous.key(), err)
-			leaving = append(leaving, previous)
+			log.Printf("%s: read state: %v", gone.key(), err)
+			leaving = append(leaving, gone)
 		case state == "MERGED":
-			pending[previous.Repo] = true
+			merged[gone.Repo] = true
 		case state != "CLOSED":
-			leaving = append(leaving, previous)
-		}
-	}
-	stillPending := []string{}
-	for repo := range pending {
-		if !w.sync(repo) {
-			stillPending = append(stillPending, repo)
+			leaving = append(leaving, gone)
 		}
 	}
 
-	for key := range w.notified {
+	d.mu.Lock()
+	for _, repo := range d.state.SyncPending {
+		merged[repo] = true
+	}
+	for key := range d.notified {
 		if prKey, _, _ := strings.Cut(key, ":"); !open[prKey] {
-			delete(w.notified, key)
+			delete(d.notified, key)
 		}
 	}
-	w.state = State{Updated: time.Now().Unix(), PRs: prs, SyncPending: stillPending, Leaving: leaving, Notified: sortedKeys(w.notified)}
-	return w.save()
+	d.state.PRs, d.state.Leaving = prs, leaving
+	d.state.Notified = sortedKeys(d.notified)
+	d.mu.Unlock()
+
+	pending := []string{}
+	for repo := range merged {
+		if !d.sync(repo) {
+			pending = append(pending, repo)
+		}
+	}
+	d.mu.Lock()
+	d.state.SyncPending = pending
+	d.mu.Unlock()
+	return nil
 }
 
-func (p PR) key() string { return fmt.Sprintf("%s#%d", p.Repo, p.Number) }
+func (d *daemon) prState(ctx context.Context, repo string, number int) (string, error) {
+	owner, name, _ := strings.Cut(repo, "/")
+	var result struct {
+		Repository struct{ PullRequest struct{ State string } }
+	}
+	vars := map[string]any{"owner": owner, "name": name, "number": number}
+	err := d.graphql(ctx, stateQuery, vars, &result)
+	return result.Repository.PullRequest.State, err
+}
 
 // sync brings the checkout up to its remote base once the helper is free.
-func (w *watcher) sync(repo string) bool {
-	checkout := w.checkouts[repo]
+func (d *daemon) sync(repo string) bool {
+	checkout := d.checkouts[repo]
 	lock, err := os.OpenFile(filepath.Join(checkout, ".local", "publish-checkout.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return false
@@ -294,11 +271,13 @@ func (w *watcher) sync(repo string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, w.helper[repo], "--sync")
+	cmd := exec.CommandContext(ctx, d.helper[repo], "--sync")
 	cmd.Dir = checkout
 	out, err := cmd.CombinedOutput()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err == nil {
-		delete(w.syncError, repo)
+		delete(d.syncError, repo)
 		log.Printf("%s: synced %s", repo, checkout)
 		return true
 	}
@@ -306,23 +285,23 @@ func (w *watcher) sync(repo string) bool {
 	if len(message) > 300 {
 		message = message[len(message)-300:]
 	}
-	if w.syncError[repo] != message {
-		w.syncError[repo] = message
-		notify(repo+" not synced", message)
+	if d.syncError[repo] != message {
+		d.syncError[repo] = message
+		go notify(repo+" not synced", message)
 	}
 	return false
 }
 
-func (w *watcher) updateBranch(ctx context.Context, pr PR, head string) error {
+func (d *daemon) updateBranch(ctx context.Context, pr PR, head string) error {
 	body, _ := json.Marshal(map[string]string{"expected_head_sha": head})
 	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d/update-branch", pr.Repo, pr.Number)
-	_, err := w.request(ctx, http.MethodPut, url, body)
+	_, err := d.request(ctx, http.MethodPut, url, body)
 	return err
 }
 
-func (w *watcher) graphql(ctx context.Context, query string, variables map[string]any, out any) error {
+func (d *daemon) graphql(ctx context.Context, query string, variables map[string]any, out any) error {
 	body, _ := json.Marshal(map[string]any{"query": query, "variables": variables})
-	data, err := w.request(ctx, http.MethodPost, "https://api.github.com/graphql", body)
+	data, err := d.request(ctx, http.MethodPost, "https://api.github.com/graphql", body)
 	if err != nil {
 		return err
 	}
@@ -340,29 +319,29 @@ func (w *watcher) graphql(ctx context.Context, query string, variables map[strin
 }
 
 // request sends an authenticated GitHub API request, fetching the gh token again after a 401.
-func (w *watcher) request(ctx context.Context, method, url string, body []byte) ([]byte, error) {
+func (d *daemon) request(ctx context.Context, method, url string, body []byte) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
-		if w.token == "" {
+		if d.token == "" {
 			out, err := exec.Command("gh", "auth", "token").Output()
 			if err != nil {
 				return nil, fmt.Errorf("gh auth token: %w", err)
 			}
-			w.token = strings.TrimSpace(string(out))
+			d.token = strings.TrimSpace(string(out))
 		}
 		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+w.token)
+		req.Header.Set("Authorization", "Bearer "+d.token)
 		req.Header.Set("Accept", "application/vnd.github.merge-info-preview+json")
-		resp, err := w.client.Do(req)
+		resp, err := d.client.Do(req)
 		if err != nil {
 			return nil, err
 		}
 		data, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
-			w.token = ""
+			d.token = ""
 			continue
 		}
 		if err != nil {
@@ -373,21 +352,6 @@ func (w *watcher) request(ctx context.Context, method, url string, body []byte) 
 		}
 		return data, nil
 	}
-}
-
-func (w *watcher) save() error {
-	data, err := json.MarshalIndent(w.state, "", " ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(w.statePath), 0o700); err != nil {
-		return err
-	}
-	tmp := w.statePath + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, w.statePath)
 }
 
 func notify(summary, body string) {

@@ -1,0 +1,16 @@
+[Unit]
+Description=git-gui commands and pull request watcher
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/git-gui-daemon
+Restart=on-failure
+# Restarts replace the daemon only; commands keep running under their own supervisors.
+KillMode=process
+RestartSec=30
+Nice=10
+CPUWeight=10
+IOWeight=10
+
+[Install]
+WantedBy=default.target

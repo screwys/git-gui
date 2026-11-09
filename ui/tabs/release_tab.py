@@ -2,9 +2,8 @@ import os
 import re
 import json
 import subprocess
-import threading
 from typing import Optional
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -23,10 +22,11 @@ from PyQt6.QtWidgets import (
 from core.config import AppConfig
 from core.git_manager import GitManager
 from core.runner import ProcessRunner
-from core.notifications import send_desktop_notification
+from core import daemon
 from ui.components.activity_tabs import ActivityTabs
 from ui.components.terminal_view import TerminalWidget
 from ui.components.release_jobs_view import ReleaseJobsWidget
+from ui.components.schedule_follower import ScheduleFollower
 from ui.dialogs.confirm_preview_dialog import ConfirmPreviewDialog
 
 
@@ -84,33 +84,6 @@ class ActivePrsFetchWorker(QThread):
             self.prs_fetched.emit([])
 
 
-class PrPollWorker(QThread):
-    pr_status_fetched = pyqtSignal(dict)
-
-    def __init__(self, repo_path: str, pr_number: str, parent=None):
-        super().__init__(parent)
-        self.repo_path = repo_path
-        self.pr_number = pr_number
-
-    def run(self):
-        try:
-            cmd = ["gh", "pr", "view", str(self.pr_number), "--json", "number,title,state"]
-            repo = get_repo_owner_name(self.repo_path)
-            if repo:
-                cmd.extend(["--repo", repo])
-            res = subprocess.run(
-                cmd,
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                self.pr_status_fetched.emit(json.loads(res.stdout))
-        except Exception:
-            pass
-
-
 class ReleaseTab(QWidget):
     def __init__(self, git_mgr: GitManager, config: AppConfig, parent=None):
         super().__init__(parent)
@@ -118,19 +91,13 @@ class ReleaseTab(QWidget):
         self.config = config
         self.runner = ProcessRunner(self)
         self.current_mode = "new"
-        self._is_waiting_for_pr = False
-        self._waiting_pr_num = ""
-        self._waiting_script_path = ""
-        self._waiting_args = []
-        self._waiting_version = ""
-        self._pr_poll_timer = QTimer(self)
-        self._pr_poll_timer.setInterval(12000)
-        self._pr_poll_timer.timeout.connect(self._poll_waiting_pr)
-        self._pr_poll_worker = None
+        self.schedule = ScheduleFollower(self.git_mgr.repo_path, "release", self)
+        self.schedule.changed.connect(self._on_schedule_changed)
         self._active_prs_worker = None
         self._init_ui()
         self._wire_signals()
         self.terminal.bind_runner(self.runner, self.git_mgr.repo_path, "release", self.config.resolve_release_script(self.git_mgr.repo_path))
+        self.schedule.restore()
         self.refresh()
 
     def _init_ui(self):
@@ -486,8 +453,8 @@ class ReleaseTab(QWidget):
         return None
 
     def _update_button_label(self):
-        if self._is_waiting_for_pr:
-            self.btn_release.setText(f"Cancel Waiting (PR #{self._waiting_pr_num})")
+        if self.schedule.active:
+            self.btn_release.setText(f"Cancel Waiting (PR #{self.schedule.schedule['number']})")
             self.btn_release.setEnabled(True)
             return
 
@@ -591,7 +558,7 @@ class ReleaseTab(QWidget):
             self.version_input.setText(f"v{major}.{minor}.{patch}")
 
     def run_release(self):
-        if self._is_waiting_for_pr:
+        if self.schedule.active:
             self._cancel_pr_wait()
             return
 
@@ -699,27 +666,15 @@ class ReleaseTab(QWidget):
             self._cancel_ci_runs(version)
 
         if pr_num:
-            if self.runner.is_running:
-                self.terminal.append_output("[*] Stopping running script to wait for PR...\n")
-                self.runner.stop()
-            self._start_waiting_for_pr(pr_num, script_path, args, version)
+            self._start_waiting_for_pr(pr_num, script_path, args, version, mode)
         else:
             self._stop_and_run(lambda: self._start_release_process(script_path, args, version))
 
     def _cancel_ci_runs(self, version: str):
-        def _cancel():
-            try:
-                res = subprocess.run(
-                    ["gh", "run", "list", "--limit", "50", "--json", "databaseId,displayTitle,status",
-                     "--jq", f'.[] | select((.displayTitle == "Stage {version}" or .displayTitle == "{version}") and .status != "completed") | .databaseId'],
-                    cwd=self.git_mgr.repo_path, capture_output=True, text=True, timeout=10
-                )
-                if res.returncode == 0:
-                    for run_id in res.stdout.split():
-                        subprocess.run(["gh", "run", "cancel", run_id], cwd=self.git_mgr.repo_path, timeout=5)
-            except Exception:
-                pass
-        threading.Thread(target=_cancel, daemon=True).start()
+        try:
+            daemon.request("cancel_runs", cwd=self.git_mgr.repo_path, titles=[f"Stage {version}", version])
+        except daemon.DaemonError as error:
+            self.terminal.append_output(f"[!] {error}\n")
 
     def _stop_and_run(self, callback):
         if not self.runner.is_running:
@@ -744,82 +699,44 @@ class ReleaseTab(QWidget):
         self.runner.start(script_path, args, cwd=self.git_mgr.repo_path)
         self.jobs_view.track_version(version)
 
-    def _start_waiting_for_pr(self, pr_num: str, script_path: str, args: list, version: str):
-        self._is_waiting_for_pr = True
-        self._waiting_pr_num = pr_num
-        self._waiting_script_path = script_path
-        self._waiting_args = args
-        self._waiting_version = version
-
-        self.btn_release.setEnabled(True)
-        self._update_button_label()
-        self.wait_pr_status_lbl.setText(f"Waiting for #{pr_num}...")
-        self.wait_pr_status_lbl.setStyleSheet("color: #e3b341; font-size: 11px;")
-
+    def _start_waiting_for_pr(self, pr_num: str, script_path: str, args: list, version: str, mode: str):
+        job = daemon.job_spec(self.git_mgr.repo_path, "release", [script_path, *args])
         self.terminal.clear_terminal()
-        self.terminal.set_status(f"Waiting for PR #{pr_num}", "running")
-        self.terminal.append_output(f"[*] Release scheduled for {version}.\n")
-        self.terminal.append_output(f"[*] Polling GitHub PR #{pr_num}... Release will start automatically once merged.\n")
         self.output_tabs.show_activity("local", self.terminal, force=True)
-
-        self._pr_poll_timer.start(10000)
-        self._poll_waiting_pr()
-
-    def _poll_waiting_pr(self):
-        if not self._is_waiting_for_pr:
+        try:
+            self.schedule.submit(int(pr_num), job,
+                                 cancel_runs=[f"Stage {version}", version] if mode == "replace" else None)
+        except daemon.DaemonError as error:
+            self.terminal.append_output(f"[!] {error}\n")
+            self.terminal.set_status("Not scheduled", "failed")
             return
-        if self._pr_poll_worker and self._pr_poll_worker.isRunning():
-            return
-        self._pr_poll_worker = PrPollWorker(self.git_mgr.repo_path, self._waiting_pr_num, self)
-        self._pr_poll_worker.pr_status_fetched.connect(self._on_pr_status_fetched)
-        self._pr_poll_worker.start()
+        self.terminal.append_output(f"[*] Release {version} scheduled: git-gui-daemon starts it once PR #{pr_num} merges.\n")
 
-    def _on_pr_status_fetched(self, data: dict):
-        if not self._is_waiting_for_pr:
-            return
-        state = (data.get("state") or "").upper()
-        pr_num = self._waiting_pr_num
-        version = self._waiting_version
-
-        if state == "MERGED":
-            self._pr_poll_timer.stop()
-            self._is_waiting_for_pr = False
-            self.wait_pr_status_lbl.setText(f"PR #{pr_num} merged!")
-            self.wait_pr_status_lbl.setStyleSheet("color: #3fb950; font-size: 11px;")
-            self.terminal.append_output(f"\n[+] PR #{pr_num} has merged! Starting release {version}...\n\n")
-            send_desktop_notification("PR Merged", f"PR #{pr_num} merged. Starting release {version}...")
-            self._update_button_label()
-            if self.current_mode == "replace":
-                self._cancel_ci_runs(version)
-            self._stop_and_run(lambda: self._start_release_process(
-                self._waiting_script_path, self._waiting_args, self._waiting_version
-            ))
-        elif state == "CLOSED":
-            self._pr_poll_timer.stop()
-            self._is_waiting_for_pr = False
-            self.wait_pr_status_lbl.setText(f"PR #{pr_num} closed without merge")
-            self.wait_pr_status_lbl.setStyleSheet("color: #f85149; font-size: 11px;")
-            self.terminal.append_output(f"\n[!] PR #{pr_num} was closed without being merged. Release aborted.\n")
-            self.terminal.set_status(f"PR #{pr_num} Closed", "failed")
-            self._update_button_label()
-            send_desktop_notification("Release Aborted", f"PR #{pr_num} was closed without merging.")
-        else:
-            self.wait_pr_status_lbl.setText(f"PR #{pr_num} is OPEN (waiting)")
-            self.wait_pr_status_lbl.setStyleSheet("color: #e3b341; font-size: 11px;")
-            self.terminal.append_output(f"[*] PR #{pr_num} is {state}. Polling again in 10s...\n")
+    def _on_schedule_changed(self, schedule):
+        status, message = schedule["status"], schedule["message"]
+        colour = {"started": "#3fb950", "failed": "#f85149", "closed": "#f85149", "cancelled": "#8b949e"}
+        self.wait_pr_status_lbl.setText(message)
+        self.wait_pr_status_lbl.setStyleSheet(f"color: {colour.get(status, '#e3b341')}; font-size: 11px;")
+        self.terminal.append_output(f"[*] {message}\n")
+        if status == "started" and not self.runner.is_running:
+            self.jobs_view.reset_state()
+            self.runner.attach(self.git_mgr.repo_path, "release", self.runner.program)
+        if status in ("failed", "closed"):
+            self.terminal.set_status(message, "failed")
+        elif status == "cancelled":
+            self.terminal.set_status("Cancelled", "normal")
+        elif status != "started":
+            self.terminal.set_status(message, "running")
+        self._update_button_label()
 
     def _cancel_pr_wait(self):
-        self._pr_poll_timer.stop()
-        self._is_waiting_for_pr = False
-        self.wait_pr_status_lbl.setText("Wait cancelled")
-        self.wait_pr_status_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
-        if self._waiting_pr_num:
-            self.terminal.append_output(f"\n[!] Cancelled waiting for PR #{self._waiting_pr_num}.\n")
-        self.terminal.set_status("Cancelled", "normal")
-        self._update_button_label()
+        try:
+            self.schedule.cancel()
+        except daemon.DaemonError as error:
+            self.terminal.append_output(f"[!] {error}\n")
 
     def _on_process_finished(self, exit_code: int):
-        if self._is_waiting_for_pr:
+        if self.schedule.active:
             self._update_button_label()
             return
         if exit_code != 0 or self.runner.record.get("stopped"):
