@@ -56,9 +56,15 @@ func newWindow(app *adw.Application) *Window {
 	header.SetTitleWidget(w.title)
 	add := func(name, icon, label, tooltip string, start bool, run func()) {
 		b := gtk.NewButton()
-		if icon != "" {
+		switch {
+		case icon != "" && label != "":
+			content := adw.NewButtonContent()
+			content.SetIconName(icon)
+			content.SetLabel(label)
+			b.SetChild(content)
+		case icon != "":
 			b.SetIconName(icon)
-		} else {
+		default:
 			b.SetLabel(label)
 		}
 		b.SetTooltipText(tooltip)
@@ -76,14 +82,14 @@ func newWindow(app *adw.Application) *Window {
 	add("sync", "", "Sync", "publish-pr.sh --sync: bring main up to origin/main, merging local edits", false,
 		func() { w.runTool(appConfig.PublishScript(), "--sync") })
 	add("refresh", "view-refresh-symbolic", "", "Reload changes, diffs, and branches", true, func() { w.refreshActive() })
-	add("android", "phone-symbolic", "", "", true, func() {
+	add("android", "phone-symbolic", "Android", "", true, func() {
 		if w.active().kind == "igloo" {
 			w.runTool("just", "build-android")
 		} else {
 			w.runTool("bash", "-c", "just build apk-dev && just install android")
 		}
 	})
-	add("restart", "system-reboot-symbolic", "", "Restart Server (just restart)", true, func() { w.runTool("just", "restart") })
+	add("restart", "system-reboot-symbolic", "Restart", "Restart Server (just restart)", true, func() { w.runTool("just", "restart") })
 
 	w.notebook = gtk.NewNotebook()
 	w.notebook.SetScrollable(true)

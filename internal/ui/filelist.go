@@ -165,7 +165,7 @@ func (f *FileList) SetFiles(files []git.File, selectable []string) {
 func (f *FileList) row(file git.File) gtk.Widgetter {
 	box := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	box.SetMarginStart(4)
-	box.SetMarginEnd(4)
+	box.SetMarginEnd(14) // clear of the overlay scrollbar
 	check := gtk.NewCheckButton()
 	if f.selectable[file.Path] {
 		path := file.Path
