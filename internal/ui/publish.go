@@ -41,6 +41,7 @@ type publishForm struct {
 	AutoMerge    bool   `json:"auto_merge"`
 	Wait         bool   `json:"wait"`
 	Full         bool   `json:"full"`
+	Instant      bool   `json:"instant"`
 	I18n         string `json:"i18n"`
 }
 
@@ -75,6 +76,7 @@ type PublishTab struct {
 	body                       *gtk.TextView
 	prLabel, branchError       *gtk.Label
 	autoMerge, waitCI, full    *gtk.CheckButton
+	instant                    *gtk.CheckButton
 	catalogs                   *gtk.DropDown
 	banner                     *gtk.Box
 	bannerText                 *gtk.Label
@@ -166,7 +168,18 @@ func NewPublishTab(repo string) *PublishTab {
 	t.catalogs = gtk.NewDropDownFromStrings(catalogLabels)
 	options.Append(t.autoMerge)
 	options.Append(t.waitCI)
+	t.instant = gtk.NewCheckButtonWithLabel("No checks (--instant)")
+	t.instant.SetTooltipText("Commit and publish without formatting, generation or local checks")
+	// The helper takes one check mode.
+	for _, pair := range [][2]*gtk.CheckButton{{t.full, t.instant}, {t.instant, t.full}} {
+		pair[0].ConnectToggled(func() {
+			if pair[0].Active() {
+				pair[1].SetActive(false)
+			}
+		})
+	}
 	options.Append(t.full)
+	options.Append(t.instant)
 	options.Append(t.picker.Root)
 	options.Append(row("Catalogs:", t.catalogs))
 	left.Append(options)
@@ -228,7 +241,7 @@ func NewPublishTab(repo string) *PublishTab {
 		placeholder.SetVisible(t.body.Buffer().CharCount() == 0)
 		t.updateButton()
 	})
-	for _, check := range []*gtk.CheckButton{t.autoMerge, t.waitCI, t.full} {
+	for _, check := range []*gtk.CheckButton{t.autoMerge, t.waitCI, t.full, t.instant} {
 		check.ConnectToggled(t.updateButton)
 	}
 	t.catalogs.NotifyProperty("selected", t.updateButton)
@@ -545,7 +558,7 @@ func (t *PublishTab) form() publishForm {
 		Branch: strings.TrimSpace(t.branch.Text()), Base: strings.TrimSpace(t.base.Text()),
 		Title: strings.TrimSpace(t.title.Text()), Body: t.bodyText(), BodyModified: t.body.Buffer().Modified(),
 		Phase: strings.TrimSpace(t.phase.Text()), AutoMerge: t.autoMerge.Active(), Wait: t.waitCI.Active(),
-		Full: t.full.Active(), I18n: catalogIDs[min(int(t.catalogs.Selected()), len(catalogIDs)-1)],
+		Full: t.full.Active(), Instant: t.instant.Active(), I18n: catalogIDs[min(int(t.catalogs.Selected()), len(catalogIDs)-1)],
 	}
 }
 
@@ -565,6 +578,7 @@ func (t *PublishTab) restoreForm() {
 	t.autoMerge.SetActive(p.AutoMerge)
 	t.waitCI.SetActive(p.Wait)
 	t.full.SetActive(p.Full)
+	t.instant.SetActive(p.Instant)
 	if i := slices.Index(catalogIDs, p.I18n); i >= 0 {
 		t.catalogs.SetSelected(uint(i))
 	}
@@ -702,6 +716,9 @@ func (t *PublishTab) publish() {
 	if f.Full {
 		args = append(args, "--full")
 	}
+	if f.Instant {
+		args = append(args, "--instant")
+	}
 	if f.Phase != "" {
 		args = append(args, "--phase", f.Phase)
 	}
@@ -745,11 +762,17 @@ func (t *PublishTab) publish() {
 	if number > 0 {
 		details = append(details, detail{"Wait for PR", fmt.Sprintf("#%d (auto-publish when merged)", number)})
 	}
+	localChecks := "Focused"
+	if f.Full {
+		localChecks = "Full"
+	} else if f.Instant {
+		localChecks = "None"
+	}
 	squash := "Disabled"
 	if f.AutoMerge {
 		squash = "Enabled"
 	}
-	details = append(details, detail{"Squash Merge", squash}, detail{"Wait CI Checks", yesNo(f.Wait)}, detail{"Full Checks", yesNo(f.Full)})
+	details = append(details, detail{"Squash Merge", squash}, detail{"Wait CI Checks", yesNo(f.Wait)}, detail{"Local Checks", localChecks})
 	if f.I18n != "none" {
 		details = append(details, detail{"I18n Catalogs", catalogLabels[slices.Index(catalogIDs, f.I18n)]})
 	}
