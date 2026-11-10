@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 )
 
@@ -17,15 +18,16 @@ var ansiColours = map[int]string{
 // console is a read-only text view that renders command output: SGR bold and foreground
 // colours, other escape sequences removed, and carriage returns redrawing the current line.
 type console struct {
-	view       *gtk.TextView
-	buffer     *gtk.TextBuffer
-	scroll     *gtk.ScrolledWindow
-	tags       map[string]*gtk.TextTag
-	bold       bool
-	fg         int
-	escape     string // an escape sequence split across chunks
-	pendingCR  bool
-	AutoScroll bool
+	view          *gtk.TextView
+	buffer        *gtk.TextBuffer
+	scroll        *gtk.ScrolledWindow
+	tags          map[string]*gtk.TextTag
+	bold          bool
+	fg            int
+	escape        string // an escape sequence split across chunks
+	pendingCR     bool
+	followPending bool
+	AutoScroll    bool
 }
 
 func newConsole() *console {
@@ -41,6 +43,10 @@ func newConsole() *console {
 	c.scroll = gtk.NewScrolledWindow()
 	c.scroll.SetChild(c.view)
 	c.scroll.SetVExpand(true)
+	// Wrapped line heights keep changing during GTK's incremental layout.
+	// Follow range changes and position corrections after resizing or showing a tab.
+	c.scroll.VAdjustment().ConnectChanged(c.follow)
+	c.scroll.VAdjustment().ConnectValueChanged(c.follow)
 	table := c.buffer.TagTable()
 	bold := gtk.NewTextTag("bold")
 	bold.SetObjectProperty("weight", 700)
@@ -196,13 +202,19 @@ func (c *console) trim() {
 }
 
 func (c *console) follow() {
-	if !c.AutoScroll {
+	if !c.AutoScroll || c.followPending {
 		return
 	}
-	end := c.buffer.EndIter()
-	mark := c.buffer.CreateMark("", end, false)
-	c.view.ScrollToMark(mark, 0, false, 0, 1)
-	c.buffer.DeleteMark(mark)
+	c.followPending = true
+	// Wait until GTK finishes configuring the adjustment before setting its value.
+	glib.IdleAdd(func() bool {
+		c.followPending = false
+		if c.AutoScroll {
+			adj := c.scroll.VAdjustment()
+			adj.SetValue(adj.Upper() - adj.PageSize())
+		}
+		return false
+	})
 }
 
 // Clear empties the console.
