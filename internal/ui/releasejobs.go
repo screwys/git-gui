@@ -449,7 +449,7 @@ func (v *ReleaseJobs) readProgress(line string) bool {
 		}
 	}
 	if strings.Contains(line, draftsPassed) {
-		for _, name := range []string{"AUR", "Flatpak", "Nix", "macOS", "RPM", "Windows"} {
+		for _, name := range daemon.RufinStaged {
 			v.setStatus(name, "passed")
 		}
 		changed = true

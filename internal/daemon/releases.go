@@ -50,9 +50,11 @@ type ReleaseRow struct {
 }
 
 // RufinRows and IglooRows are the workflows those projects' releases run, in table order.
+// RufinStaged are the ones Rufin's release helper builds into the draft before publishing it.
 var (
-	RufinRows = []string{"AUR", "Flatpak", "Nix", "macOS", "RPM", "Windows", "Homebrew"}
-	IglooRows = []string{"Release Gate", "Container Release", "Android Release", "Windows Release"}
+	RufinStaged = []string{"Android", "AUR", "Flatpak", "Nix", "macOS", "RPM", "Windows"}
+	RufinRows   = append(slices.Clone(RufinStaged), "Homebrew")
+	IglooRows   = []string{"Release Gate", "Container Release", "Android Release", "Windows Release"}
 )
 
 // iglooWorkflows names Igloo's rows after its release workflows.
