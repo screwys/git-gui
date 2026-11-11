@@ -47,10 +47,7 @@ const AllowBodyEnv = "GIT_GUI_ALLOW_PR_BODY"
 
 const worktreeBranch = "git-gui-publish"
 
-var (
-	conventional = regexp.MustCompile(`^([a-z]+)(\(([A-Za-z0-9_-]+)\))?:\s*(.+)$`)
-	nonSlug      = regexp.MustCompile(`[^a-z0-9]+`)
-)
+var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
 // Checkout is the shared checkout's state: its root, Git directory and lock.
 type Checkout struct {
@@ -88,27 +85,21 @@ func (c Checkout) Lock(wait bool) (func(), bool) {
 // Worktree is the publish worktree's path.
 func (c Checkout) Worktree() string { return filepath.Join(c.Common, "git-gui", "publish") }
 
-// BranchFor names the topic branch for a title, such as fix/player-crash or ui/home for
-// "ui(home): ...".
+// BranchFor names the topic branch from the title before its first colon.
+// For example, "ui/library: ..." becomes "ui-library".
 func BranchFor(title string) string {
-	kind, scope, desc := "chore", "", title
-	if m := conventional.FindStringSubmatch(title); m != nil {
-		if m[3] != "" {
-			return m[1] + "/" + m[3]
-		}
-		kind, scope, desc = m[1], m[3], m[4]
-	}
-	slug := strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(desc), "-"), "-")
+	name, _, scoped := strings.Cut(title, ":")
+	slug := strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(name), "-"), "-")
 	if len(slug) > 48 {
 		slug = strings.TrimRight(slug[:48], "-")
 	}
 	if slug == "" {
 		slug = "update"
 	}
-	if scope != "" {
-		return kind + "/" + scope + "-" + slug
+	if !scoped {
+		return "chore/" + slug
 	}
-	return kind + "/" + slug
+	return slug
 }
 
 // ResolveBranch is the branch a publish targets: the given one, the current branch, or one named
