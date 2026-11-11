@@ -23,16 +23,16 @@ var (
 )
 
 var rufinModes = []struct{ name, label, hint, notes string }{
-	{"new", "New Release", "Syncs default branch, creates release prep PR, and publishes tag.",
-		"Write release description and changelog:"},
-	{"replace", "Replace", "Replaces existing tag. You can reuse or modify the tag's release notes below.",
-		"Release notes (editable; leave blank to reuse unchanged):"},
-	{"resume", "Resume", "Resumes release asset staging and publication after release prep PR has merged.",
-		"Release notes already committed; not needed for resume."},
+	{"new", "New Release", "Publishes the release prep PR, tags its merge commit and follows the release workflow, then Homebrew and Flathub.",
+		"Write the release summary:"},
+	{"replace", "Replace", "Moves an unpublished release's tag to the newest main and starts its workflow over.",
+		"Release summary (editable; leave blank to reuse the tag's):"},
+	{"resume", "Resume", "Continues a release where it stopped. Finished steps are skipped.",
+		"Release summary, needed only when the tag is not pushed yet:"},
 }
 
-// RufinReleaseTab runs Rufin's release helper: a new release, a replacement of a tag, or the
-// rest of a release after its preparation PR merged, now or once a PR merges.
+// RufinReleaseTab runs git-gui rufin-release: a new release, a replacement of a tag, or the rest
+// of a release, now or once a PR merges.
 type RufinReleaseTab struct {
 	Root     *gtk.Paned
 	repo     string
@@ -48,10 +48,7 @@ type RufinReleaseTab struct {
 	fetchNotes  *gtk.Button
 	notesStatus *gtk.Label
 	notes       *gtk.TextView
-	push        *gtk.CheckButton
 	dryRun      *gtk.CheckButton
-	skipFlathub *gtk.CheckButton
-	skipRelease *gtk.CheckButton
 	button      *gtk.Button
 
 	refilled string // the job whose command last refilled the form
@@ -60,7 +57,7 @@ type RufinReleaseTab struct {
 
 // NewRufinReleaseTab builds the tab for the Rufin checkout at repo.
 func NewRufinReleaseTab(repo string) *RufinReleaseTab {
-	t := &RufinReleaseTab{repo: repo, out: newReleaseOutput(repo, "rufin", appConfig.ReleaseHelper()),
+	t := &RufinReleaseTab{repo: repo, out: newReleaseOutput(repo, "rufin", "rufin-release"),
 		follower: NewScheduleFollower(repo, "release"), picker: NewPRPicker(repo, "Release after PR merges:")}
 	left := gtk.NewBox(gtk.OrientationVertical, 12)
 	margins(left, 8)
@@ -131,14 +128,8 @@ func NewRufinReleaseTab(repo string) *RufinReleaseTab {
 	left.Append(notes)
 
 	options := group("Execution Options")
-	t.push = gtk.NewCheckButtonWithLabel("Push tag, open PR, and stage assets (--push)")
-	t.push.SetActive(true)
-	t.dryRun = gtk.NewCheckButtonWithLabel("Dry run tag generation (--dry-run)")
-	t.skipFlathub = gtk.NewCheckButtonWithLabel("Skip Flathub PR (--skip-flathub)")
-	t.skipRelease = gtk.NewCheckButtonWithLabel("Skip GitHub Release publication (--skip-github-release)")
-	for _, check := range []*gtk.CheckButton{t.push, t.dryRun, t.skipFlathub, t.skipRelease} {
-		options.Append(check)
-	}
+	t.dryRun = gtk.NewCheckButtonWithLabel("Dry run: print the release notes only (--dry-run)")
+	options.Append(t.dryRun)
 	left.Append(options)
 
 	t.button = gtk.NewButtonWithLabel("Start Release")
@@ -222,10 +213,7 @@ func (t *RufinReleaseTab) setMode(mode string) {
 			t.notesStatus.SetText(m.notes)
 		}
 	}
-	t.notes.SetSensitive(mode != "resume")
 	t.fetchNotes.SetVisible(mode == "replace")
-	t.push.SetSensitive(mode != "resume")
-	t.dryRun.SetSensitive(mode != "resume")
 	if mode == "replace" {
 		t.loadTagNotes()
 	}
@@ -315,9 +303,9 @@ func (t *RufinReleaseTab) run() {
 		}
 		number = n
 	}
-	helper := appConfig.ReleaseHelper()
-	if _, err := os.Stat(helper); err != nil {
-		alert(t.Root, "Script Not Found", "Cannot find release script at:\n"+helper+"\n\nYou can configure the script location in Settings.")
+	self, err := os.Executable()
+	if err != nil {
+		alert(t.Root, "Release", err.Error())
 		return
 	}
 	version := strings.TrimSpace(t.version.Text())
@@ -332,32 +320,17 @@ func (t *RufinReleaseTab) run() {
 		return
 	}
 
-	var args []string
-	switch t.mode {
-	case "resume":
-		args = append(args, "--resume-after-prep")
-	case "replace":
-		args = append(args, "--replace")
-		fallthrough
-	default:
-		if t.push.Active() {
-			args = append(args, "--push")
-		}
-		if t.dryRun.Active() {
-			args = append(args, "--dry-run")
-		}
+	command := []string{self, "rufin-release"}
+	if t.mode != "new" {
+		command = append(command, "--"+t.mode)
 	}
-	if t.skipFlathub.Active() {
-		args = append(args, "--skip-flathub")
+	if t.dryRun.Active() {
+		command = append(command, "--dry-run")
 	}
-	if t.skipRelease.Active() {
-		args = append(args, "--skip-github-release")
+	command = append(command, version)
+	if notes != "" {
+		command = append(command, notes)
 	}
-	args = append(args, version)
-	if t.mode != "resume" && notes != "" {
-		args = append(args, notes)
-	}
-	command := append([]string{helper}, args...)
 
 	if term.Runner.Running() && number == 0 {
 		action := "restart"
@@ -365,7 +338,7 @@ func (t *RufinReleaseTab) run() {
 			action = "replace"
 		}
 		dialog := adw.NewAlertDialog("Release in Progress",
-			"A release script is currently running. Do you want to stop it and "+action+" the release?")
+			"A release is currently running. Do you want to stop it and "+action+" the release?")
 		dialog.AddResponse("no", "No")
 		dialog.AddResponse("yes", "Yes")
 		dialog.SetResponseAppearance("yes", adw.ResponseDestructive)
@@ -389,31 +362,15 @@ func (t *RufinReleaseTab) confirm(command []string, version, notes string, numbe
 	if number != 0 {
 		details = append(details, detail{"Wait for PR", fmt.Sprintf("#%d (auto-start when merged)", number)})
 	}
-	details = append(details, detail{"Push Remote", yesNo(mode == "resume" || t.push.Active())})
-	if t.dryRun.Active() && mode != "resume" {
+	if t.dryRun.Active() {
 		details = append(details, detail{"Dry Run", "Yes"})
 	}
-	if t.skipFlathub.Active() {
-		details = append(details, detail{"Flathub PR", "Skipped"})
-	}
-	if t.skipRelease.Active() {
-		details = append(details, detail{"GitHub Release", "Skipped"})
-	}
-	preview := notes
-	if mode == "resume" {
-		preview = ""
-	}
-	// A replacement cancels the old tag's unfinished runs once, right before its helper starts.
-	var cancelRuns []string
-	if mode == "replace" {
-		cancelRuns = []string{"Stage " + version, version}
-	}
-	confirm(t.Root, "Release "+version, details, "Release Notes Preview:", preview, "Confirm Release", func() {
+	confirm(t.Root, "Release "+version, details, "Release Summary Preview:", notes, "Confirm Release", func() {
 		if number != 0 {
-			t.schedule(number, command, version, cancelRuns)
+			t.schedule(number, command, version)
 			return
 		}
-		start := func() { t.start(command, version, cancelRuns) }
+		start := func() { t.start(command, version) }
 		if t.out.term.Runner.Running() {
 			t.after = start
 			t.out.term.Runner.Stop()
@@ -423,28 +380,21 @@ func (t *RufinReleaseTab) confirm(command []string, version, notes string, numbe
 	})
 }
 
-func (t *RufinReleaseTab) start(command []string, version string, cancelRuns []string) {
+func (t *RufinReleaseTab) start(command []string, version string) {
 	term := t.out.term
 	t.out.jobs.Reset()
 	term.Clear()
 	term.SetLabel("Running " + version)
-	if cancelRuns != nil {
-		term.Info("[*] Cancelling in-progress CI runs for " + version + "...")
-		if _, err := client.Request(daemon.Request{Op: "cancel_runs", Cwd: t.repo, Titles: cancelRuns}); err != nil {
-			term.Info("[!] " + err.Error())
-		}
-	}
 	term.Runner.Start(command, nil)
 	t.out.jobs.Follow(version)
 }
 
-// schedule hands the release to the daemon, which starts it once PR number merges and cancels
-// the replaced tag's runs then.
-func (t *RufinReleaseTab) schedule(number int, command []string, version string, cancelRuns []string) {
+// schedule hands the release to the daemon, which starts it once PR number merges.
+func (t *RufinReleaseTab) schedule(number int, command []string, version string) {
 	term := t.out.term
 	term.Clear()
 	t.out.started()
-	if err := t.follower.Submit(number, client.Job(t.repo, "release", command, nil), nil, cancelRuns); err != nil {
+	if err := t.follower.Submit(number, client.Job(t.repo, "release", command, nil), nil); err != nil {
 		term.Info("[!] " + err.Error())
 		term.SetStatus("Not scheduled", "failed")
 		return
@@ -496,18 +446,15 @@ func (t *RufinReleaseTab) refill(command []string, running bool) {
 		}
 		mode := "new"
 		switch {
-		case slices.Contains(command, "--resume-after-prep"):
+		case slices.Contains(command, "--resume"):
 			mode = "resume"
 		case slices.Contains(command, "--replace"):
 			mode = "replace"
 		}
 		t.version.SetText(arg)
 		t.setMode(mode)
-		t.push.SetActive(slices.Contains(command, "--push") || mode == "resume")
 		t.dryRun.SetActive(slices.Contains(command, "--dry-run"))
-		t.skipFlathub.SetActive(slices.Contains(command, "--skip-flathub"))
-		t.skipRelease.SetActive(slices.Contains(command, "--skip-github-release"))
-		if mode != "resume" && i+1 < len(command) {
+		if i+1 < len(command) {
 			t.notes.Buffer().SetText(command[i+1])
 		}
 		if running {

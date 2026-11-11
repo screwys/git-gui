@@ -153,18 +153,18 @@ type Outside struct {
 	Cwd     string
 }
 
-// FindOutside looks for one of the user's processes running program, such as a publish helper
-// started from a terminal.
-func FindOutside(program string) *Outside {
-	if program == "" {
+// FindOutside looks for one of the user's processes running "git-gui SUBCOMMAND", such as a
+// publish an agent started from a terminal.
+func FindOutside(subcommand string) *Outside {
+	if subcommand == "" {
 		return nil
 	}
-	program, _ = filepath.Abs(program)
+	self, _ := os.Executable()
 	entries, _ := os.ReadDir("/proc")
 	uid := os.Getuid()
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
+		if err != nil || pid == os.Getpid() {
 			continue
 		}
 		dir := filepath.Join("/proc", entry.Name())
@@ -176,23 +176,18 @@ func FindOutside(program string) *Outside {
 			continue
 		}
 		args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+		if len(args) < 2 || args[1] != subcommand {
+			continue
+		}
+		if exe, err := os.Readlink(filepath.Join(dir, "exe")); err != nil || exe != self {
+			continue
+		}
 		cwd, err := os.Readlink(filepath.Join(dir, "cwd"))
 		if err != nil {
 			continue
 		}
-		candidates := args[:1]
-		if base := filepath.Base(args[0]); (base == "bash" || base == "sh") && len(args) > 1 {
-			candidates = args[1:2]
-		}
-		for _, arg := range candidates {
-			if !filepath.IsAbs(arg) {
-				arg = filepath.Join(cwd, arg)
-			}
-			if filepath.Clean(arg) == program {
-				if identity := daemon.ProcessIdentity(pid); identity != "" {
-					return &Outside{daemon.Proc{Pid: pid, Identity: identity}, args, cwd}
-				}
-			}
+		if identity := daemon.ProcessIdentity(pid); identity != "" {
+			return &Outside{daemon.Proc{Pid: pid, Identity: identity}, args, cwd}
 		}
 	}
 	return nil

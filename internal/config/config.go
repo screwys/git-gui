@@ -14,11 +14,10 @@ type Config struct {
 	RufinRepoPath       string              `json:"rufin_repo_path"`
 	IglooRepoPath       string              `json:"igloo_repo_path"`
 	NocblueRepoPath     string              `json:"nocblue_repo_path"`
-	PublishPRScript     string              `json:"publish_pr_script"`
-	ReleaseScript       string              `json:"release_script"`
+	PublishGenerate     string              `json:"publish_generate"` // run in the publish worktree before committing
+	PublishCheck        string              `json:"publish_check"`    // run before pushing, with the base ref as last argument
 	DefaultBaseBranch   string              `json:"default_base_branch"`
 	DefaultAutoMerge    bool                `json:"default_auto_merge"`
-	DefaultWaitCI       bool                `json:"default_wait_ci"`
 	WrapDiff            bool                `json:"wrap_diff"`
 	ProjectPaths        []string            `json:"project_paths"`
 	PackageSources      map[string][]Source `json:"package_sources"`
@@ -47,8 +46,8 @@ func Defaults() Config {
 		RufinRepoPath:       filepath.Join(projects, "Rufin"),
 		IglooRepoPath:       filepath.Join(projects, "Igloo"),
 		NocblueRepoPath:     filepath.Join(projects, "nocblue"),
-		PublishPRScript:     ".local/scripts/publish-pr.sh",
-		ReleaseScript:       ".local/scripts/release-rufin.sh",
+		PublishGenerate:     "just generate",
+		PublishCheck:        "just lint",
 		DefaultBaseBranch:   "main",
 		DefaultAutoMerge:    true,
 		WrapDiff:            true,
@@ -82,19 +81,6 @@ func Load() Config {
 
 // Save writes config.json.
 func (c Config) Save() error { return writeJSON(filepath.Join(dir(), "config.json"), c) }
-
-// PublishScript is the Rufin publish helper's absolute path.
-func (c Config) PublishScript() string { return c.resolve(c.PublishPRScript) }
-
-// ReleaseHelper is the Rufin release helper's absolute path.
-func (c Config) ReleaseHelper() string { return c.resolve(c.ReleaseScript) }
-
-func (c Config) resolve(path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Join(c.RufinRepoPath, path)
-}
 
 // HasPackages reports whether an added project shows the Packages tab.
 func (c Config) HasPackages(repo string) bool {

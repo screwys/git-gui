@@ -14,18 +14,19 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/screwys/git-gui/internal/publish"
 )
 
 const checkedInputs = "Checked PR inputs: "
 
 // Schedule runs a command after a pull request merges.
 type Schedule struct {
-	ID         string        `json:"id"`
-	Repo       string        `json:"repo"`
-	Number     int           `json:"number"`
-	Job        JobSpec       `json:"job"`
-	Publish    *PublishCheck `json:"publish,omitempty"`     // run the full checks while waiting
-	CancelRuns []string      `json:"cancel_runs,omitempty"` // cancel unfinished workflow runs with these titles first
+	ID      string        `json:"id"`
+	Repo    string        `json:"repo"`
+	Number  int           `json:"number"`
+	Job     JobSpec       `json:"job"`
+	Publish *PublishCheck `json:"publish,omitempty"` // run the full checks while waiting
 	// Status is waiting, checking, checked, started, failed, closed or cancelled.
 	Status  string   `json:"status"`
 	Message string   `json:"message"`
@@ -34,9 +35,8 @@ type Schedule struct {
 	Updated int64    `json:"updated"`
 }
 
-// PublishCheck describes a Rufin publish whose full checks run before the PR it waits for merges.
+// PublishCheck describes a publish whose full checks run before the PR it waits for merges.
 type PublishCheck struct {
-	Helper    string   `json:"helper"`
 	Branch    string   `json:"branch"`
 	Title     string   `json:"title"`
 	Paths     []string `json:"paths"` // nil means every pending change
@@ -181,14 +181,18 @@ func (d *daemon) advance(s *Schedule, prState string) {
 			args = s.Publish.Args
 		}
 		// The full gate already passed on these inputs.
-		command = []string{s.Publish.Helper}
+		self, err := os.Executable()
+		if err != nil {
+			s.set("failed", err.Error())
+			return
+		}
+		command = []string{self, "publish"}
 		for _, arg := range args {
 			if arg != "--full" {
 				command = append(command, arg)
 			}
 		}
 	}
-	cancelRuns(s.Job.Cwd, s.CancelRuns)
 	job := s.Job
 	job.Command = command
 	path, err := startJob(job)
@@ -214,7 +218,7 @@ func (d *daemon) startChecks(s *Schedule) {
 	}
 	request, _ := json.Marshal(s.Publish)
 	job := s.Job
-	job.Command = []string{self, "publish-checks", s.Job.Cwd, s.Publish.Helper, string(request)}
+	job.Command = []string{self, "publish-checks", s.Job.Cwd, string(request)}
 	path, err := startJob(job)
 	if err == errBusy {
 		return
@@ -243,33 +247,6 @@ func checksResult(jobPath string) []string {
 		}
 	}
 	return inputs
-}
-
-// cancelRuns cancels unfinished workflow runs titled as a release being replaced.
-func cancelRuns(cwd string, titles []string) {
-	if len(titles) == 0 {
-		return
-	}
-	list := exec.Command("gh", "run", "list", "--limit", "50", "--json", "databaseId,displayTitle,status")
-	list.Dir = cwd
-	out, err := list.Output()
-	if err != nil {
-		log.Printf("gh run list: %v", err)
-		return
-	}
-	var runs []struct {
-		DatabaseID   int64  `json:"databaseId"`
-		DisplayTitle string `json:"displayTitle"`
-		Status       string `json:"status"`
-	}
-	_ = json.Unmarshal(out, &runs)
-	for _, run := range runs {
-		if run.Status != "completed" && slices.Contains(titles, run.DisplayTitle) {
-			cancel := exec.Command("gh", "run", "cancel", fmt.Sprint(run.DatabaseID))
-			cancel.Dir = cwd
-			_ = cancel.Run()
-		}
-	}
 }
 
 // pendingInputs names the publish's contents without touching the checkout's index:
@@ -319,9 +296,14 @@ func edited(repo string, inputs []string) bool {
 }
 
 // publishChecks prepares the publish without pushing and runs the pre-push hook on it.
-func publishChecks(repo, helper, request string) int {
+func publishChecks(repo, request string) int {
 	var pc PublishCheck
 	if err := json.Unmarshal([]byte(request), &pc); err != nil {
+		fmt.Println("Checks stopped:", err)
+		return 1
+	}
+	self, err := os.Executable()
+	if err != nil {
 		fmt.Println("Checks stopped:", err)
 		return 1
 	}
@@ -351,7 +333,7 @@ func publishChecks(repo, helper, request string) int {
 		if i := slices.Index(args, "--branch"); i >= 0 && i+1 < len(args) {
 			args[i+1] = branch
 		}
-		cmd := exec.Command(helper, append([]string{"--prepare-only"}, args...)...)
+		cmd := exec.Command(self, append([]string{"publish", "--prepare-only"}, args...)...)
 		cmd.Dir, cmd.Stderr = repo, os.Stderr
 		stdout, _ := cmd.StdoutPipe()
 		if err := cmd.Start(); err != nil {
@@ -371,7 +353,7 @@ func publishChecks(repo, helper, request string) int {
 			return exitCode(cmd.ProcessState)
 		}
 		if prepared == "" {
-			fmt.Println("Checks stopped: the publish helper did not report a prepared worktree.")
+			fmt.Println("Checks stopped: the publish did not report a prepared worktree.")
 			return 1
 		}
 		after, err := pendingInputs(repo, branch, pc.Paths)
@@ -389,11 +371,7 @@ func publishChecks(repo, helper, request string) int {
 	if listed, _ := git(prepared, nil, "ls-remote", "origin", "refs/heads/"+branch); listed != "" {
 		oldHead = strings.Fields(listed)[0]
 	}
-	// The full gate builds and tests every crate: cap it so it slows down instead of freezing the desktop.
-	hook := exec.Command("systemd-run", "--user", "--scope", "--quiet",
-		"-p", "MemoryHigh=12G", "-p", "MemoryMax=16G", "-p", "MemorySwapMax=0", "-p", "CPUWeight=10", "-p", "IOWeight=10",
-		"--", "git", "hook", "run", "--ignore-missing", "pre-push", "--", "origin", remote)
-	hook.Dir, hook.Stdout, hook.Stderr = prepared, os.Stdout, os.Stderr
+	hook := publish.Capped(exec.Command("git", "hook", "run", "--ignore-missing", "pre-push", "--", "origin", remote), prepared, publish.CheckEnv(repo))
 	hook.Stdin = strings.NewReader(fmt.Sprintf("refs/heads/%s %s refs/heads/%s %s\n", branch, head, branch, oldHead))
 	if err := hook.Run(); err != nil {
 		return exitCode(hook.ProcessState)

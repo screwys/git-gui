@@ -23,7 +23,7 @@ import (
 func Supervise(path string) int { return supervise(path) }
 
 // PublishChecks runs a scheduled publish's full checks; the daemon starts it as a job.
-func PublishChecks(repo, helper, request string) int { return publishChecks(repo, helper, request) }
+func PublishChecks(repo, request string) int { return publishChecks(repo, request) }
 
 // Run serves git-gui until the process ends.
 func Run() {
@@ -76,8 +76,8 @@ type daemon struct {
 	client    *http.Client
 	token     string
 	statePath string
-	checkouts map[string]string // "owner/name" -> local checkout with a publish helper
-	helper    map[string]string // "owner/name" -> publish helper path
+	checkouts map[string]string // "owner/name" -> the shared checkout git-gui publishes from
+	base      string            // the branch synced after merges
 	state     State
 	notified  map[string]bool
 	syncError map[string]string

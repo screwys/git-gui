@@ -26,6 +26,10 @@ func WaitPR(args []string) int {
 		fmt.Println("wait-pr: needs a PR number and a GitHub checkout")
 		return 4
 	}
+	return waitPR(repo, number)
+}
+
+func waitPR(repo string, number int) int {
 	// Statuses of earlier heads are stale: wait for the one this push made, or one the daemon's
 	// branch update made after it.
 	head := strings.TrimSpace(gh(repo, number, ".headRefOid"))

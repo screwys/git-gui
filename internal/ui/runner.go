@@ -19,7 +19,7 @@ import (
 // output and reports progress on the main loop.
 type Runner struct {
 	Cwd, Key string
-	Program  string // a helper started outside git-gui is observed when this runs it
+	Program  string // a "git-gui Program" started outside the window, such as an agent's publish, is observed
 
 	Path    string
 	Record  daemon.Record
@@ -98,7 +98,7 @@ func (r *Runner) Reload() {
 	}
 	r.emit("$ "+shellJoin(r.Record.Command)+"\n", true)
 	if r.outside != nil {
-		r.emit("[OBSERVING] Helper started outside this session. Its output and exit code are unavailable.\n", false)
+		r.emit("[OBSERVING] Started outside this window. Its output and exit code are unavailable.\n", false)
 	}
 	r.readOutput()
 	if r.OnRestored != nil {

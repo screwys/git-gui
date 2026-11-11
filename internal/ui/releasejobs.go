@@ -2,32 +2,34 @@ package ui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
+	"github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotk4/pkg/pango"
 
 	"github.com/screwys/git-gui/internal/client"
 	"github.com/screwys/git-gui/internal/daemon"
+	"github.com/screwys/git-gui/internal/git"
 )
 
 const rufinCOPR = "https://copr.fedorainfracloud.org/coprs/screwyy/rufin/"
 
 var (
 	ansiEscape  = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	coprBuild   = regexp.MustCompile(`https://copr\.fedorainfracloud\.org/coprs/screwyy/rufin/build/(\d+)/?`)
-	coprID      = regexp.MustCompile(`COPR build (\d+):`)
 	pullURL     = regexp.MustCompile(`https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
 	releaseLink = regexp.MustCompile(`https://github\.com/[^/\s]+/[^/\s]+/releases/tag/(\S+)`)
 	tableCells  = regexp.MustCompile(`\s{2,}`)
-	// Lines of the Rufin release helper that end a remote stage.
-	draftsPassed    = "All draft candidate workflows completed successfully."
-	packagesPassed  = "All package-manager publication workflows completed successfully."
-	iglooDispatches = map[string]string{
+	// Lines of git-gui rufin-release: the release workflow published, and the packages followed.
+	releasePublished = regexp.MustCompile(`^Published v\S+: https://`)
+	packagesPassed   = "All package-manager publication workflows completed successfully."
+	iglooDispatches  = map[string]string{
 		"workflow run release.yml": "Release Gate", "workflow run container-release.yml": "Container Release",
 		"workflow run android-release.yml": "Android Release", "workflow run windows-release.yml": "Windows Release",
 	}
@@ -49,6 +51,8 @@ type ReleaseJobs struct {
 	sync     *gtk.Label
 	syncNow  *gtk.Button
 	coprLink *gtk.Button
+	rerun    *gtk.Button
+	cancel   *gtk.Button
 	prLink   *gtk.Button
 	flathub  *gtk.Button
 	actions  *gtk.Button
@@ -61,13 +65,14 @@ type ReleaseJobs struct {
 	rows    []daemon.ReleaseRow
 	runLine map[string]*regexp.Regexp
 
-	copr, coprTitle                        string
 	prURL, flathubURL, releaseURL, repoURL string
+	runID                                  int64
+	runStatus                              string
 	releaseTag                             string
 	pending                                string
 
-	OnWorkflowStarted func() // the helper started or reused a workflow run
-	OnLocalWork       func() // the helper's local work resumed after remote workflows passed
+	OnWorkflowStarted func() // the release job started or followed a workflow run
+	OnLocalWork       func() // the release job's local work resumed after remote workflows passed
 	OnRemoteReady     func() // GitHub reported workflow runs for the release
 }
 
@@ -121,7 +126,7 @@ func NewReleaseJobs(repo, kind string, runner *Runner) *ReleaseJobs {
 		return b
 	}
 	if kind == "rufin" {
-		v.coprLink = link("COPR Builds", func() string { return v.copr })
+		v.coprLink = link("COPR Builds", func() string { return rufinCOPR })
 		v.prLink = link("Release PR", func() string { return v.prURL })
 		v.flathub = link("Flathub PR", func() string { return v.flathubURL })
 	} else {
@@ -133,6 +138,15 @@ func NewReleaseJobs(repo, kind string, runner *Runner) *ReleaseJobs {
 		})
 	}
 	v.release = link("GitHub Release", func() string { return v.releaseURL })
+	if kind == "rufin" {
+		// The release workflow's own controls: a failed job re-runs without rebuilding the others.
+		v.rerun = gtk.NewButtonWithLabel("Re-run Failed Jobs")
+		v.rerun.ConnectClicked(func() { v.runAction("rerun", "--failed") })
+		v.cancel = gtk.NewButtonWithLabel("Cancel Run")
+		v.cancel.ConnectClicked(func() { v.runAction("cancel") })
+		links.Append(v.rerun)
+		links.Append(v.cancel)
+	}
 	v.syncNow = gtk.NewButtonWithLabel("Sync Remote Status")
 	v.syncNow.SetTooltipText("Query GitHub for latest release tag and workflow status")
 	v.syncNow.SetVAlign(gtk.AlignStart)
@@ -154,18 +168,10 @@ func NewReleaseJobs(repo, kind string, runner *Runner) *ReleaseJobs {
 	table.AddCSSClass("card")
 	v.Root.Append(table)
 
-	switch kind {
-	case "rufin":
-		for _, name := range daemon.RufinRows {
-			v.rows = append(v.rows, daemon.ReleaseRow{Name: name, Status: "idle", Step: "—"})
-		}
-		v.rows = append(v.rows, daemon.ReleaseRow{Name: "Flathub PR", Status: "unknown", Step: "No PR found for this release"})
-	case "igloo":
-		for _, name := range daemon.IglooRows {
-			v.rows = append(v.rows, daemon.ReleaseRow{Name: name, Status: "idle", Step: "—"})
-		}
+	names := map[string][]string{"rufin": daemon.RufinRows, "igloo": daemon.IglooRows}[kind]
+	for _, name := range names {
+		v.rows = append(v.rows, daemon.ReleaseRow{Name: name, Status: "idle", Step: "—"})
 	}
-	v.copr, v.coprTitle = rufinCOPR, "COPR Builds"
 	v.redraw()
 	v.load(client.State())
 	onDaemonState(v.load)
@@ -209,7 +215,7 @@ func (v *ReleaseJobs) Reset() {
 }
 
 func (v *ReleaseJobs) resetLinks() {
-	v.copr, v.coprTitle = rufinCOPR, "COPR Builds"
+	v.runID, v.runStatus = 0, ""
 	v.prURL, v.flathubURL, v.releaseURL, v.releaseTag, v.shown = "", "", "", "", ""
 }
 
@@ -241,6 +247,7 @@ func (v *ReleaseJobs) load(state daemon.State) {
 	v.shown, v.releaseTag = r.Shown, r.Shown
 	v.rows = slices.Clone(r.Rows)
 	v.releaseURL, v.flathubURL, v.repoURL = r.ReleaseURL, r.FlathubURL, r.RepoURL
+	v.runID, v.runStatus = r.RunID, r.RunStatus
 	if r.PRURL != "" {
 		v.prURL = r.PRURL
 	}
@@ -265,7 +272,9 @@ func (v *ReleaseJobs) load(state daemon.State) {
 
 func (v *ReleaseJobs) redraw() {
 	if v.coprLink != nil {
-		v.coprLink.SetLabel(v.coprTitle)
+		running := slices.Contains([]string{"queued", "in_progress", "waiting", "requested", "pending"}, v.runStatus)
+		v.rerun.SetSensitive(v.runID != 0 && !running && v.runStatus != "success")
+		v.cancel.SetSensitive(v.runID != 0 && running)
 		v.prLink.SetSensitive(v.prURL != "")
 		v.flathub.SetSensitive(v.flathubURL != "")
 	}
@@ -383,7 +392,7 @@ func (v *ReleaseJobs) Feed(text string, live bool) {
 			if v.OnWorkflowStarted != nil {
 				v.OnWorkflowStarted()
 			}
-		case trimmed == draftsPassed || trimmed == packagesPassed:
+		case releasePublished.MatchString(trimmed) || trimmed == packagesPassed:
 			if v.OnLocalWork != nil {
 				v.OnLocalWork()
 			}
@@ -394,13 +403,6 @@ func (v *ReleaseJobs) Feed(text string, live bool) {
 func (v *ReleaseJobs) readLinks(line string) bool {
 	changed := false
 	if v.kind == "rufin" {
-		if m := coprBuild.FindStringSubmatch(line); m != nil {
-			v.setCOPR(m[1])
-			changed = true
-		} else if m := coprID.FindStringSubmatch(line); m != nil && !strings.Contains(v.copr, "screwyy/rufin/build") {
-			v.setCOPR(m[1])
-			changed = true
-		}
 		if url := pullURL.FindString(line); url != "" {
 			if strings.Contains(url, "flathub") {
 				v.flathubURL = url
@@ -417,12 +419,7 @@ func (v *ReleaseJobs) readLinks(line string) bool {
 	return changed
 }
 
-func (v *ReleaseJobs) setCOPR(id string) {
-	v.copr = rufinCOPR + "build/" + id + "/"
-	v.coprTitle = "COPR Build #" + id
-}
-
-// readProgress applies the helper's run announcements, summaries and status tables to the rows.
+// readProgress applies the release job's run announcements, summaries and status tables to the rows.
 func (v *ReleaseJobs) readProgress(line string) bool {
 	changed := false
 	for i := range v.rows {
@@ -448,14 +445,7 @@ func (v *ReleaseJobs) readProgress(line string) bool {
 			}
 		}
 	}
-	if strings.Contains(line, draftsPassed) {
-		for _, name := range daemon.RufinStaged {
-			v.setStatus(name, "passed")
-		}
-		changed = true
-	}
 	if strings.Contains(line, packagesPassed) {
-		v.setStatus("AUR", "passed")
 		v.setStatus("Homebrew", "passed")
 		changed = true
 	}
@@ -569,4 +559,24 @@ func (o *releaseOutput) failed() { o.show("failed", false) }
 // feed hands the job's output to the jobs view; replayed output of a finished job is history.
 func (o *releaseOutput) feed(text string, replaying bool) {
 	o.jobs.Feed(text, !replaying || o.term.Runner.Running())
+}
+
+// runAction re-runs or cancels the release workflow run shown, then asks for its new state.
+func (v *ReleaseJobs) runAction(action string, flags ...string) {
+	id, repo := v.runID, git.RemoteSlug(v.repo)
+	if id == 0 || repo == "" {
+		return
+	}
+	v.rerun.SetSensitive(false)
+	v.cancel.SetSensitive(false)
+	go func() {
+		args := append([]string{"run", action, strconv.FormatInt(id, 10), "--repo", repo}, flags...)
+		out, err := exec.Command("gh", args...).CombinedOutput()
+		glib.IdleAdd(func() {
+			if err != nil {
+				v.sync.SetText(strings.TrimSpace(string(out)))
+			}
+			v.Sync()
+		})
+	}()
 }

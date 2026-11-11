@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 
@@ -79,8 +80,11 @@ func newWindow(app *adw.Application) *Window {
 	add("settings", "emblem-system-symbolic", "", "Preferences", false, func() { w.openSettings() })
 	add("pull", "", "Pull", "git pull --ff-only", false, func() { w.runTool("git", "pull", "--ff-only") })
 	add("fetch", "", "Fetch", "git fetch --prune origin", false, func() { w.runTool("git", "fetch", "--prune", "origin") })
-	add("sync", "", "Sync", "publish-pr.sh --sync: bring main up to origin/main, merging local edits", false,
-		func() { w.runTool(appConfig.PublishScript(), "--sync") })
+	add("sync", "", "Sync", "git-gui sync: bring main up to origin/main, merging local edits", false, func() {
+		if self, err := os.Executable(); err == nil {
+			w.runTool(self, "sync")
+		}
+	})
 	add("refresh", "view-refresh-symbolic", "", "Reload changes, diffs, and branches", true, func() { w.refreshActive() })
 	add("android", "phone-symbolic", "Android", "", true, func() {
 		if w.active().kind == "igloo" {
@@ -356,5 +360,5 @@ func (w *Window) openSettings() {
 // projectLayout is what decides which projects and tabs exist.
 func projectLayout() string {
 	return fmt.Sprint(appConfig.RufinRepoPath, appConfig.IglooRepoPath, appConfig.NocblueRepoPath,
-		appConfig.ProjectPaths, appConfig.PackageProjectPaths, appConfig.PublishPRScript, appConfig.ReleaseScript)
+		appConfig.ProjectPaths, appConfig.PackageProjectPaths)
 }

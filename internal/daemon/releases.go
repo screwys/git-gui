@@ -33,6 +33,8 @@ type Release struct {
 	ReleaseURL string       `json:"release_url"`
 	PRURL      string       `json:"pr_url"` // the open release preparation PR
 	FlathubURL string       `json:"flathub_url"`
+	RunID      int64        `json:"run_id"` // Rufin's release.yml run for the tag, which the window can re-run or cancel
+	RunStatus  string       `json:"run_status"`
 	Rows       []ReleaseRow `json:"rows"`
 	Sync       string       `json:"sync"`     // such as "Published release. Updated from GitHub."
 	Checking   bool         `json:"checking"` // a query was asked for and has not answered
@@ -49,12 +51,12 @@ type ReleaseRow struct {
 	Step   string `json:"step"`
 }
 
-// RufinRows and IglooRows are the workflows those projects' releases run, in table order.
-// RufinStaged are the ones Rufin's release helper builds into the draft before publishing it.
+// RufinRows are the jobs of Rufin's release.yml and its publications, IglooRows the workflows of
+// Igloo's release, in table order.
 var (
-	RufinStaged = []string{"Android", "AUR", "Flatpak", "Nix", "macOS", "RPM", "Windows"}
-	RufinRows   = append(slices.Clone(RufinStaged), "Homebrew")
-	IglooRows   = []string{"Release Gate", "Container Release", "Android Release", "Windows Release"}
+	RufinRows = []string{"Draft", "Android", "Flatpak", "macOS", "Windows", "RPM", "AUR", "Nix", "Publish",
+		"AUR publish", "Homebrew", "Flathub PR"}
+	IglooRows = []string{"Release Gate", "Container Release", "Android Release", "Windows Release"}
 )
 
 // iglooWorkflows names Igloo's rows after its release workflows.
@@ -69,6 +71,7 @@ var unfinishedRun = []string{"queued", "in_progress", "waiting", "requested", "p
 const idleRelease = 5 * time.Minute
 
 type workflowRun struct {
+	ID           int64  `json:"id"`
 	WorkflowID   int64  `json:"workflow_id"`
 	Status       string `json:"status"`
 	Conclusion   string `json:"conclusion"`
@@ -292,13 +295,13 @@ func (d *daemon) queryRelease(ctx context.Context, r Release) (Release, error) {
 	}
 	out := Release{Shown: tag, Tags: tags, RepoURL: repo.URL, PRURL: prep[tag]}
 
-	// A tag's runs are those on the tag, and for Rufin and Igloo also runs dispatched with the
-	// version in their title, such as "Stage v0.16.6" on main.
+	// A tag's runs are those on the tag, and for Igloo also runs dispatched with the version in
+	// their title.
 	var runs []workflowRun
 	workflows := map[int64]string{}
 	if tag != "" {
 		queries := []string{"branch=" + url.QueryEscape(tag) + "&per_page=100"}
-		if !generic {
+		if r.Kind == "igloo" {
 			queries = append(queries, "event=workflow_dispatch&per_page=30")
 		}
 		for _, query := range queries {
@@ -326,43 +329,10 @@ func (d *daemon) queryRelease(ctx context.Context, r Release) (Release, error) {
 		}
 	}
 
-	// The newest run of each workflow for the tag wins.
-	matched := map[string]ReleaseRow{}
-	var order []string
-	for _, run := range runs {
-		if run.HeadBranch != tag && (generic || !slices.Contains(VersionTag.FindAllString(run.DisplayTitle, -1), tag)) {
-			continue
-		}
-		row := workflows[run.WorkflowID]
-		if renamed, ok := iglooWorkflows[row]; ok && r.Kind == "igloo" {
-			row = renamed
-		}
-		if _, ok := matched[row]; ok {
-			continue
-		}
-		status := run.Conclusion
-		if status == "" {
-			status = run.Status
-		}
-		matched[row] = ReleaseRow{Name: row, Status: status, URL: run.URL, Step: status}
-		order = append(order, row)
-	}
-	names := order
-	switch r.Kind {
-	case "rufin":
-		names = RufinRows
-	case "igloo":
-		names = IglooRows
-	}
-	for _, row := range names {
-		if found, ok := matched[row]; ok {
-			out.Rows = append(out.Rows, found)
-		} else {
-			out.Rows = append(out.Rows, ReleaseRow{Name: row, Status: "unknown", Step: "No matching recent run"})
-		}
-	}
 	if r.Kind == "rufin" {
-		out.Rows = append(out.Rows, d.flathubRow(ctx, tag, &out))
+		out.Rows = d.rufinRows(ctx, slug, tag, runs, workflows, &out)
+	} else {
+		d.workflowRows(r, tag, generic, runs, workflows, &out)
 	}
 
 	state := "No releases found"
@@ -391,7 +361,6 @@ func (d *daemon) queryRelease(ctx context.Context, r Release) (Release, error) {
 	return out, nil
 }
 
-// flathubRow is the state of Rufin's Flathub PR for the release.
 func (d *daemon) getJSON(ctx context.Context, path string, out any) error {
 	data, err := d.request(ctx, http.MethodGet, "https://api.github.com/"+path, nil)
 	if err != nil {
@@ -400,6 +369,7 @@ func (d *daemon) getJSON(ctx context.Context, path string, out any) error {
 	return json.Unmarshal(data, out)
 }
 
+// flathubRow is the state of Rufin's Flathub PR for the release.
 func (d *daemon) flathubRow(ctx context.Context, tag string, out *Release) ReleaseRow {
 	row := ReleaseRow{Name: "Flathub PR", Status: "not_found", Step: "No release tag selected"}
 	if tag == "" {
@@ -426,4 +396,127 @@ func (d *daemon) flathubRow(ctx context.Context, tag string, out *Release) Relea
 	out.FlathubURL = prs[0].URL
 	return ReleaseRow{Name: row.Name, Status: strings.ToLower(prs[0].State), URL: prs[0].URL,
 		Step: fmt.Sprintf("PR #%d: %s", prs[0].Number, prs[0].Title)}
+}
+
+// workflowRows are a generic or Igloo release's rows: the newest run of each workflow for the tag.
+func (d *daemon) workflowRows(r Release, tag string, generic bool, runs []workflowRun, workflows map[int64]string, out *Release) {
+	matched := map[string]ReleaseRow{}
+	var order []string
+	for _, run := range runs {
+		if run.HeadBranch != tag && (generic || !slices.Contains(VersionTag.FindAllString(run.DisplayTitle, -1), tag)) {
+			continue
+		}
+		row := workflows[run.WorkflowID]
+		if renamed, ok := iglooWorkflows[row]; ok && r.Kind == "igloo" {
+			row = renamed
+		}
+		if _, ok := matched[row]; ok {
+			continue
+		}
+		status := run.Conclusion
+		if status == "" {
+			status = run.Status
+		}
+		matched[row] = ReleaseRow{Name: row, Status: status, URL: run.URL, Step: status}
+		order = append(order, row)
+	}
+	names := order
+	if r.Kind == "igloo" {
+		names = IglooRows
+	}
+	for _, row := range names {
+		if found, ok := matched[row]; ok {
+			out.Rows = append(out.Rows, found)
+		} else {
+			out.Rows = append(out.Rows, ReleaseRow{Name: row, Status: "unknown", Step: "No matching recent run"})
+		}
+	}
+}
+
+// rufinRows are the jobs of the tag's release.yml run, grouped by the workflow they call, then
+// the Homebrew run that followed it and the Flathub PR.
+func (d *daemon) rufinRows(ctx context.Context, slug, tag string, runs []workflowRun, workflows map[int64]string, out *Release) []ReleaseRow {
+	rows := map[string]*ReleaseRow{}
+	var release *workflowRun
+	for i, run := range runs {
+		if run.HeadBranch == tag && workflows[run.WorkflowID] == "Release" {
+			release = &runs[i]
+			break
+		}
+	}
+	if release != nil {
+		out.RunID, out.RunStatus = release.ID, release.Status
+		if release.Status == "completed" {
+			out.RunStatus = release.Conclusion
+		}
+		var page struct {
+			Jobs []struct {
+				Name, Status, Conclusion string
+				URL                      string `json:"html_url"`
+				Steps                    []struct{ Name, Status, Conclusion string }
+			}
+		}
+		if err := d.getJSON(ctx, fmt.Sprintf("repos/%s/actions/runs/%d/jobs?per_page=100", slug, release.ID), &page); err != nil {
+			log.Printf("%s: release jobs: %v", slug, err)
+		}
+		for _, job := range page.Jobs {
+			group, _, _ := strings.Cut(job.Name, " / ")
+			row := rows[group]
+			if row == nil {
+				row = &ReleaseRow{Name: group, Status: "success", URL: job.URL, Step: "Completed"}
+				rows[group] = row
+			}
+			switch {
+			case job.Status != "completed":
+				if row.Status != "failure" {
+					row.Status, row.URL, row.Step = job.Status, job.URL, job.Name
+					for _, step := range job.Steps {
+						if step.Status == "in_progress" {
+							row.Step = step.Name
+						}
+					}
+				}
+			case !slices.Contains([]string{"success", "skipped", "neutral"}, job.Conclusion):
+				row.Status, row.URL, row.Step = "failure", job.URL, "Failed: "+job.Name
+				for _, step := range job.Steps {
+					if step.Conclusion == "failure" {
+						row.Step = "Failed: " + step.Name
+						break
+					}
+				}
+			}
+		}
+	}
+
+	homebrew := ReleaseRow{Name: "Homebrew", Status: "not_found", Step: "Runs after the release publishes"}
+	if release != nil {
+		var page struct {
+			WorkflowRuns []workflowRun `json:"workflow_runs"`
+		}
+		if err := d.getJSON(ctx, "repos/screwys/homebrew-tap/actions/runs?event=workflow_dispatch&per_page=5", &page); err == nil {
+			for _, run := range page.WorkflowRuns {
+				if run.CreatedAt >= release.CreatedAt {
+					status := run.Conclusion
+					if status == "" {
+						status = run.Status
+					}
+					homebrew = ReleaseRow{Name: "Homebrew", Status: status, URL: run.URL, Step: status}
+					break
+				}
+			}
+		}
+	}
+	rows["Homebrew"] = &homebrew
+	flathub := d.flathubRow(ctx, tag, out)
+	rows["Flathub PR"] = &flathub
+
+	var shown []ReleaseRow
+	for _, name := range RufinRows {
+		if row := rows[name]; row != nil {
+			shown = append(shown, *row)
+		} else {
+			shown = append(shown, ReleaseRow{Name: name, Status: "unknown", Step: "No job yet"})
+		}
+	}
+	return shown
 }

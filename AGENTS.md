@@ -36,8 +36,8 @@ while testing against real repositories.
   repo and key), writes `job.json` and `output.log` under `$XDG_STATE_HOME/git-gui/jobs` and sends
   the finished notification. The runner attaches to running jobs and replays saved output. Stop,
   pause and resume are `signal` requests.
-- Rufin publish or release helpers started outside the app show as observed processes, without
-  output or exit codes.
+- A `git-gui publish` or `git-gui rufin-release` started outside the window, by an agent, shows in
+  its tab as an observed process, without output or exit code.
 - Every tab has a terminal notebook. Top-bar commands (fetch, pull, sync, Android, restart) run in
   the project's `git-tools` slot and show on one Commands page that moves into the visible tab's
   terminal, so they never share a slot with the tab's own job. Changes and Packages have no job of
@@ -49,13 +49,24 @@ while testing against real repositories.
 
 ## Rufin publishing
 
+- `git-gui publish` (`internal/publish`) publishes from the shared checkout without switching it:
+  the paths go out as a patch onto the topic branch in the worktree at
+  `<git-common-dir>/git-gui/publish` (branch `git-gui-publish`), where the configured generate and
+  check commands run, and the published files are written back. `git-gui sync` and the daemon's
+  sync after merges take the same lock, `<git-common-dir>/git-gui-publish.lock`. `git-gui status`
+  is the agents' session start: sync, failing PRs, dirty files open PRs already carry.
+- `git-gui rufin-release` publishes the preparation PR with `--run "xtask release prepare"`, tags
+  its merge commit with `xtask release notes`, follows Rufin's `release.yml`, then dispatches the
+  Homebrew cask and lands the Flathub PR. Every step is skipped when already done, so Resume
+  reruns the same command. The daemon shows `release.yml`'s jobs as the release rows.
 - The form state of a publish lives in `state.json` as `rufin_publish_pending`. It is cleared when
   the publish completes or when PR discovery finds the branch's PR merged or closed.
 - **Publish after PR merges** and **Release after PR merges** are daemon schedules followed through
   `ScheduleFollower`. With full checks, the schedule runs `git-gui publish-checks` as a job:
   `--prepare-only`, then the pre-push hook inside a capped `systemd-run` scope. Unchanged inputs at
   merge time publish without `--full`; changed inputs run the checks again.
-- PR titles and bodies saved by `publish-pr.sh` in branch config are read back as drafts.
+- PR titles and bodies a failed publish saved in branch config (`rufin-pr-title`, `rufin-pr-body`)
+  are read back as drafts.
 
 ## git-gui-daemon
 
@@ -68,8 +79,7 @@ while testing against real repositories.
   merges (unless a schedule announces it), schedule outcomes, release workflow conclusions and
   finished jobs. Failures are critical, the rest normal.
 - Every PR that leaves the open search stays in `leaving` until GitHub reports it merged or closed.
-  A Rufin merge syncs the checkout at `rufin_repo_path` with its publish helper, waiting while
-  `.local/publish-checkout.lock` is held.
+  A Rufin merge syncs the checkout at `rufin_repo_path`, waiting while a publish holds its lock.
 - Releases: the window calls `follow_release` with repo, kind, tag, its pid and the job path. The
   daemon polls a followed release every pass while a release job runs, a workflow is unfinished or
   the window asked, every 5 minutes while only the window lives, and stops once the runs finished

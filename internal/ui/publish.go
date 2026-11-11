@@ -18,14 +18,12 @@ import (
 	"github.com/screwys/git-gui/internal/config"
 	"github.com/screwys/git-gui/internal/daemon"
 	"github.com/screwys/git-gui/internal/git"
+	"github.com/screwys/git-gui/internal/publish"
 )
 
 const pendingKey = "rufin_publish_pending"
 
 var (
-	catalogIDs    = []string{"none", "include", "sync"}
-	catalogLabels = []string{"Normal (Ignore changed .po catalogs)", "Include prepared .po files (--include-i18n-catalogs)",
-		"Sync and merge all .po catalogs (--sync-i18n-catalogs)"}
 	prURL         = regexp.MustCompile(`https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
 	publishedLine = regexp.MustCompile(`^Published PR #\d+: (\S+)$`)
 )
@@ -37,12 +35,9 @@ type publishForm struct {
 	Title        string `json:"title"`
 	Body         string `json:"body"`
 	BodyModified bool   `json:"body_modified"`
-	Phase        string `json:"phase"`
 	AutoMerge    bool   `json:"auto_merge"`
-	Wait         bool   `json:"wait"`
 	Full         bool   `json:"full"`
 	Instant      bool   `json:"instant"`
-	I18n         string `json:"i18n"`
 }
 
 // pendingPublish is state.json's rufin_publish_pending: a publish until it completes or its PR
@@ -59,8 +54,8 @@ type pendingPublish struct {
 	ChecksOnly bool              `json:"checks_only"` // the job is a scheduled publish's full checks
 }
 
-// PublishTab publishes a Rufin branch as a pull request through the publish helper, at once or
-// after another PR merges, and shows the branch's PR and its checks.
+// PublishTab publishes a branch of the shared checkout as a pull request with git-gui publish, at
+// once or after another PR merges, and shows the branch's PR and its checks.
 type PublishTab struct {
 	Root     *gtk.Paned
 	repo     string
@@ -72,14 +67,13 @@ type PublishTab struct {
 	schedule *ScheduleFollower
 	picker   *PRPicker
 
-	branch, base, title, phase *gtk.Entry
-	body                       *gtk.TextView
-	prLabel, branchError       *gtk.Label
-	autoMerge, waitCI, full    *gtk.CheckButton
-	instant                    *gtk.CheckButton
-	catalogs                   *gtk.DropDown
-	banner                     *gtk.Box
-	bannerText                 *gtk.Label
+	branch, base, title  *gtk.Entry
+	body                 *gtk.TextView
+	prLabel, branchError *gtk.Label
+	autoMerge, full      *gtk.CheckButton
+	instant              *gtk.CheckButton
+	banner               *gtk.Box
+	bannerText           *gtk.Label
 
 	working    []git.File // uncommitted changes, the selectable rows
 	shown      []git.File // every row: the branch's changes since its base, then the rest
@@ -98,7 +92,7 @@ type PublishTab struct {
 // NewPublishTab builds the tab for the Rufin checkout at repo.
 func NewPublishTab(repo string) *PublishTab {
 	t := &PublishTab{repo: repo, files: NewFileList("Publish PR", true), diff: NewDiffView(repo),
-		term: NewTerminal(repo, "publish", appConfig.PublishScript()), checks: NewChecksView(repo),
+		term: NewTerminal(repo, "publish", "publish"), checks: NewChecksView(repo),
 		schedule: NewScheduleFollower(repo, "publish"), picker: NewPRPicker(repo, "Publish after PR merges:")}
 	left := gtk.NewBox(gtk.OrientationVertical, 8)
 	margins(left, 8)
@@ -128,12 +122,7 @@ func NewPublishTab(repo string) *PublishTab {
 	t.title = gtk.NewEntry()
 	t.title.SetPlaceholderText("e.g. ui/player: add a sleep timer")
 	t.title.SetTooltipText("The first commit names the PR. Follow-up commits keep the PR title. Leave empty to retry existing commits.")
-	t.phase = gtk.NewEntry()
-	t.phase.SetPlaceholderText("Defaults to TITLE")
-	t.phase.SetWidthChars(12)
 	titleRow := row("Commit:", t.title)
-	titleRow.Append(gtk.NewLabel("Phase:"))
-	titleRow.Append(t.phase)
 	t.body = gtk.NewTextView()
 	t.body.SetWrapMode(gtk.WrapWordChar)
 	t.body.SetTopMargin(6)
@@ -161,16 +150,12 @@ func NewPublishTab(repo string) *PublishTab {
 	options := group("Options")
 	t.autoMerge = gtk.NewCheckButtonWithLabel("Squash auto-merge")
 	t.autoMerge.SetActive(appConfig.DefaultAutoMerge)
-	t.waitCI = gtk.NewCheckButtonWithLabel("Wait CI checks (--wait)")
-	t.waitCI.SetActive(appConfig.DefaultWaitCI)
 	t.full = gtk.NewCheckButtonWithLabel("Full checks (--full)")
 	t.full.SetTooltipText("Run the whole pre-push gate instead of the focused checks")
-	t.catalogs = gtk.NewDropDownFromStrings(catalogLabels)
 	options.Append(t.autoMerge)
-	options.Append(t.waitCI)
 	t.instant = gtk.NewCheckButtonWithLabel("No checks (--instant)")
 	t.instant.SetTooltipText("Commit and publish without formatting, generation or local checks")
-	// The helper takes one check mode.
+	// A publish takes one check mode.
 	for _, pair := range [][2]*gtk.CheckButton{{t.full, t.instant}, {t.instant, t.full}} {
 		pair[0].ConnectToggled(func() {
 			if pair[0].Active() {
@@ -181,7 +166,6 @@ func NewPublishTab(repo string) *PublishTab {
 	options.Append(t.full)
 	options.Append(t.instant)
 	options.Append(t.picker.Root)
-	options.Append(row("Catalogs:", t.catalogs))
 	left.Append(options)
 
 	right := gtk.NewBox(gtk.OrientationVertical, 6)
@@ -234,17 +218,16 @@ func NewPublishTab(repo string) *PublishTab {
 	whenEdited(t.branch, &t.lastBranch, t.Refresh)
 	whenEdited(t.base, &t.lastBase, t.RefreshFiles)
 	t.lastBase = strings.TrimSpace(t.base.Text())
-	for _, entry := range []*gtk.Entry{t.branch, t.base, t.title, t.phase} {
+	for _, entry := range []*gtk.Entry{t.branch, t.base, t.title} {
 		entry.ConnectChanged(t.updateButton)
 	}
 	t.body.Buffer().ConnectChanged(func() {
 		placeholder.SetVisible(t.body.Buffer().CharCount() == 0)
 		t.updateButton()
 	})
-	for _, check := range []*gtk.CheckButton{t.autoMerge, t.waitCI, t.full, t.instant} {
+	for _, check := range []*gtk.CheckButton{t.autoMerge, t.full, t.instant} {
 		check.ConnectToggled(t.updateButton)
 	}
-	t.catalogs.NotifyProperty("selected", t.updateButton)
 	t.picker.OnChanged = t.updateButton
 	t.schedule.OnChanged = t.scheduleChanged
 	t.checks.OnChecks = func(number int, checks []daemon.Check) {
@@ -298,7 +281,6 @@ func whenEdited(entry *gtk.Entry, last *string, done func()) {
 
 // Refresh reloads the files, the branch's draft, its PR and the open PR list.
 func (t *PublishTab) Refresh() {
-	t.term.Runner.Program = appConfig.PublishScript()
 	t.RefreshFiles()
 	branch := t.currentBranch()
 	t.lastBranch = strings.TrimSpace(t.branch.Text())
@@ -557,8 +539,7 @@ func (t *PublishTab) form() publishForm {
 	return publishForm{
 		Branch: strings.TrimSpace(t.branch.Text()), Base: strings.TrimSpace(t.base.Text()),
 		Title: strings.TrimSpace(t.title.Text()), Body: t.bodyText(), BodyModified: t.body.Buffer().Modified(),
-		Phase: strings.TrimSpace(t.phase.Text()), AutoMerge: t.autoMerge.Active(), Wait: t.waitCI.Active(),
-		Full: t.full.Active(), Instant: t.instant.Active(), I18n: catalogIDs[min(int(t.catalogs.Selected()), len(catalogIDs)-1)],
+		AutoMerge: t.autoMerge.Active(), Full: t.full.Active(), Instant: t.instant.Active(),
 	}
 }
 
@@ -574,14 +555,9 @@ func (t *PublishTab) restoreForm() {
 	}
 	t.title.SetText(p.Title)
 	t.setBody(p.Body, p.BodyModified)
-	t.phase.SetText(p.Phase)
 	t.autoMerge.SetActive(p.AutoMerge)
-	t.waitCI.SetActive(p.Wait)
 	t.full.SetActive(p.Full)
 	t.instant.SetActive(p.Instant)
-	if i := slices.Index(catalogIDs, p.I18n); i >= 0 {
-		t.catalogs.SetSelected(uint(i))
-	}
 }
 
 func (t *PublishTab) pending() (pendingPublish, bool) {
@@ -660,13 +636,14 @@ func (t *PublishTab) clicked() {
 	}
 }
 
-func (t *PublishTab) helper() (string, bool) {
-	helper := appConfig.PublishScript()
-	if _, err := os.Stat(helper); err != nil {
-		alert(t.Root, "Script Not Found", fmt.Sprintf("Cannot find publish script at:\n%s\n\nYou can configure the script location in Settings.", helper))
-		return "", false
+// helper is the publish command without its options: this program's publish.
+func (t *PublishTab) helper() ([]string, bool) {
+	self, err := os.Executable()
+	if err != nil {
+		alert(t.Root, "Publish", err.Error())
+		return nil, false
 	}
-	return helper, true
+	return []string{self, "publish"}, true
 }
 
 func (t *PublishTab) publish() {
@@ -692,7 +669,7 @@ func (t *PublishTab) publish() {
 		return
 	}
 	if f.Branch == "" {
-		cmd := exec.Command(helper, "--base", f.Base, "--print-branch", f.Title)
+		cmd := exec.Command(helper[0], helper[1], "--base", f.Base, "--print-branch", f.Title)
 		cmd.Dir = t.repo
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
@@ -711,7 +688,7 @@ func (t *PublishTab) publish() {
 	env := map[string]string{}
 	if f.BodyModified {
 		args = append(args, "--body", f.Body)
-		env["RUFIN_ALLOW_PR_BODY"] = "1"
+		env[publish.AllowBodyEnv] = "1"
 	}
 	if f.Full {
 		args = append(args, "--full")
@@ -719,20 +696,8 @@ func (t *PublishTab) publish() {
 	if f.Instant {
 		args = append(args, "--instant")
 	}
-	if f.Phase != "" {
-		args = append(args, "--phase", f.Phase)
-	}
 	if !f.AutoMerge {
 		args = append(args, "--no-auto-merge")
-	}
-	if f.Wait {
-		args = append(args, "--wait")
-	}
-	switch f.I18n {
-	case "include":
-		args = append(args, "--include-i18n-catalogs")
-	case "sync":
-		args = append(args, "--sync-i18n-catalogs")
 	}
 	retry := slices.Clone(args)
 	prTitle := t.prTitle()
@@ -772,10 +737,7 @@ func (t *PublishTab) publish() {
 	if f.AutoMerge {
 		squash = "Enabled"
 	}
-	details = append(details, detail{"Squash Merge", squash}, detail{"Wait CI Checks", yesNo(f.Wait)}, detail{"Local Checks", localChecks})
-	if f.I18n != "none" {
-		details = append(details, detail{"I18n Catalogs", catalogLabels[slices.Index(catalogIDs, f.I18n)]})
-	}
+	details = append(details, detail{"Squash Merge", squash}, detail{"Local Checks", localChecks})
 	confirm(t.Root, "Publish Pull Request", details, "PR Description Preview:", f.Body, "Publish PR", func() {
 		t.branch.SetText(f.Branch)
 		head, _ := git.Run(t.repo, "rev-parse", "HEAD")
@@ -834,28 +796,28 @@ func (t *PublishTab) resume(p pendingPublish) {
 	})
 }
 
-// start runs the helper now and saves the publish, so it can resume.
-func (t *PublishTab) start(helper string, args []string, p pendingPublish) {
+// start publishes now and saves the publish, so it can resume.
+func (t *PublishTab) start(helper, args []string, p pendingPublish) {
 	t.banner.SetVisible(false)
 	t.term.Clear()
 	t.term.SetLabel("Publishing PR")
 	t.submitted = p.publishForm
 	p.JobID, p.ChecksOnly = "", false
 	config.Set(pendingKey, p)
-	t.term.Runner.Start(append([]string{helper}, args...), p.Env)
+	t.term.Runner.Start(append(slices.Clone(helper), args...), p.Env)
 }
 
 // scheduleAfter asks the daemon to publish once PR number merges, with the full checks first
 // when they are on.
-func (t *PublishTab) scheduleAfter(number int, helper string, p pendingPublish) {
-	var publish *daemon.PublishCheck
+func (t *PublishTab) scheduleAfter(number int, helper []string, p pendingPublish) {
+	var check *daemon.PublishCheck
 	if p.Full {
-		publish = &daemon.PublishCheck{Helper: helper, Branch: p.Branch, Title: p.Title, Paths: p.Paths, Args: p.Args, RetryArgs: p.RetryArgs}
+		check = &daemon.PublishCheck{Branch: p.Branch, Title: p.Title, Paths: p.Paths, Args: p.Args, RetryArgs: p.RetryArgs}
 	}
-	job := client.Job(t.repo, "publish", append([]string{helper}, p.Args...), p.Env)
+	job := client.Job(t.repo, "publish", append(slices.Clone(helper), p.Args...), p.Env)
 	t.term.Clear()
 	t.showStage("local", true)
-	if err := t.schedule.Submit(number, job, publish, nil); err != nil {
+	if err := t.schedule.Submit(number, job, check); err != nil {
 		t.term.Info("[!] " + err.Error())
 		t.term.SetStatus("Not scheduled", "failed")
 		return
@@ -955,7 +917,7 @@ func (t *PublishTab) finished(code int, record daemon.Record) {
 	t.Refresh()
 }
 
-// output follows the helper's live output: the branch it publishes and the PR it opens.
+// output follows the publish's live output: the branch it publishes and the PR it opens.
 func (t *PublishTab) output(text string, replaying bool) {
 	if replaying && !t.term.Runner.Running() {
 		return
@@ -989,7 +951,7 @@ func (t *PublishTab) output(text string, replaying bool) {
 	}
 }
 
-// publishingBranch records the branch the helper chose, so a resume targets it.
+// publishingBranch records the branch the publish chose, so a resume targets it.
 func (t *PublishTab) publishingBranch(branch string) {
 	p, ok := t.pending()
 	if !ok || p.JobID != t.jobID() {

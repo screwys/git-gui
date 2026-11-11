@@ -4,7 +4,8 @@
 // the daemon's user service. "git-gui daemon" is that always-on service: it runs commands and
 // watches pull requests and releases. "supervise" and "publish-checks" are started by the daemon,
 // "push" is the last step of a Commit & Push job, and "release" tags and publishes a release of a
-// project without a release helper. "wait-pr" waits for the daemon's verdict on a PR.
+// project. "publish", "sync" and "status" publish from a shared checkout, "rufin-release" releases
+// Rufin, and "wait-pr" waits for the daemon's verdict on a PR.
 package main
 
 import (
@@ -34,11 +35,19 @@ func main() {
 		case "supervise":
 			os.Exit(daemon.Supervise(os.Args[2]))
 		case "publish-checks":
-			os.Exit(daemon.PublishChecks(os.Args[2], os.Args[3], os.Args[4]))
+			os.Exit(daemon.PublishChecks(os.Args[2], os.Args[3]))
 		case "push":
 			os.Exit(tasks.Push(os.Args[2:]))
 		case "wait-pr":
 			os.Exit(tasks.WaitPR(os.Args[2:]))
+		case "publish":
+			os.Exit(tasks.Publish(os.Args[2:]))
+		case "sync":
+			os.Exit(tasks.Sync(os.Args[2:]))
+		case "status":
+			os.Exit(tasks.Status(os.Args[2:]))
+		case "rufin-release":
+			os.Exit(tasks.RufinRelease(os.Args[2:]))
 		case "install":
 			os.Exit(tasks.Install(tasks.Files{Desktop: desktopEntry, Icon: icon, Unit: unit}))
 		case "release":

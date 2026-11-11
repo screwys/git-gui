@@ -9,14 +9,13 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
-	"time"
+
+	"github.com/screwys/git-gui/internal/config"
+	"github.com/screwys/git-gui/internal/publish"
 )
 
 const searchQuery = `query {
@@ -135,27 +134,13 @@ func repoSlug(checkout string) string {
 	return match[1]
 }
 
-// loadCheckouts reads git-gui's configuration for the checkout that publishes through a helper.
+// loadCheckouts reads which checkout publishes through git-gui: the daemon syncs it after merges.
 func (d *daemon) loadCheckouts() {
-	d.checkouts, d.helper = map[string]string{}, map[string]string{}
-	var config struct {
-		RufinRepoPath   string `json:"rufin_repo_path"`
-		PublishPRScript string `json:"publish_pr_script"`
-	}
-	data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".config", "git-gui", "config.json"))
-	if err != nil || json.Unmarshal(data, &config) != nil || config.RufinRepoPath == "" {
-		return
-	}
-	helper := config.PublishPRScript
-	if helper == "" {
-		helper = ".local/scripts/publish-pr.sh"
-	}
-	if !filepath.IsAbs(helper) {
-		helper = filepath.Join(config.RufinRepoPath, helper)
-	}
-	if slug := repoSlug(config.RufinRepoPath); slug != "" {
-		d.checkouts[slug] = config.RufinRepoPath
-		d.helper[slug] = helper
+	d.checkouts = map[string]string{}
+	cfg := config.Load()
+	d.base = cfg.DefaultBaseBranch
+	if slug := repoSlug(cfg.RufinRepoPath); slug != "" {
+		d.checkouts[slug] = cfg.RufinRepoPath
 	}
 }
 
@@ -314,23 +299,13 @@ func (d *daemon) prState(ctx context.Context, repo string, number int) (string, 
 	return result.Repository.PullRequest.State, err
 }
 
-// sync brings the checkout up to its remote base once the helper is free.
+// sync brings the checkout up to its remote base once no publish holds it.
 func (d *daemon) sync(repo string) bool {
 	checkout := d.checkouts[repo]
-	lock, err := os.OpenFile(filepath.Join(checkout, ".local", "publish-checkout.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
+	synced, err := publish.Sync(checkout, d.base, false)
+	if err == nil && !synced {
 		return false
 	}
-	busy := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
-	lock.Close()
-	if busy {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, d.helper[repo], "--sync")
-	cmd.Dir = checkout
-	out, err := cmd.CombinedOutput()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err == nil {
@@ -338,10 +313,7 @@ func (d *daemon) sync(repo string) bool {
 		log.Printf("%s: synced %s", repo, checkout)
 		return true
 	}
-	message := strings.TrimSpace(string(out))
-	if len(message) > 300 {
-		message = message[len(message)-300:]
-	}
+	message := err.Error()
 	if d.syncError[repo] != message {
 		d.syncError[repo] = message
 		go notify("critical", repo+" not synced", message)

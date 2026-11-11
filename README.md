@@ -8,8 +8,8 @@ service that runs the app's commands and watches my open pull requests and relea
 
 - Project tabs with file selection, diffs and an editor. Rufin, Igloo and nocblue are built in,
   and **+** adds any Git repository.
-- Rufin: publish PRs and releases through Rufin's own scripts, sync `main`, and build and install
-  the Android app.
+- Rufin: publish PRs from one checkout that several sessions share, without switching it; cut
+  releases and follow every package to its store; sync `main`; build and install the Android app.
 - Other projects: commit and push with a rebase onto the remote, tag and publish GitHub releases,
   and edit RPM, Brew and Nix package lists.
 - Commands keep running when the window closes, and the window reattaches to them later. History,

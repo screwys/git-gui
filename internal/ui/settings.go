@@ -96,44 +96,17 @@ func showSettings(parent gtk.Widgetter, activeRepo string, onClose func()) {
 		resets = append(resets, func() { row.SetActive(false) })
 	}
 
-	scripts := adw.NewPreferencesGroup()
-	scripts.SetTitle("Rufin Scripts")
-	// A script inside the Rufin repository is stored relative to it.
-	script := func(row *adw.EntryRow) {
-		chooser := gtk.NewFileDialog()
-		chooser.SetTitle("Select Script")
-		chooser.SetInitialFolder(gio.NewFileForPath(appConfig.RufinRepoPath))
-		shell := gtk.NewFileFilter()
-		shell.SetName("Shell Scripts (*.sh)")
-		shell.AddPattern("*.sh")
-		all := gtk.NewFileFilter()
-		all.SetName("All Files")
-		all.AddPattern("*")
-		filters := gio.NewListStore(gtk.GTypeFileFilter)
-		filters.Append(shell.Object)
-		filters.Append(all.Object)
-		chooser.SetFilters(filters)
-		chooser.Open(context(), windowOf(parent), func(result gio.AsyncResulter) {
-			file, err := chooser.OpenFinish(result)
-			if err != nil || file == nil {
-				return
-			}
-			chosen := file.Path()
-			if rel, err := filepath.Rel(appConfig.RufinRepoPath, chosen); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
-				chosen = rel
-			}
-			row.SetText(chosen)
-		})
-	}
-	text(scripts, "Publish PR Script", &appConfig.PublishPRScript, defaults.PublishPRScript, script)
-	text(scripts, "Release Script", &appConfig.ReleaseScript, defaults.ReleaseScript, script)
-	page.Add(scripts)
+	publishing := adw.NewPreferencesGroup()
+	publishing.SetTitle("Publishing")
+	publishing.SetDescription("Run in the publish worktree: generate before committing, check before pushing with the base branch as its argument.")
+	text(publishing, "Generate Command", &appConfig.PublishGenerate, defaults.PublishGenerate, nil)
+	text(publishing, "Check Command", &appConfig.PublishCheck, defaults.PublishCheck, nil)
+	page.Add(publishing)
 
 	options := adw.NewPreferencesGroup()
 	options.SetTitle("Defaults")
 	text(options, "Base Branch", &appConfig.DefaultBaseBranch, defaults.DefaultBaseBranch, nil)
 	toggle(options, "Squash auto-merge by default", &appConfig.DefaultAutoMerge, defaults.DefaultAutoMerge)
-	toggle(options, "Wait for CI checks by default (--wait)", &appConfig.DefaultWaitCI, defaults.DefaultWaitCI)
 	toggle(options, "Wrap diff & editor lines by default", &appConfig.WrapDiff, defaults.WrapDiff)
 	page.Add(options)
 
