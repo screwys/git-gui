@@ -12,6 +12,7 @@ import (
 
 	"github.com/screwys/git-gui/internal/client"
 	"github.com/screwys/git-gui/internal/config"
+	"github.com/screwys/git-gui/internal/daemon"
 	"github.com/screwys/git-gui/internal/git"
 	"github.com/screwys/git-gui/internal/publish"
 )
@@ -23,6 +24,11 @@ TITLE onto the topic branch in the publish worktree; with TITLE and no PATH, eve
 change is. The first TITLE names the PR, later ones only their commits. Without TITLE and PATH the
 branch's existing commits are published. Later paths for an open PR go out as their difference
 from it, and the published files here then match the PR.
+
+Paths whose edits build on edits another of your open PRs or a queued publish made in the same
+files are queued instead: the checks run now, and git-gui-daemon publishes the branch once those
+merge. Follow a queued branch with "git-gui wait-pr BRANCH". Queued edits stay out of other
+publishes of the same files.
 
 The project's generate command runs before committing and its check command before pushing.
 
@@ -116,10 +122,40 @@ func Publish(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if _, err := publish.Publish(".", o); err != nil {
+	result, err := publish.Publish(".", o)
+	if err != nil {
 		fmt.Println("Publish stopped:", err)
 		return 1
 	}
+	if len(result.Queued) > 0 {
+		return enqueue(o, result.Branch)
+	}
+	return 0
+}
+
+// enqueue asks git-gui-daemon to publish the queued branch once what it waits for merged.
+func enqueue(o publish.Options, branch string) int {
+	c, err := publish.Open(".")
+	self, _ := os.Executable()
+	command := []string{self, "publish", "--base", o.Base, "--branch", branch}
+	if o.Instant {
+		command = append(command, "--instant")
+	}
+	if !o.AutoMerge {
+		command = append(command, "--no-auto-merge")
+	}
+	if o.MergeCommit {
+		command = append(command, "--merge-commit")
+	}
+	if err == nil {
+		_, err = client.Request(daemon.Request{Op: "schedule", Schedule: &daemon.Schedule{
+			Branch: branch, Job: client.Job(c.Root, "publish", command, nil)}})
+	}
+	if err != nil {
+		fmt.Printf("Queued, but git-gui-daemon did not take it (%v); run git-gui publish --branch %s once it runs.\n", err, branch)
+		return 1
+	}
+	fmt.Println("Follow it with: git-gui wait-pr", branch)
 	return 0
 }
 
@@ -211,17 +247,34 @@ func Status([]string) int {
 			}
 		}
 	}
+	queue := publish.Queue(root)
+	queuedIn := map[string]string{}
+	for _, branch := range slices.Sorted(maps.Keys(queue)) {
+		for _, path := range queue[branch].Files {
+			if published[path] == 0 && queuedIn[path] == "" && slices.Contains(dirty, path) {
+				queuedIn[path] = branch
+			}
+		}
+	}
 	byPR := map[int][]string{}
+	byQueue := map[string][]string{}
 	others := 0
 	for _, path := range dirty {
-		if n := published[path]; n != 0 {
-			byPR[n] = append(byPR[n], path)
-		} else {
+		switch {
+		case published[path] != 0:
+			byPR[published[path]] = append(byPR[published[path]], path)
+		case queuedIn[path] != "":
+			byQueue[queuedIn[path]] = append(byQueue[queuedIn[path]], path)
+		default:
 			others++
 		}
 	}
 	for _, n := range slices.Sorted(maps.Keys(byPR)) {
 		fmt.Printf("Published in #%d, awaiting merge (not foreign work): %s\n", n, strings.Join(byPR[n], ", "))
+	}
+	for _, branch := range slices.Sorted(maps.Keys(byQueue)) {
+		fmt.Printf("Queued as %s behind %s, published by git-gui-daemon (not foreign work): %s\n", branch,
+			strings.Join(queue[branch].Behind, ", "), strings.Join(byQueue[branch], ", "))
 	}
 	if others > 0 {
 		fmt.Printf("Other sessions' work in progress (%d files). Publish every file your task touches whole, theirs included; never stop over them.\n", others)

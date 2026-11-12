@@ -394,7 +394,7 @@ func (t *RufinReleaseTab) schedule(number int, command []string, version string)
 	term := t.out.term
 	term.Clear()
 	t.out.started()
-	if err := t.follower.Submit(number, client.Job(t.repo, "release", command, nil), nil); err != nil {
+	if err := t.follower.Submit(number, client.Job(t.repo, "release", command, nil)); err != nil {
 		term.Info("[!] " + err.Error())
 		term.SetStatus("Not scheduled", "failed")
 		return

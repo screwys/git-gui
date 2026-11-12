@@ -2,7 +2,7 @@
 //
 // Without arguments it opens the window. "git-gui install" installs the binary, menu entry and
 // the daemon's user service. "git-gui daemon" is that always-on service: it runs commands and
-// watches pull requests and releases. "supervise" and "publish-checks" are started by the daemon,
+// watches pull requests and releases. "supervise" is started by the daemon,
 // "push" is the last step of a Commit & Push job, and "release" tags and publishes a release of a
 // project. "publish", "sync" and "status" publish from a shared checkout, "rufin-release" releases
 // Rufin, and "wait-pr" waits for the daemon's verdict on a PR.
@@ -34,8 +34,6 @@ func main() {
 			return
 		case "supervise":
 			os.Exit(daemon.Supervise(os.Args[2]))
-		case "publish-checks":
-			os.Exit(daemon.PublishChecks(os.Args[2], os.Args[3]))
 		case "push":
 			os.Exit(tasks.Push(os.Args[2:]))
 		case "wait-pr":

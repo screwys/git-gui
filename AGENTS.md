@@ -61,10 +61,20 @@ while testing against real repositories.
   reruns the same command. The daemon shows `release.yml`'s jobs as the release rows.
 - The form state of a publish lives in `state.json` as `rufin_publish_pending`. It is cleared when
   the publish completes or when PR discovery finds the branch's PR merged or closed.
-- **Publish after PR merges** and **Release after PR merges** are daemon schedules followed through
-  `ScheduleFollower`. With full checks, the schedule runs `git-gui publish-checks` as a job:
-  `--prepare-only`, then the pre-push hook inside a capped `systemd-run` scope. Unchanged inputs at
-  merge time publish without `--full`; changed inputs run the checks again.
+- The merge queue (`internal/publish/queue.go`): a publish whose paths hold edits on top of another
+  of the user's open PRs or of a queued publish, in files that one changes, queues instead of
+  pushing. Its commit goes to `refs/git-gui/queue/<branch>` on a base commit that merges HEAD, the
+  branch's own remote and those carriers; the base's `Queued-behind:` lines name them, so the
+  commit's diff is the queued work alone. The checks run on that commit, then `git-gui publish`
+  registers a daemon schedule with `branch` set, which reruns `git-gui publish --branch <branch>`
+  once no carrier is an open PR or queued. That run queues again while GitHub still lists one open,
+  otherwise it applies the queue commit's diff onto the base branch, generates, skips the checks and
+  pushes. Any path publish takes back out, with `git apply -R --3way`, the edits of queued
+  publishes it does not build on (those waiting on it, newest first); same-line edits stop it.
+  Paths holding only an open PR's version are left out. Cancelling deletes the ref; the edits stay.
+- **Release after PR merges** is a daemon schedule followed through `ScheduleFollower`.
+- `--full` runs the pre-push hook before the push instead of through it, like the check command,
+  so a queued publish runs the same gate.
 - PR titles and bodies a failed publish saved in branch config (`rufin-pr-title`, `rufin-pr-body`)
   are read back as drafts.
 
@@ -87,7 +97,8 @@ while testing against real repositories.
 - `daemon.json` is a contract with its readers (the window and Rufin's session startup report).
   Keep `updated`, `prs[].repo`, `number`, `title`, `url`, `branch`, `head`, `status`, `failed`
   and `checks`, `schedules[]` and `releases` stable. `git-gui wait-pr`, which agents run in the
-  background after publishing, waits on `prs[]` and exits on failing, conflict, merged or closed. A PR's `status` is one of `running`, `passing`,
+  background after publishing, waits on `prs[]` and exits on failing, conflict, merged or closed;
+  given a queued branch it follows `schedules[]` and the publish job's record until the PR opens. A PR's `status` is one of `running`, `passing`,
   `behind`, `updating`, `failing` or `conflict`.
 
 ## Releases for other projects

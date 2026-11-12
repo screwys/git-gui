@@ -51,21 +51,19 @@ type pendingPublish struct {
 	Paths      []string          `json:"paths"` // null means every uncommitted change
 	HeadBefore string            `json:"head_before"`
 	JobID      string            `json:"job_id,omitempty"`
-	ChecksOnly bool              `json:"checks_only"` // the job is a scheduled publish's full checks
 }
 
-// PublishTab publishes a branch of the shared checkout as a pull request with git-gui publish, at
-// once or after another PR merges, and shows the branch's PR and its checks.
+// PublishTab publishes a branch of the shared checkout as a pull request with git-gui publish,
+// shows the branch's PR and its checks, and lists the publishes queued behind other work.
 type PublishTab struct {
-	Root     *gtk.Paned
-	repo     string
-	files    *FileList
-	diff     *DiffView
-	term     *Terminal
-	checks   *ChecksView
-	bottom   *gtk.Notebook
-	schedule *ScheduleFollower
-	picker   *PRPicker
+	Root   *gtk.Paned
+	repo   string
+	files  *FileList
+	diff   *DiffView
+	term   *Terminal
+	checks *ChecksView
+	bottom *gtk.Notebook
+	queue  *gtk.Box
 
 	branch, base, title  *gtk.Entry
 	body                 *gtk.TextView
@@ -92,8 +90,7 @@ type PublishTab struct {
 // NewPublishTab builds the tab for the Rufin checkout at repo.
 func NewPublishTab(repo string) *PublishTab {
 	t := &PublishTab{repo: repo, files: NewFileList("Publish PR", true), diff: NewDiffView(repo),
-		term: NewTerminal(repo, "publish", "publish"), checks: NewChecksView(repo),
-		schedule: NewScheduleFollower(repo, "publish"), picker: NewPRPicker(repo, "Publish after PR merges:")}
+		term: NewTerminal(repo, "publish", "publish"), checks: NewChecksView(repo), queue: group("Queue")}
 	left := gtk.NewBox(gtk.OrientationVertical, 8)
 	margins(left, 8)
 	left.Append(t.files.Root)
@@ -165,8 +162,8 @@ func NewPublishTab(repo string) *PublishTab {
 	}
 	options.Append(t.full)
 	options.Append(t.instant)
-	options.Append(t.picker.Root)
 	left.Append(options)
+	left.Append(t.queue)
 
 	right := gtk.NewBox(gtk.OrientationVertical, 6)
 	right.SetMarginStart(8)
@@ -228,8 +225,6 @@ func NewPublishTab(repo string) *PublishTab {
 	for _, check := range []*gtk.CheckButton{t.autoMerge, t.full, t.instant} {
 		check.ConnectToggled(t.updateButton)
 	}
-	t.picker.OnChanged = t.updateButton
-	t.schedule.OnChanged = t.scheduleChanged
 	t.checks.OnChecks = func(number int, checks []daemon.Check) {
 		if len(checks) > 0 && t.stage != "failed" && (!t.term.Runner.Running() || number == t.published) {
 			t.showStage("remote", false)
@@ -240,13 +235,7 @@ func NewPublishTab(repo string) *PublishTab {
 	t.term.OnFinished = t.finished
 	t.term.OnOutput = t.output
 	t.term.OnError = func(string) { t.showStage("failed", false) }
-	t.term.OnCancel = func() {
-		if t.schedule.Active() {
-			t.cancelSchedule()
-		} else {
-			t.term.Runner.Stop()
-		}
-	}
+	t.term.OnCancel = t.term.Runner.Stop
 
 	t.restoreForm()
 	var saved trackedPR
@@ -259,9 +248,47 @@ func NewPublishTab(repo string) *PublishTab {
 	// The saved PR stays until discovery for this branch replaces it.
 	t.context = t.currentBranch()
 	t.term.Attach()
-	t.schedule.Restore()
+	onDaemonState(t.showQueue)
+	t.showQueue(client.State())
 	t.Refresh()
 	return t
+}
+
+// showQueue lists the checkout's queued publishes, each with what it waits for and a Cancel
+// button that takes it out of the queue; its edits stay here.
+func (t *PublishTab) showQueue(state daemon.State) {
+	for child := t.queue.LastChild(); child != nil && child != t.queue.FirstChild(); child = t.queue.LastChild() {
+		t.queue.Remove(child)
+	}
+	cwd := t.repo
+	if real, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = real
+	}
+	shown := 0
+	for _, s := range state.Schedules {
+		if s.Branch == "" || s.Job.Cwd != cwd || s.Status != "waiting" {
+			continue
+		}
+		label := gtk.NewLabel(s.Branch + ": " + s.Message)
+		label.SetXAlign(0)
+		label.SetHExpand(true)
+		label.SetWrap(true)
+		label.AddCSSClass("modified")
+		cancel := gtk.NewButtonWithLabel("Cancel")
+		cancel.AddCSSClass("flat")
+		id := s.ID
+		cancel.ConnectClicked(func() {
+			if _, err := client.Request(daemon.Request{Op: "cancel", ID: id}); err != nil {
+				alert(t.Root, "Cancel Queued Publish", err.Error())
+			}
+		})
+		line := gtk.NewBox(gtk.OrientationHorizontal, 6)
+		line.Append(label)
+		line.Append(cancel)
+		t.queue.Append(line)
+		shown++
+	}
+	t.queue.SetVisible(shown > 0)
 }
 
 // whenEdited calls done when the user finishes editing entry, by Enter or by leaving it, with
@@ -299,7 +326,6 @@ func (t *PublishTab) Refresh() {
 	}
 	t.discover(branch)
 	t.updateButton()
-	t.picker.Refresh()
 	t.term.Attach()
 }
 
@@ -449,7 +475,7 @@ func (t *PublishTab) discover(branch string) {
 			default:
 				pr := prs[0]
 				if p, ok := t.pending(); ok && (pr.State == "MERGED" || pr.State == "CLOSED") && p.Branch == branch &&
-					!t.term.Runner.Running() && !t.schedule.Active() {
+					!t.term.Runner.Running() {
 					// The saved publish ended with its PR; the form returns to new work.
 					t.completePending(p)
 					t.Refresh()
@@ -595,13 +621,8 @@ func (t *PublishTab) completePending(p pendingPublish) {
 func (t *PublishTab) updateButton() {
 	b := t.files.Button
 	b.SetSensitive(true)
-	number, _ := t.picker.Number()
 	_, resumable := t.resumable()
 	switch {
-	case t.schedule.Active():
-		b.SetLabel(fmt.Sprintf("Cancel (PR #%d)", t.schedule.Schedule.Number))
-	case t.picker.Waiting():
-		b.SetLabel(fmt.Sprintf("Publish after PR #%d merges", number))
 	case t.term.Runner.Running():
 		b.SetLabel("Publishing…")
 		b.SetSensitive(false)
@@ -627,9 +648,7 @@ func (t *PublishTab) showStage(stage string, force bool) {
 
 func (t *PublishTab) clicked() {
 	switch p, resumable := t.resumable(); {
-	case t.schedule.Active():
-		t.cancelSchedule()
-	case resumable && !t.picker.Wait.Active():
+	case resumable:
 		t.resume(p)
 	default:
 		t.publish()
@@ -647,15 +666,6 @@ func (t *PublishTab) helper() ([]string, bool) {
 }
 
 func (t *PublishTab) publish() {
-	number := 0
-	if t.picker.Wait.Active() {
-		n, ok := t.picker.Number()
-		if !ok {
-			alert(t.Root, "Missing PR Number", "Please enter or select a PR number to wait for, or uncheck 'Publish after PR merges'.")
-			return
-		}
-		number = n
-	}
 	helper, ok := t.helper()
 	if !ok {
 		return
@@ -724,9 +734,6 @@ func (t *PublishTab) publish() {
 		files = fmt.Sprintf("%d of %d files", len(checked), len(t.working))
 	}
 	details := []detail{{"Branch Target", f.Branch + " → " + f.Base}, {"PR Title", shownTitle}, {"Commit", commit}, {"Files Included", files}}
-	if number > 0 {
-		details = append(details, detail{"Wait for PR", fmt.Sprintf("#%d (auto-publish when merged)", number)})
-	}
 	localChecks := "Focused"
 	if f.Full {
 		localChecks = "Full"
@@ -742,11 +749,7 @@ func (t *PublishTab) publish() {
 		t.branch.SetText(f.Branch)
 		head, _ := git.Run(t.repo, "rev-parse", "HEAD")
 		p := pendingPublish{RepoPath: t.repo, publishForm: f, Args: args, RetryArgs: retry, Env: env, Paths: selected, HeadBefore: head}
-		if number > 0 {
-			t.scheduleAfter(number, helper, p)
-		} else {
-			t.start(helper, p.Args, p)
-		}
+		t.start(helper, p.Args, p)
 	})
 }
 
@@ -802,57 +805,9 @@ func (t *PublishTab) start(helper, args []string, p pendingPublish) {
 	t.term.Clear()
 	t.term.SetLabel("Publishing PR")
 	t.submitted = p.publishForm
-	p.JobID, p.ChecksOnly = "", false
+	p.JobID = ""
 	config.Set(pendingKey, p)
 	t.term.Runner.Start(append(slices.Clone(helper), args...), p.Env)
-}
-
-// scheduleAfter asks the daemon to publish once PR number merges, with the full checks first
-// when they are on.
-func (t *PublishTab) scheduleAfter(number int, helper []string, p pendingPublish) {
-	var check *daemon.PublishCheck
-	if p.Full {
-		check = &daemon.PublishCheck{Branch: p.Branch, Title: p.Title, Paths: p.Paths, Args: p.Args, RetryArgs: p.RetryArgs}
-	}
-	job := client.Job(t.repo, "publish", append(slices.Clone(helper), p.Args...), p.Env)
-	t.term.Clear()
-	t.showStage("local", true)
-	if err := t.schedule.Submit(number, job, check); err != nil {
-		t.term.Info("[!] " + err.Error())
-		t.term.SetStatus("Not scheduled", "failed")
-		return
-	}
-	config.Set(pendingKey, p)
-	t.term.Info(fmt.Sprintf("[*] Publish scheduled: git-gui-daemon starts it once PR #%d merges.", number))
-	t.updateButton()
-}
-
-func (t *PublishTab) cancelSchedule() {
-	if err := t.schedule.Cancel(); err != nil {
-		t.term.Info("[!] " + err.Error())
-	}
-}
-
-// scheduleChanged follows a scheduled publish: its checks job, then the publish.
-func (t *PublishTab) scheduleChanged(s daemon.Schedule) {
-	t.picker.ShowSchedule(s)
-	t.term.Info("[*] " + s.Message)
-	if (s.Status == "checking" || s.Status == "started") && s.JobPath != "" {
-		if p, ok := t.pending(); ok {
-			p.JobID, p.ChecksOnly = filepath.Base(filepath.Dir(s.JobPath)), s.Status == "checking"
-			config.Set(pendingKey, p)
-		}
-		if !t.term.Runner.Running() {
-			t.term.SetLabel(s.Message)
-			t.term.Attach()
-		}
-	}
-	state := scheduleState(s.Status)
-	t.term.SetStatus(s.Message, state)
-	if state == "failed" {
-		t.showStage("failed", false)
-	}
-	t.updateButton()
 }
 
 func (t *PublishTab) started() {
@@ -866,7 +821,7 @@ func (t *PublishTab) started() {
 }
 
 func (t *PublishTab) restored(record daemon.Record, running, _ bool) {
-	if p, ok := t.pending(); ok && p.JobID == t.jobID() && !running && !p.ChecksOnly && record.ExitCode != nil && *record.ExitCode == 0 {
+	if p, ok := t.pending(); ok && p.JobID == t.jobID() && !running && record.ExitCode != nil && *record.ExitCode == 0 {
 		// The publish completed while the window was closed.
 		t.completePending(p)
 		t.Refresh()
@@ -879,20 +834,6 @@ func (t *PublishTab) restored(record daemon.Record, running, _ bool) {
 
 func (t *PublishTab) finished(code int, record daemon.Record) {
 	p, ok := t.pending()
-	if ok && p.ChecksOnly && p.JobID == t.jobID() {
-		// The daemon decides what follows the checks; the schedule reports it.
-		if code == 0 {
-			t.term.SetStatus("Checks passed", "success")
-		} else {
-			t.term.SetStatus("Checks failed", "failed")
-		}
-		t.updateButton()
-		return
-	}
-	if t.schedule.Active() {
-		t.updateButton()
-		return
-	}
 	if code != 0 || record.Stopped {
 		t.showStage("failed", false)
 	} else {

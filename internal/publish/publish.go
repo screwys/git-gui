@@ -6,12 +6,14 @@ package publish
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,12 +36,13 @@ type Options struct {
 	MergeCommit         bool
 }
 
-// Result is what a publish made.
+// Result is what a publish made. Queued names what a queued publish waits for.
 type Result struct {
 	Branch   string
 	Worktree string
 	Number   int
 	URL      string
+	Queued   []string
 }
 
 // AllowBodyEnv must be 1 for a publish that sets the PR body: bodies are the user's own text.
@@ -163,6 +166,46 @@ func Publish(dir string, o Options) (Result, error) {
 	current, _ := gitOut(root, nil, "branch", "--show-current")
 	remoteBranch := hasRef(root, "refs/remotes/origin/"+branch)
 
+	// Paths whose edits build on another open PR's or queued publish's edits in the same files
+	// queue behind them; a publish of a queued branch without paths publishes its queue commit
+	// once what it waits for merged.
+	queue := Queue(root)
+	own, isQueued := queue[branch]
+	final := isQueued && len(o.Paths) == 0 && o.Run == ""
+	var behind, subtract []carrier
+	switch {
+	case final:
+		all, err := carriers(root, slug, o.Base, branch, queue)
+		if err != nil {
+			return Result{}, err
+		}
+		for _, c := range all {
+			if slices.Contains(own.Behind, c.branch) {
+				behind = append(behind, c)
+			}
+		}
+		if len(behind) > 0 {
+			return queued(branch, behind), nil
+		}
+		if o.Title == "" {
+			o.Title, _ = gitOut(root, nil, "log", "-1", "--format=%s", own.Commit)
+		}
+	case len(o.Paths) > 0 && !o.PrepareOnly:
+		for _, f := range own.Files {
+			if !slices.Contains(o.Paths, f) {
+				o.Paths = append(o.Paths, f)
+			}
+		}
+		all, err := carriers(root, slug, o.Base, branch, queue)
+		if err != nil {
+			return Result{}, err
+		}
+		behind, subtract, o.Paths = plan(root, branch, o.Paths, all)
+		if len(o.Paths) == 0 {
+			return Result{}, errors.New("the requested paths hold only other open PRs' edits")
+		}
+	}
+
 	// The PR title is the first title given; it survives failed pushes in branch config.
 	prTitle, _ := gitOut(root, nil, "config", "--local", "--get", "branch."+branch+".rufin-pr-title")
 	if prTitle == "" {
@@ -191,11 +234,28 @@ func Publish(dir string, o Options) (Result, error) {
 	var snapshot string
 	start := "origin/" + o.Base
 	switch {
+	case final:
+		if remoteBranch {
+			start = "origin/" + branch
+		}
+		if patch, err = gitBytes(root, "diff", "--binary", own.Commit+"^", own.Commit); err != nil {
+			return Result{}, err
+		}
 	case len(o.Paths) > 0 || o.Run != "":
 		patchBase := "HEAD"
-		if current == branch {
+		switch {
+		case len(behind) > 0:
+			remote := ""
+			if remoteBranch {
+				remote = "origin/" + branch
+			}
+			if patchBase, err = queueBase(root, remote, behind); err != nil {
+				return Result{}, err
+			}
+			start = patchBase
+		case current == branch:
 			start = "HEAD"
-		} else if remoteBranch {
+		case remoteBranch:
 			patchBase, start = "origin/"+branch, "origin/"+branch
 		}
 		if len(o.Paths) > 0 {
@@ -226,7 +286,8 @@ func Publish(dir string, o Options) (Result, error) {
 	}
 	env := CheckEnv(root)
 
-	if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", "origin/"+o.Base, "HEAD"); err != nil {
+	// A queue commit stays on its base; the final publish merges the base branch.
+	if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", "origin/"+o.Base, "HEAD"); err != nil && len(behind) == 0 {
 		// A merge keeps the branch's commits and signatures as they are.
 		if err := gitRun(work, nil, "merge", "-q", "--no-edit", "origin/"+o.Base); err != nil {
 			_ = gitRun(work, nil, "merge", "--abort")
@@ -240,6 +301,23 @@ func Publish(dir string, o Options) (Result, error) {
 		if apply.Run() != nil {
 			return Result{}, fmt.Errorf("the requested paths do not apply onto %s; sync them and retry", branch)
 		}
+	}
+	// Queued publishes' edits in these files are theirs: take them back out.
+	var subtracted []string
+	for _, c := range subtract {
+		files := slices.DeleteFunc(slices.Clone(c.files), func(f string) bool { return !slices.Contains(o.Paths, f) })
+		reverse, err := gitBytes(root, append([]string{"diff", "--binary", c.commit + "^", c.commit, "--"}, files...)...)
+		if err != nil || len(reverse) == 0 {
+			continue
+		}
+		apply := exec.Command("git", "apply", "-R", "--3way", "--binary")
+		apply.Dir, apply.Stdin, apply.Stdout, apply.Stderr = work, bytes.NewReader(reverse), os.Stdout, os.Stderr
+		if apply.Run() != nil {
+			return Result{}, fmt.Errorf("these edits change the same lines in %s as %s, queued behind other work; cancel its queued publish in Git GUI to publish both here", strings.Join(files, ", "), c.branch)
+		}
+		subtracted = append(subtracted, files...)
+	}
+	if len(patch) > 0 {
 		_ = gitRun(work, nil, "reset", "-q")
 	}
 	if o.Run != "" {
@@ -253,13 +331,14 @@ func Publish(dir string, o Options) (Result, error) {
 		}
 	}
 	changed, _ := gitOut(work, nil, "status", "--porcelain")
+	fromWork := len(o.Paths) > 0 || o.Run != "" || final
 	switch {
-	case changed != "" && (len(o.Paths) > 0 || o.Run != "") && o.Title != "":
+	case changed != "" && fromWork && o.Title != "":
 		_ = gitRun(work, nil, "add", "-A")
 		if err := gitRun(work, nil, "commit", "-q", "-m", o.Title); err != nil {
 			return Result{}, err
 		}
-	case changed != "" && (len(o.Paths) > 0 || o.Run != ""):
+	case changed != "" && fromWork:
 		return Result{}, errors.New("a title is needed to commit the requested changes")
 	case changed != "":
 		_ = gitRun(work, nil, "add", "-A")
@@ -276,28 +355,34 @@ func Publish(dir string, o Options) (Result, error) {
 		fmt.Println("Prepared PR worktree:", work)
 		return result, nil
 	}
+	if len(behind) > 0 {
+		if runEnd == runStart {
+			return result, errors.New("no changes found for the requested paths")
+		}
+		// The checks look at the queued commit alone; CI checks it on the base branch.
+		if err := runChecks(work, runStart, branch, o, env); err != nil {
+			return result, err
+		}
+		if err := gitRun(root, nil, "update-ref", queueRefs+branch, runEnd); err != nil {
+			return result, err
+		}
+		writeBack(root, snapshot, runStart, runEnd, subtracted)
+		return queued(branch, behind), nil
+	}
 
 	if remoteBranch {
 		if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", "origin/"+branch, "HEAD"); err != nil {
 			return result, fmt.Errorf("origin/%s has commits this branch lacks; merge them and publish again", branch)
 		}
 	}
-	refspec := "HEAD:refs/heads/" + branch
-	switch {
-	case o.Full:
-		// The pre-push hook is the full gate.
-		if err := Capped(exec.Command("git", "push", "origin", refspec), work, env).Run(); err != nil {
-			return result, fmt.Errorf("push stopped: %w", err)
-		}
-	default:
-		if !o.Instant && o.Check != "" {
-			if err := Capped(exec.Command("sh", "-c", o.Check+` "$0"`, "origin/"+o.Base), work, env).Run(); err != nil {
-				return result, fmt.Errorf("checks failed: %w", err)
-			}
-		}
-		if err := gitRun(work, nil, "push", "--no-verify", "origin", refspec); err != nil {
+	// A queue commit's checks already ran; what merging changed is CI's.
+	if !final {
+		if err := runChecks(work, "origin/"+o.Base, branch, o, env); err != nil {
 			return result, err
 		}
+	}
+	if err := gitRun(work, nil, "push", "--no-verify", "origin", "HEAD:refs/heads/"+branch); err != nil {
+		return result, err
 	}
 
 	number := openPR(root, slug, branch)
@@ -330,10 +415,49 @@ func Publish(dir string, o Options) (Result, error) {
 		_ = gitRun(root, nil, "update-ref", "refs/heads/"+branch, runEnd)
 	}
 	if snapshot != "" {
-		writeBack(root, snapshot, runStart, runEnd)
+		writeBack(root, snapshot, runStart, runEnd, subtracted)
+	}
+	if isQueued {
+		_ = Dequeue(root, branch)
 	}
 	fmt.Printf("Published PR #%d: %s\n", number, result.URL)
 	return result, nil
+}
+
+func queued(branch string, behind []carrier) Result {
+	names := make([]string, len(behind))
+	for i, c := range behind {
+		names[i] = c.String()
+	}
+	fmt.Printf("Queued %s behind %s: git-gui-daemon publishes it once they merge.\n", branch, strings.Join(names, ", "))
+	return Result{Branch: branch, Queued: names}
+}
+
+// runChecks runs the check command on the commits since base, or with Full the pre-push hook,
+// the full gate.
+func runChecks(work, base, branch string, o Options, env []string) error {
+	var check *exec.Cmd
+	switch {
+	case o.Instant:
+		return nil
+	case o.Full:
+		remote, _ := gitOut(work, nil, "remote", "get-url", "origin")
+		head, _ := gitOut(work, nil, "rev-parse", "HEAD")
+		old, err := gitOut(work, nil, "rev-parse", "-q", "--verify", "origin/"+branch)
+		if err != nil {
+			old = strings.Repeat("0", len(head))
+		}
+		check = Capped(exec.Command("git", "hook", "run", "--ignore-missing", "pre-push", "--", "origin", remote), work, env)
+		check.Stdin = strings.NewReader(fmt.Sprintf("refs/heads/%s %s refs/heads/%s %s\n", branch, head, branch, old))
+	case o.Check != "":
+		check = Capped(exec.Command("sh", "-c", o.Check+` "$0"`, base), work, env)
+	default:
+		return nil
+	}
+	if err := check.Run(); err != nil {
+		return fmt.Errorf("checks failed: %w", err)
+	}
+	return nil
 }
 
 // Sync brings the checkout's base branch up to origin, merging local edits into the files the
@@ -497,11 +621,12 @@ func snapshotTree(root, base string, paths []string) (string, error) {
 }
 
 // writeBack puts the published versions of files formatting or generation changed back here. A
-// file edited here since the snapshot keeps its edit; the next sync merges it.
-func writeBack(root, snapshot, from, to string) {
+// file edited here since the snapshot keeps its edit, and so does one that still holds a queued
+// publish's edits; the next sync merges them.
+func writeBack(root, snapshot, from, to string, keep []string) {
 	listed, _ := gitOut(root, nil, "diff", "--no-renames", "--name-only", "-z", from, to)
 	for _, path := range splitZ(listed) {
-		if hashFile(root, path) != blob(root, snapshot, path) {
+		if slices.Contains(keep, path) || hashFile(root, path) != blob(root, snapshot, path) {
 			continue
 		}
 		full := filepath.Join(root, path)
@@ -632,6 +757,14 @@ func ghOut(dir string, args ...string) (string, error) {
 	cmd.Dir, cmd.Stderr = dir, os.Stderr
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+func ghJSON(dir string, out any, args ...string) error {
+	text, err := ghOut(dir, args...)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(text), out)
 }
 
 func ghRun(dir string, args ...string) error {

@@ -38,11 +38,9 @@ func (f *ScheduleFollower) Active() bool {
 	return f.Schedule.ID != "" && !slices.Contains(finishedSchedule, f.Schedule.Status)
 }
 
-// Submit schedules job to run once PR number merges. publish adds the early full checks.
-func (f *ScheduleFollower) Submit(number int, job daemon.JobSpec, publish *daemon.PublishCheck) error {
-	resp, err := client.Request(daemon.Request{Op: "schedule", Schedule: &daemon.Schedule{
-		Number: number, Job: job, Publish: publish,
-	}})
+// Submit schedules job to run once PR number merges.
+func (f *ScheduleFollower) Submit(number int, job daemon.JobSpec) error {
+	resp, err := client.Request(daemon.Request{Op: "schedule", Schedule: &daemon.Schedule{Number: number, Job: job}})
 	if err != nil {
 		return err
 	}

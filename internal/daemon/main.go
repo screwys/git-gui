@@ -3,8 +3,8 @@
 // It runs commands under detached supervisors, so they outlive the window and the daemon.
 // It watches the user's open pull requests: a passing PR whose branch is behind its base gets
 // updated, failed checks and conflicts raise notifications, and a Rufin merge syncs the Rufin
-// checkout. It holds commands scheduled to run after a PR merges, and for publishes it can run
-// the full checks while it waits. git-gui talks to it over a Unix socket and reads its state
+// checkout. It holds commands scheduled to run after a PR merges, and publishes queued behind
+// other work once that merged. git-gui talks to it over a Unix socket and reads its state
 // file, $XDG_STATE_HOME/git-gui/daemon.json.
 package daemon
 
@@ -21,9 +21,6 @@ import (
 
 // Supervise runs one job's command; the daemon starts it as "<binary> supervise <job.json>".
 func Supervise(path string) int { return supervise(path) }
-
-// PublishChecks runs a scheduled publish's full checks; the daemon starts it as a job.
-func PublishChecks(repo, request string) int { return publishChecks(repo, request) }
 
 // Run serves git-gui until the process ends.
 func Run() {
