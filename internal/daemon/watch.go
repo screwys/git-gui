@@ -93,6 +93,10 @@ func (n CheckNode) Check() Check {
 	return c
 }
 
+// branchUpdate is the daemon's own merge of the base into a PR: from the head it replaced to the
+// merge commit, known once GitHub lists it. Its checks passing again is not news.
+type branchUpdate struct{ from, head string }
+
 func (p PR) key() string { return fmt.Sprintf("%s#%d", p.Repo, p.Number) }
 
 type prNode struct {
@@ -223,6 +227,7 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 			if err := d.updateBranch(ctx, pr, node.HeadRefOid); err != nil {
 				log.Printf("%s: update branch: %v", pr.key(), err)
 			} else {
+				d.updates[pr.key()] = &branchUpdate{from: node.HeadRefOid}
 				pr.Status = "updating"
 				log.Printf("%s: updated its branch from its base", pr.key())
 			}
@@ -241,8 +246,18 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 				notices = append(notices, [3]string{"critical", fmt.Sprintf("#%d %s: %s", pr.Number, pr.Status, pr.Title), detail})
 			}
 		}
+		update := d.updates[pr.key()]
+		switch {
+		case update == nil:
+		case update.head == "" && node.HeadRefOid != update.from:
+			update.head = node.HeadRefOid
+		case update.head != "" && node.HeadRefOid != update.head:
+			delete(d.updates, pr.key())
+			update = nil
+		}
+		ownMerge := update != nil && update.head == node.HeadRefOid
 		// Checks that were running or failing have all passed.
-		if was := before[pr.key()]; (was == "running" || was == "failing") && slices.Contains([]string{"passing", "behind", "updating"}, pr.Status) {
+		if was := before[pr.key()]; (was == "failing" || was == "running" && !ownMerge) && slices.Contains([]string{"passing", "behind", "updating"}, pr.Status) {
 			notices = append(notices, [3]string{"normal", fmt.Sprintf("#%d: checks passed", pr.Number), pr.Title})
 		}
 		prs = append(prs, pr)
@@ -281,6 +296,11 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 	for key := range d.notified {
 		if prKey, _, _ := strings.Cut(key, ":"); !open[prKey] {
 			delete(d.notified, key)
+		}
+	}
+	for key := range d.updates {
+		if !open[key] {
+			delete(d.updates, key)
 		}
 	}
 	d.state.PRs, d.state.Leaving = prs, leaving

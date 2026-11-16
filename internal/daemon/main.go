@@ -30,6 +30,7 @@ func Run() {
 		statePath: StatePath(),
 		notified:  map[string]bool{},
 		syncError: map[string]string{},
+		updates:   map[string]*branchUpdate{},
 		wake:      make(chan struct{}, 1),
 	}
 	if data, err := os.ReadFile(d.statePath); err == nil {
@@ -78,6 +79,7 @@ type daemon struct {
 	state     State
 	notified  map[string]bool
 	syncError map[string]string
+	updates   map[string]*branchUpdate // by PR key; only watchPRs uses it
 	wake      chan struct{}
 }
 
