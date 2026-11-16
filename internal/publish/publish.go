@@ -391,7 +391,12 @@ func Publish(dir string, o Options) (Result, error) {
 	if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", "origin/"+o.Base, "HEAD"); err != nil && len(behind) == 0 {
 		// A merge keeps the branch's commits and signatures as they are. Where someone else's PR
 		// conflicts with the base its side stands: the patch then puts the checkout's version there.
-		merge := []string{"merge", "-q", "--no-edit"}
+		// The message names the PR's branch, as GitHub's own branch update does, not the worktree's.
+		target := branch
+		if fork {
+			target = pr.HeadRefName
+		}
+		merge := []string{"merge", "-q", "-m", fmt.Sprintf("Merge branch '%s' into %s", o.Base, target)}
 		if o.PR != 0 && len(patch) > 0 {
 			merge = append(merge, "-X", "ours")
 		}
