@@ -3,6 +3,7 @@ package publish
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -64,7 +65,8 @@ func (c carrier) String() string {
 	return c.branch + " (queued)"
 }
 
-// carriers lists the user's open PRs and the queued publishes other than branch's own.
+// carriers lists the user's open PRs, the open PRs of others published onto from here and the
+// queued publishes, other than branch's own.
 func carriers(root, slug, base, branch string, queue map[string]Queued) ([]carrier, error) {
 	var open []struct {
 		Number int    `json:"number"`
@@ -89,6 +91,27 @@ func carriers(root, slug, base, branch string, queue map[string]Queued) ([]carri
 		c := add(pr.Branch)
 		c.number, c.commit = pr.Number, "origin/"+pr.Branch
 		files, _ := gitOut(root, nil, "diff", "--no-renames", "--name-only", "-z", "origin/"+base+"...origin/"+pr.Branch)
+		c.files = splitZ(files)
+	}
+	for _, number := range Adopted(root) {
+		var pr pull
+		if err := ghJSON(root, &pr, "pr", "view", strconv.Itoa(number), "--repo", slug, "--json", "state,headRefName,isCrossRepository"); err != nil {
+			return nil, err
+		}
+		if pr.State != "OPEN" {
+			_ = gitRun(root, nil, "update-ref", "-d", prRefs+strconv.Itoa(number))
+			continue
+		}
+		name := pr.HeadRefName
+		if pr.IsCrossRepository {
+			name = ForkBranch(number)
+		}
+		if name == branch || !hasRef(root, Tracking(name)) {
+			continue
+		}
+		c := add(name)
+		c.number, c.commit = number, Tracking(name)
+		files, _ := gitOut(root, nil, "diff", "--no-renames", "--name-only", "-z", "origin/"+base+"..."+c.commit)
 		c.files = splitZ(files)
 	}
 	for name, q := range queue {

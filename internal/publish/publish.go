@@ -25,6 +25,7 @@ import (
 // Check gets the base ref as its last argument.
 type Options struct {
 	Base, Branch, Title string
+	PR                  int      // publish onto this open PR's branch, a contributor's fork included
 	Paths               []string // with Title and no paths: every uncommitted change
 	Body                string
 	BodySet             bool
@@ -50,7 +51,56 @@ const AllowBodyEnv = "GIT_GUI_ALLOW_PR_BODY"
 
 const worktreeBranch = "git-gui-publish"
 
-var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
+// prRefs marks the PRs someone else opened that were published onto from here, each at the head
+// last pushed. A fork's PR is the branch "pr/N" here, and its ref is also where its head is fetched.
+const prRefs = "refs/git-gui/pr/"
+
+var (
+	nonSlug    = regexp.MustCompile(`[^a-z0-9]+`)
+	forkBranch = regexp.MustCompile(`^pr/([1-9][0-9]*)$`)
+)
+
+// ForkBranch names the branch that stands here for a contributor's fork PR.
+func ForkBranch(number int) string { return fmt.Sprintf("pr/%d", number) }
+
+func forkNumber(branch string) int {
+	match := forkBranch.FindStringSubmatch(branch)
+	if match == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(match[1])
+	return n
+}
+
+// Tracking is the ref of a branch's last known commit on GitHub: origin's branch, or for a
+// contributor's fork PR its head.
+func Tracking(branch string) string {
+	if n := forkNumber(branch); n != 0 {
+		return prRefs + strconv.Itoa(n)
+	}
+	return "origin/" + branch
+}
+
+// Adopted lists the PRs someone else opened that were published onto from the checkout.
+func Adopted(root string) []int {
+	var numbers []int
+	listed, _ := gitOut(root, nil, "for-each-ref", "--format=%(refname)", prRefs)
+	for _, ref := range strings.Fields(listed) {
+		if n, _ := strconv.Atoi(strings.TrimPrefix(ref, prRefs)); n > 0 {
+			numbers = append(numbers, n)
+		}
+	}
+	return numbers
+}
+
+// pull is a PR as "gh pr view" describes it.
+type pull struct {
+	State, HeadRefName, BaseRefName        string
+	IsCrossRepository, MaintainerCanModify bool
+	HeadRepository                         struct{ Name string }
+	HeadRepositoryOwner                    struct{ Login string }
+	AutoMergeRequest                       *struct{}
+}
 
 // Checkout is the shared checkout's state: its root, Git directory and lock.
 type Checkout struct {
@@ -152,6 +202,42 @@ func Publish(dir string, o Options) (Result, error) {
 		return Result{}, errors.New("origin is not a GitHub repository")
 	}
 
+	// A PR number, or the branch standing for a fork's PR, publishes onto that PR's branch.
+	var pr pull
+	fork, pushed := false, false
+	if o.PR == 0 {
+		o.PR = forkNumber(o.Branch)
+	}
+	if o.PR != 0 {
+		if err := ghJSON(root, &pr, "pr", "view", strconv.Itoa(o.PR), "--repo", slug, "--json",
+			"state,headRefName,baseRefName,isCrossRepository,maintainerCanModify,headRepository,headRepositoryOwner,autoMergeRequest"); err != nil {
+			return Result{}, err
+		}
+		if pr.State != "OPEN" {
+			return Result{}, fmt.Errorf("#%d is not open", o.PR)
+		}
+		o.Base, o.Branch = pr.BaseRefName, pr.HeadRefName
+		if pr.IsCrossRepository {
+			if !pr.MaintainerCanModify {
+				return Result{}, fmt.Errorf("#%d does not allow edits by maintainers", o.PR)
+			}
+			o.Branch = ForkBranch(o.PR)
+			// The ref the head is fetched into marks an adopted PR, which only a push makes it.
+			ref := Tracking(o.Branch)
+			if !hasRef(root, ref) {
+				defer func() {
+					if !pushed {
+						_ = gitRun(root, nil, "update-ref", "-d", ref)
+					}
+				}()
+			}
+			if err := gitRun(root, nil, "fetch", "origin", fmt.Sprintf("+refs/pull/%d/head:%s", o.PR, ref)); err != nil {
+				return Result{}, err
+			}
+			fork = true
+		}
+	}
+
 	if o.Title != "" && o.Paths == nil {
 		o.Paths, err = dirty(root)
 		if err != nil {
@@ -164,7 +250,20 @@ func Publish(dir string, o Options) (Result, error) {
 	}
 	fmt.Println("Publishing branch:", branch)
 	current, _ := gitOut(root, nil, "branch", "--show-current")
-	remoteBranch := hasRef(root, "refs/remotes/origin/"+branch)
+	tracking := Tracking(branch)
+	remoteBranch := hasRef(root, tracking)
+	// The checkout holds someone else's PR as it should merge: its files go out as they are here.
+	if o.PR != 0 && remoteBranch && o.Paths != nil {
+		listed, err := gitOut(root, nil, "diff", "--no-renames", "--name-only", "-z", "origin/"+o.Base+"..."+tracking)
+		if err != nil {
+			return Result{}, err
+		}
+		for _, f := range splitZ(listed) {
+			if !slices.Contains(o.Paths, f) {
+				o.Paths = append(o.Paths, f)
+			}
+		}
+	}
 
 	// Paths whose edits build on another open PR's or queued publish's edits in the same files
 	// queue behind them; a publish of a queued branch without paths publishes its queue commit
@@ -217,7 +316,9 @@ func Publish(dir string, o Options) (Result, error) {
 	if prTitle == "" {
 		prTitle, _ = gitOut(root, nil, "log", "-1", "--format=%s")
 	}
-	_ = gitRun(root, nil, "config", "--local", "branch."+branch+".rufin-pr-title", prTitle)
+	if o.PR == 0 {
+		_ = gitRun(root, nil, "config", "--local", "branch."+branch+".rufin-pr-title", prTitle)
+	}
 	if o.BodySet {
 		_ = gitRun(root, nil, "config", "--local", "branch."+branch+".rufin-pr-body", o.Body)
 	} else if body, err := gitOut(root, nil, "config", "--local", "--get", "branch."+branch+".rufin-pr-body"); err == nil {
@@ -236,7 +337,7 @@ func Publish(dir string, o Options) (Result, error) {
 	switch {
 	case final:
 		if remoteBranch {
-			start = "origin/" + branch
+			start = tracking
 		}
 		if patch, err = gitBytes(root, "diff", "--binary", own.Commit+"^", own.Commit); err != nil {
 			return Result{}, err
@@ -247,7 +348,7 @@ func Publish(dir string, o Options) (Result, error) {
 		case len(behind) > 0:
 			remote := ""
 			if remoteBranch {
-				remote = "origin/" + branch
+				remote = tracking
 			}
 			if patchBase, err = queueBase(root, remote, behind); err != nil {
 				return Result{}, err
@@ -256,7 +357,7 @@ func Publish(dir string, o Options) (Result, error) {
 		case current == branch:
 			start = "HEAD"
 		case remoteBranch:
-			patchBase, start = "origin/"+branch, "origin/"+branch
+			patchBase, start = tracking, tracking
 		}
 		if len(o.Paths) > 0 {
 			if snapshot, err = snapshotTree(root, patchBase, o.Paths); err != nil {
@@ -272,7 +373,7 @@ func Publish(dir string, o Options) (Result, error) {
 	case hasRef(root, "refs/heads/"+branch):
 		start = "refs/heads/" + branch
 	case remoteBranch:
-		start = "origin/" + branch
+		start = tracking
 	default:
 		return Result{}, fmt.Errorf("branch %s does not exist; give paths to create it", branch)
 	}
@@ -288,8 +389,13 @@ func Publish(dir string, o Options) (Result, error) {
 
 	// A queue commit stays on its base; the final publish merges the base branch.
 	if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", "origin/"+o.Base, "HEAD"); err != nil && len(behind) == 0 {
-		// A merge keeps the branch's commits and signatures as they are.
-		if err := gitRun(work, nil, "merge", "-q", "--no-edit", "origin/"+o.Base); err != nil {
+		// A merge keeps the branch's commits and signatures as they are. Where someone else's PR
+		// conflicts with the base its side stands: the patch then puts the checkout's version there.
+		merge := []string{"merge", "-q", "--no-edit"}
+		if o.PR != 0 && len(patch) > 0 {
+			merge = append(merge, "-X", "ours")
+		}
+		if err := gitRun(work, nil, append(merge, "origin/"+o.Base)...); err != nil {
 			_ = gitRun(work, nil, "merge", "--abort")
 			return Result{}, fmt.Errorf("could not merge origin/%s into %s; merge it by hand and publish again", o.Base, branch)
 		}
@@ -371,8 +477,8 @@ func Publish(dir string, o Options) (Result, error) {
 	}
 
 	if remoteBranch {
-		if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", "origin/"+branch, "HEAD"); err != nil {
-			return result, fmt.Errorf("origin/%s has commits this branch lacks; merge them and publish again", branch)
+		if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", tracking, "HEAD"); err != nil {
+			return result, fmt.Errorf("%s has commits this branch lacks; merge them and publish again", tracking)
 		}
 	}
 	// A queue commit's checks already ran; what merging changed is CI's.
@@ -381,17 +487,32 @@ func Publish(dir string, o Options) (Result, error) {
 			return result, err
 		}
 	}
-	if err := gitRun(work, nil, "push", "--no-verify", "origin", "HEAD:refs/heads/"+branch); err != nil {
+	if !fork {
+		err = gitRun(work, nil, "push", "--no-verify", "origin", "HEAD:refs/heads/"+branch)
+	} else {
+		// The fork is reached the way origin is, under its own owner and name.
+		url, _ := gitOut(root, nil, "remote", "get-url", "--push", "origin")
+		url = strings.Replace(url, slug, pr.HeadRepositoryOwner.Login+"/"+pr.HeadRepository.Name, 1)
+		err = gitRun(work, nil, "push", "--no-verify", url, "HEAD:refs/heads/"+pr.HeadRefName)
+	}
+	if err != nil {
 		return result, err
 	}
+	pushed = true
+	if o.PR != 0 {
+		_ = gitRun(root, nil, "update-ref", prRefs+strconv.Itoa(o.PR), runEnd)
+	}
 
-	number := openPR(root, slug, branch)
+	number := o.PR
+	if number == 0 {
+		number = openPR(root, slug, branch)
+	}
 	if number == 0 {
 		if err := ghRun(root, "pr", "create", "--repo", slug, "--base", o.Base, "--head", branch, "--title", prTitle, "--body", o.Body); err != nil {
 			return result, err
 		}
 		number = openPR(root, slug, branch)
-	} else if o.BodySet {
+	} else if o.BodySet && o.PR == 0 {
 		_ = ghRun(root, "pr", "edit", strconv.Itoa(number), "--repo", slug, "--body", o.Body)
 	}
 	if number == 0 {
@@ -401,12 +522,20 @@ func Publish(dir string, o Options) (Result, error) {
 	_ = gitRun(root, nil, "config", "--local", "--unset-all", "branch."+branch+".rufin-pr-body")
 	result.Number = number
 	result.URL, _ = ghOut(root, "pr", "view", strconv.Itoa(number), "--repo", slug, "--json", "url", "--jq", ".url")
-	if o.AutoMerge {
-		method := "--squash"
-		if o.MergeCommit {
-			method = "--merge"
+	// Someone else's PR keeps its title and body; the first title given here names its squash
+	// commit instead.
+	if o.AutoMerge && (o.PR == 0 || pr.AutoMergeRequest == nil) {
+		merge := []string{"pr", "merge", strconv.Itoa(number), "--repo", slug, "--auto", "--squash"}
+		switch {
+		case o.MergeCommit:
+			merge[len(merge)-1] = "--merge"
+		case o.PR != 0 && o.Title != "":
+			merge = append(merge, "--subject", fmt.Sprintf("%s (#%d)", o.Title, number))
 		}
-		if err := ghRun(root, "pr", "merge", strconv.Itoa(number), "--repo", slug, "--auto", method, "--delete-branch"); err != nil {
+		if !fork {
+			merge = append(merge, "--delete-branch")
+		}
+		if err := ghRun(root, merge...); err != nil {
 			fmt.Println("Auto-merge not enabled:", err)
 		}
 	}
@@ -443,7 +572,7 @@ func runChecks(work, base, branch string, o Options, env []string) error {
 	case o.Full:
 		remote, _ := gitOut(work, nil, "remote", "get-url", "origin")
 		head, _ := gitOut(work, nil, "rev-parse", "HEAD")
-		old, err := gitOut(work, nil, "rev-parse", "-q", "--verify", "origin/"+branch)
+		old, err := gitOut(work, nil, "rev-parse", "-q", "--verify", Tracking(branch))
 		if err != nil {
 			old = strings.Repeat("0", len(head))
 		}

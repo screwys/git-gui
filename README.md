@@ -17,7 +17,9 @@ service that runs the app's commands and watches my open pull requests and relea
 - A publish whose edits build on another open PR's edits in the same files queues behind it: its
   checks run at once, and it is published once that PR merges, even with the window closed. Fixes
   to the earlier PR leave the queued edits out. A release can also wait for a PR to merge.
-- Your open PRs are watched: a PR that falls behind its base while auto-merge waits gets updated,
+- A contributor's PR lands the same way: `git-gui publish --pr NUMBER` commits your rework onto
+  their branch, fork included, so their PR is the one that merges.
+- Your open PRs, and the PRs of others you published onto, are watched: a PR that falls behind its base while auto-merge waits gets updated,
   and you get notifications for failed checks, conflicts, passing checks, merges, release workflow
   results and finished commands.
 

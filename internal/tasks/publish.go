@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,14 @@ change is. The first TITLE names the PR, later ones only their commits. Without 
 branch's existing commits are published. Later paths for an open PR go out as their difference
 from it, and the published files here then match the PR.
 
+--pr publishes onto an open PR someone else opened, a fork's included when it allows edits by
+maintainers. The checkout must already hold that PR's changes ("gh pr diff NUMBER | git apply"):
+every file the PR changes goes out as it is here, besides PATHs, so a file put back to the base
+leaves the PR. The PR keeps its title; TITLE names the commit and, on the first publish, the
+squash commit. Without TITLE the PR is merged with the base, checked and set to auto-merge as it
+is. A fork's PR is the branch "pr/NUMBER" here, which --branch also takes; "git-gui wait-pr
+NUMBER" follows it like one of your own.
+
 Paths whose edits build on edits another of your open PRs or a queued publish made in the same
 files are queued instead: the checks run now, and git-gui-daemon publishes the branch once those
 merge. Follow a queued branch with "git-gui wait-pr BRANCH". Queued edits stay out of other
@@ -35,6 +44,7 @@ The project's generate command runs before committing and its check command befo
 Options:
   --base BRANCH     Base branch (default from settings)
   --branch BRANCH   Topic branch (default: the current branch, or named after TITLE on the base)
+  --pr NUMBER       Publish onto this open PR's branch instead of a topic branch of your own
   --body TEXT       PR body; needs GIT_GUI_ALLOW_PR_BODY=1, only for text the user gave
   --body-file PATH  PR body read from PATH; the same rule applies
   --run COMMAND     Run COMMAND in the publish worktree and publish what it changes
@@ -68,6 +78,13 @@ func Publish(args []string) int {
 			o.Base = value()
 		case "--branch":
 			o.Branch = value()
+		case "--pr":
+			number, err := strconv.Atoi(strings.TrimPrefix(value(), "#"))
+			if err != nil || number <= 0 {
+				fmt.Println("--pr needs a PR number")
+				return 2
+			}
+			o.PR = number
 		case "--body":
 			o.Body, o.BodySet = value(), true
 		case "--body-file":
@@ -111,6 +128,10 @@ func Publish(args []string) int {
 		o.Paths = args
 	}
 	if printBranch {
+		if o.PR != 0 {
+			fmt.Fprintln(os.Stderr, "--print-branch names topic branches, not a PR's")
+			return 2
+		}
 		c, err := publish.Open(".")
 		if err == nil {
 			var branch string
@@ -230,14 +251,15 @@ func Status([]string) int {
 	}
 	published := map[string]int{}
 	for _, pr := range state.PRs {
-		if pr.Repo != slug || gitLine(root, "rev-parse", "-q", "--verify", "origin/"+pr.Branch) == "" {
+		tracking := publish.Tracking(pr.Branch)
+		if pr.Repo != slug || gitLine(root, "rev-parse", "-q", "--verify", tracking) == "" {
 			continue
 		}
 		for _, path := range dirty {
 			if published[path] != 0 {
 				continue
 			}
-			theirs := gitLine(root, "rev-parse", "-q", "--verify", "origin/"+pr.Branch+":"+path)
+			theirs := gitLine(root, "rev-parse", "-q", "--verify", tracking+":"+path)
 			if _, err := os.Stat(filepath.Join(root, path)); err == nil {
 				if theirs != "" && gitLine(root, "hash-object", "--", path) == theirs {
 					published[path] = pr.Number

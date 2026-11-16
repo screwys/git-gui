@@ -72,6 +72,16 @@ while testing against real repositories.
   pushes. Any path publish takes back out, with `git apply -R --3way`, the edits of queued
   publishes it does not build on (those waiting on it, newest first); same-line edits stop it.
   Paths holding only an open PR's version are left out. Cancelling deletes the ref; the edits stay.
+- `--pr N` publishes onto a PR someone else opened. A same-repository PR is just its branch. A
+  fork's PR is the branch `pr/N` everywhere (publish, the queue, `daemon.json`, `wait-pr`); its
+  head is fetched from `refs/pull/N/head` into `refs/git-gui/pr/N`, which `publish.Tracking`
+  returns in place of `origin/<branch>`, and the push goes to the fork's URL. `refs/git-gui/pr/N`
+  outlives the publish only after a push, for same-repository PRs too: it marks the PR as adopted
+  (`publish.Adopted`), which makes it a carrier for the queue and a PR the daemon watches, until a
+  later publish finds it closed. The paths gain every
+  file the PR changes, because the checkout, not the PR, holds what should merge; for the same
+  reason the base is merged in with `-X ours` before the patch applies. The PR's title and body
+  are never edited: the first title is the squash subject passed to `gh pr merge --auto`.
 - **Release after PR merges** is a daemon schedule followed through `ScheduleFollower`.
 - `--full` runs the pre-push hook before the push instead of through it, like the check command,
   so a queued publish runs the same gate.
@@ -80,8 +90,9 @@ while testing against real repositories.
 
 ## git-gui-daemon
 
-- One GraphQL search (`is:pr is:open author:@me`) every 30 s, 10 s while a schedule is active, with
-  the `gh auth token`. The token is read again after a 401 and never stored.
+- One GraphQL query every 30 s, 10 s while a schedule is active, with the `gh auth token`: the
+  user's open PRs (`is:pr is:open author:@me`) and, by number, the adopted PRs of the publishing
+  checkout, which are watched like the user's own. The token is read again after a 401 and never stored.
 - Branch updates use `PUT /repos/{repo}/pulls/{n}/update-branch` with `expected_head_sha`, only for
   PRs with auto-merge, no failing checks and `mergeStateStatus == BEHIND`, also while checks run.
   A failing PR gets main merged in by its fix push instead.

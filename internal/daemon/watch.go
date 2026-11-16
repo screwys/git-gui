@@ -18,21 +18,20 @@ import (
 	"github.com/screwys/git-gui/internal/publish"
 )
 
-const searchQuery = `query {
-  search(query: "is:pr is:open author:@me archived:false", type: ISSUE, first: 50) {
-    nodes {
-      ... on PullRequest {
-        number title url isDraft headRefName headRefOid mergeStateStatus
-        autoMergeRequest { enabledAt }
-        repository { nameWithOwner }
-        commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
-          __typename
-          ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
-          ... on StatusContext { context state targetUrl startedAt: createdAt }
-        } } } } } }
-      }
-    }
-  }
+// The user's own open PRs; watchPRs adds the PRs of others that were published onto from a checkout.
+const searchQuery = `mine: search(query: "is:pr is:open author:@me archived:false", type: ISSUE, first: 50) { nodes { ...pr } }`
+
+const adoptedQuery = `a%d: repository(owner: %q, name: %q) { pullRequest(number: %d) { ...pr } }`
+
+const prFragment = `fragment pr on PullRequest {
+  number title url state isDraft isCrossRepository headRefName headRefOid mergeStateStatus
+  autoMergeRequest { enabledAt }
+  repository { nameWithOwner }
+  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+    __typename
+    ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
+    ... on StatusContext { context state targetUrl startedAt: createdAt }
+  } } } } } }
 }`
 
 const stateQuery = `query($owner: String!, $name: String!, $number: Int!) {
@@ -96,25 +95,23 @@ func (n CheckNode) Check() Check {
 
 func (p PR) key() string { return fmt.Sprintf("%s#%d", p.Repo, p.Number) }
 
-type searchResult struct {
-	Search struct {
+type prNode struct {
+	Number            int
+	Title             string
+	URL               string
+	State             string
+	IsDraft           bool
+	IsCrossRepository bool
+	HeadRefName       string
+	HeadRefOid        string
+	MergeStateStatus  string
+	AutoMergeRequest  *struct{}
+	Repository        struct{ NameWithOwner string }
+	Commits           struct {
 		Nodes []struct {
-			Number           int
-			Title            string
-			URL              string
-			IsDraft          bool
-			HeadRefName      string
-			HeadRefOid       string
-			MergeStateStatus string
-			AutoMergeRequest *struct{}
-			Repository       struct{ NameWithOwner string }
-			Commits          struct {
-				Nodes []struct {
-					Commit struct {
-						StatusCheckRollup *struct {
-							Contexts struct{ Nodes []CheckNode }
-						}
-					}
+			Commit struct {
+				StatusCheckRollup *struct {
+					Contexts struct{ Nodes []CheckNode }
 				}
 			}
 		}
@@ -145,9 +142,30 @@ func (d *daemon) loadCheckouts() {
 }
 
 func (d *daemon) watchPRs(ctx context.Context) error {
-	var result searchResult
-	if err := d.graphql(ctx, searchQuery, nil, &result); err != nil {
+	query, adopted := searchQuery, 0
+	for repo, checkout := range d.checkouts {
+		owner, name, _ := strings.Cut(repo, "/")
+		for _, number := range publish.Adopted(checkout) {
+			query += "\n" + fmt.Sprintf(adoptedQuery, adopted, owner, name, number)
+			adopted++
+		}
+	}
+	var result map[string]json.RawMessage
+	if err := d.graphql(ctx, "query {\n"+query+"\n}\n"+prFragment, nil, &result); err != nil {
 		return err
+	}
+	var mine struct{ Nodes []prNode }
+	if err := json.Unmarshal(result["mine"], &mine); err != nil {
+		return err
+	}
+	nodes := mine.Nodes
+	for i := range adopted {
+		var other struct{ PullRequest prNode }
+		_ = json.Unmarshal(result[fmt.Sprintf("a%d", i)], &other)
+		listed := slices.ContainsFunc(nodes, func(n prNode) bool { return n.URL == other.PullRequest.URL })
+		if other.PullRequest.State == "OPEN" && !listed {
+			nodes = append(nodes, other.PullRequest)
+		}
 	}
 	d.mu.Lock()
 	previous := append(append([]PR{}, d.state.PRs...), d.state.Leaving...)
@@ -160,12 +178,16 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 	open := map[string]bool{}
 	prs := []PR{}
 	var notices [][3]string
-	for _, node := range result.Search.Nodes {
+	for _, node := range nodes {
 		if node.Number == 0 {
 			continue
 		}
 		pr := PR{Repo: node.Repository.NameWithOwner, Number: node.Number, Title: node.Title, URL: node.URL, Branch: node.HeadRefName, Head: node.HeadRefOid,
 			Failed: []string{}, Checks: []Check{}}
+		// A fork's branch is not one of this repository's: it goes by the name publish gives it.
+		if node.IsCrossRepository {
+			pr.Branch = publish.ForkBranch(node.Number)
+		}
 		open[pr.key()] = true
 		running := false
 		for _, commit := range node.Commits.Nodes {
