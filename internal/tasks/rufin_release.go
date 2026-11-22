@@ -28,7 +28,7 @@ Homebrew cask is updated and the Flathub PR is opened and merged.
 `
 
 const (
-	flathubRepo  = "flathub/io.github.screwys.Rufin"
+	flathubRepo  = "flathub/app.rufin.rufin"
 	homebrewRepo = "screwys/homebrew-tap"
 )
 
@@ -347,8 +347,9 @@ func (r *rufinRelease) flathub() error {
 		return err
 	}
 	files := map[string]string{
-		"packaging/flatpak/io.github.screwys.Rufin.flathub.json": "io.github.screwys.Rufin.json",
+		"packaging/flatpak/app.rufin.rufin.flathub.json":         "app.rufin.rufin.json",
 		"packaging/flatpak/cargo-sources.json":                   "cargo-sources.json",
+		"packaging/flatpak/libbs2b-automake-dist-xz.patch":       "libbs2b-automake-dist-xz.patch",
 		"packaging/flatpak/update-generated-sources.flathub.yml": ".github/workflows/update-generated-sources.yml",
 	}
 	for from, to := range files {
@@ -363,7 +364,7 @@ func (r *rufinRelease) flathub() error {
 		}
 	}
 	update := exec.Command("cargo", "run", "--locked", "-q", "-p", "xtask", "--", "release", "update-flathub-manifest",
-		"--manifest", filepath.Join(clone, "io.github.screwys.Rufin.json"), r.version)
+		"--manifest", filepath.Join(clone, "app.rufin.rufin.json"), r.version)
 	update.Dir, update.Stdout, update.Stderr = r.root, os.Stdout, os.Stderr
 	if err := update.Run(); err != nil {
 		return err

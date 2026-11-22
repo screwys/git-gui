@@ -95,7 +95,7 @@ const releaseQuery = `query($owner: String!, $name: String!, $generic: Boolean!)
 }`
 
 const flathubQuery = `query($head: String!) {
-  repository(owner: "flathub", name: "io.github.screwys.Rufin") {
+  repository(owner: "flathub", name: "app.rufin.rufin") {
     pullRequests(headRefName: $head, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) {
       nodes { number title url state }
     }
