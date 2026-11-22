@@ -347,7 +347,7 @@ func (r *rufinRelease) flathub() error {
 		return err
 	}
 	files := map[string]string{
-		"packaging/flatpak/app.rufin.rufin.flathub.json":         "app.rufin.rufin.json",
+		"packaging/flatpak/app.rufin.rufin.json":                 "app.rufin.rufin.json",
 		"packaging/flatpak/cargo-sources.json":                   "cargo-sources.json",
 		"packaging/flatpak/libbs2b-automake-dist-xz.patch":       "libbs2b-automake-dist-xz.patch",
 		"packaging/flatpak/update-generated-sources.flathub.yml": ".github/workflows/update-generated-sources.yml",
