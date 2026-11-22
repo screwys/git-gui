@@ -42,7 +42,7 @@ publishes of the same files.
 The project's generate command runs before committing and its check command before pushing.
 
 Options:
-  --base BRANCH     Base branch (default from settings)
+  --base BRANCH     Base branch (default: the repository's default branch)
   --branch BRANCH   Topic branch (default: the current branch, or named after TITLE on the base)
   --pr NUMBER       Publish onto this open PR's branch instead of a topic branch of your own
   --body TEXT       PR body; needs GIT_GUI_ALLOW_PR_BODY=1, only for text the user gave
