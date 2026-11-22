@@ -103,7 +103,7 @@ func NewPublishTab(repo string) *PublishTab {
 	branchGroup := group("Branch Options")
 	t.branch = gtk.NewEntry()
 	t.base = gtk.NewEntry()
-	t.base.SetText(appConfig.DefaultBaseBranch)
+	t.base.SetText(git.DefaultBranch(repo))
 	t.base.SetWidthChars(8)
 	branchRow := row("Branch:", t.branch)
 	branchRow.Append(gtk.NewLabel("Base:"))
@@ -547,7 +547,7 @@ func (t *PublishTab) baseBranch() string {
 	if base := strings.TrimSpace(t.base.Text()); base != "" {
 		return base
 	}
-	return appConfig.DefaultBaseBranch
+	return git.DefaultBranch(t.repo)
 }
 
 func (t *PublishTab) bodyText() string {

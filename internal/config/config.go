@@ -16,7 +16,6 @@ type Config struct {
 	NocblueRepoPath     string              `json:"nocblue_repo_path"`
 	PublishGenerate     string              `json:"publish_generate"` // run in the publish worktree before committing
 	PublishCheck        string              `json:"publish_check"`    // run before pushing, with the base ref as last argument
-	DefaultBaseBranch   string              `json:"default_base_branch"`
 	DefaultAutoMerge    bool                `json:"default_auto_merge"`
 	WrapDiff            bool                `json:"wrap_diff"`
 	ProjectPaths        []string            `json:"project_paths"`
@@ -48,7 +47,6 @@ func Defaults() Config {
 		NocblueRepoPath:     filepath.Join(projects, "nocblue"),
 		PublishGenerate:     "just generate",
 		PublishCheck:        "just lint",
-		DefaultBaseBranch:   "main",
 		DefaultAutoMerge:    true,
 		WrapDiff:            true,
 		ProjectPaths:        []string{},

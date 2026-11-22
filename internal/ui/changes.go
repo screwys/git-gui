@@ -288,15 +288,11 @@ func (c *ChangesTab) Refresh() {
 	c.load()
 }
 
-// defaultBase is origin's copy of the configured base branch, else the local one, else what
-// origin/HEAD points to.
+// defaultBase is origin's copy of the default branch, else the local one.
 func defaultBase(path string, refs []string) string {
-	branch := appConfig.DefaultBaseBranch
-	originHead, _ := git.Run(path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-	for _, ref := range []string{"origin/" + branch, branch, originHead} {
-		if ref != "" && slices.Contains(refs, ref) {
-			return ref
-		}
+	branch := git.DefaultBranch(path)
+	if slices.Contains(refs, "origin/"+branch) {
+		return "origin/" + branch
 	}
 	return branch
 }

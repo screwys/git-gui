@@ -105,7 +105,6 @@ func showSettings(parent gtk.Widgetter, activeRepo string, onClose func()) {
 
 	options := adw.NewPreferencesGroup()
 	options.SetTitle("Defaults")
-	text(options, "Base Branch", &appConfig.DefaultBaseBranch, defaults.DefaultBaseBranch, nil)
 	toggle(options, "Squash auto-merge by default", &appConfig.DefaultAutoMerge, defaults.DefaultAutoMerge)
 	toggle(options, "Wrap diff & editor lines by default", &appConfig.WrapDiff, defaults.WrapDiff)
 	page.Add(options)

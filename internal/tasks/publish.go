@@ -59,7 +59,7 @@ Options:
 // Publish is "git-gui publish": one publish of the checkout in the current directory.
 func Publish(args []string) int {
 	cfg := config.Load()
-	o := publish.Options{Base: cfg.DefaultBaseBranch, AutoMerge: true, Generate: cfg.PublishGenerate, Check: cfg.PublishCheck}
+	o := publish.Options{Base: git.DefaultBranch("."), AutoMerge: true, Generate: cfg.PublishGenerate, Check: cfg.PublishCheck}
 	printBranch := false
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		flag := args[0]
@@ -182,7 +182,7 @@ func enqueue(o publish.Options, branch string) int {
 
 // Sync is "git-gui sync": bring the base branch here up to origin, merging local edits.
 func Sync([]string) int {
-	if _, err := publish.Sync(".", config.Load().DefaultBaseBranch, true); err != nil {
+	if _, err := publish.Sync(".", git.DefaultBranch("."), true); err != nil {
 		fmt.Println(err)
 		return 1
 	}
@@ -197,7 +197,7 @@ func Status([]string) int {
 		fmt.Println(err)
 		return 0
 	}
-	root, base := c.Root, config.Load().DefaultBaseBranch
+	root, base := c.Root, git.DefaultBranch(c.Root)
 	fmt.Println("\n# " + filepath.Base(root) + " checkout")
 	done := make(chan error, 1)
 	var synced bool

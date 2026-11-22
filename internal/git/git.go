@@ -47,6 +47,13 @@ func Run(repo string, args ...string) (string, error) {
 	return strings.TrimSuffix(string(out), "\n"), nil
 }
 
+// DefaultBranch is the branch origin/HEAD names: the remote's default branch, "main" or
+// "master". `git remote set-head origin --auto` updates it after the remote renames it.
+func DefaultBranch(repo string) string {
+	head, _ := Run(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	return strings.TrimPrefix(head, "origin/")
+}
+
 // IsRepo reports whether dir is inside a Git work tree.
 func IsRepo(dir string) bool {
 	out, err := Run(dir, "rev-parse", "--is-inside-work-tree")

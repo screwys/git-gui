@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/screwys/git-gui/internal/config"
+	"github.com/screwys/git-gui/internal/git"
 	"github.com/screwys/git-gui/internal/publish"
 )
 
@@ -139,7 +140,7 @@ func repoSlug(checkout string) string {
 func (d *daemon) loadCheckouts() {
 	d.checkouts = map[string]string{}
 	cfg := config.Load()
-	d.base = cfg.DefaultBaseBranch
+	d.base = git.DefaultBranch(cfg.RufinRepoPath)
 	if slug := repoSlug(cfg.RufinRepoPath); slug != "" {
 		d.checkouts[slug] = cfg.RufinRepoPath
 	}

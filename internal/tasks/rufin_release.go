@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/screwys/git-gui/internal/config"
 	"github.com/screwys/git-gui/internal/git"
 	"github.com/screwys/git-gui/internal/publish"
 )
@@ -91,7 +90,7 @@ func newRufinRelease(version, summary string) (*rufinRelease, error) {
 	if slug == "" {
 		return nil, errors.New("origin is not a GitHub repository")
 	}
-	r := &rufinRelease{root: c.Root, slug: slug, base: config.Load().DefaultBaseBranch, version: version,
+	r := &rufinRelease{root: c.Root, slug: slug, base: git.DefaultBranch(c.Root), version: version,
 		plain: strings.TrimPrefix(version, "v"), summary: summary}
 	return r, r.git("fetch", "--prune", "--force", "--tags", "origin")
 }
