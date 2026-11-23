@@ -343,6 +343,11 @@ func (r *rufinRelease) flathub() error {
 		return err
 	}
 	in := func(args ...string) error { return r.git(append([]string{"-C", clone}, args...)...) }
+	// Flathub's master moves on after a release lands, so the tag's files must not go over it again.
+	if manifest, _ := r.out("git", "-C", clone, "show", "origin/master:app.rufin.rufin.json"); strings.Contains(manifest, `"tag": "`+r.version+`"`) {
+		fmt.Println("Flathub already has", r.version)
+		return nil
+	}
 	if err := in("switch", "-q", "-C", branch, "origin/master"); err != nil {
 		return err
 	}
@@ -381,10 +386,6 @@ func (r *rufinRelease) flathub() error {
 		}
 	}
 	state, _ := r.gh("pr", "list", "--repo", flathubRepo, "--head", branch, "--state", "all", "--json", "number,state", "--jq", `.[0] | "\(.number) \(.state)"`)
-	if strings.HasSuffix(state, " MERGED") {
-		fmt.Println("Flathub already has", r.version)
-		return nil
-	}
 	number, _, _ := strings.Cut(state, " ")
 	if !strings.HasSuffix(state, " OPEN") {
 		if _, err := r.gh("pr", "create", "--repo", flathubRepo, "--base", "master", "--head", branch, "--title", title, "--body", ""); err != nil {
