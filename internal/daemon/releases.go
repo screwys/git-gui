@@ -168,6 +168,7 @@ func (d *daemon) pollReleases(ctx context.Context) {
 			d.notifyConclusions(r, result)
 			r.Shown, r.Tags, r.RepoURL, r.ReleaseURL = result.Shown, result.Tags, result.RepoURL, result.ReleaseURL
 			r.PRURL, r.FlathubURL, r.Rows, r.Sync = result.PRURL, result.FlathubURL, result.Rows, result.Sync
+			r.RunID, r.RunStatus = result.RunID, result.RunStatus
 			r.Updated = time.Now().Unix()
 		}
 		if asked.Checking {
