@@ -62,11 +62,11 @@ func AddWorkspace(main, name, path, revision string, profile bool) error {
 	for _, dir := range ownLocal[:3] {
 		_ = os.MkdirAll(filepath.Join(path, ".local", dir), 0o755)
 	}
-	for _, shared := range []string{"android/.toolchains", ".claude/settings.local.json"} {
-		if _, err := os.Lstat(filepath.Join(main, shared)); err == nil {
-			_ = os.MkdirAll(filepath.Dir(filepath.Join(path, shared)), 0o755)
-			_ = os.Symlink(filepath.Join(main, shared), filepath.Join(path, shared))
-		}
+	// The Android toolchains are a directory the ignore rules name as one, so they are copied.
+	_ = copyTree(filepath.Join(main, "android", ".toolchains"), filepath.Join(path, "android", ".toolchains"))
+	if _, err := os.Lstat(filepath.Join(main, ".claude", "settings.local.json")); err == nil {
+		_ = os.MkdirAll(filepath.Join(path, ".claude"), 0o755)
+		_ = os.Symlink(filepath.Join(main, ".claude", "settings.local.json"), filepath.Join(path, ".claude", "settings.local.json"))
 	}
 	if !profile {
 		return nil

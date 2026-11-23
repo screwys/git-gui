@@ -84,7 +84,9 @@ while testing against real repositories.
   delete it.
 - Session workspaces (`workspace.go`, `git-gui workspace`) live in `.claude/worktrees/<name>`,
   which `.git/info/exclude` keeps out of the shared checkout, and get `cp --reflink` copies of
-  `target/debug` and of the devel profile (`.local/profile`, which Rufin's `just debug` uses):
+  `target/debug`, `android/.toolchains` and the devel profile (`.local/profile`, which Rufin's
+  `just debug` uses). A link in place of the toolchains would be tracked, since the ignore rule
+  names a directory, and publish would carry it. The build directory is copied, not shared:
   Cargo matches a checkout's crates to builds by relative path and file time, so a shared build
   directory reuses another checkout's builds. Rufin's `.claude/settings.local.json` points the
   WorktreeCreate and WorktreeRemove hooks at `git-gui workspace hook`. Each workspace syncs
