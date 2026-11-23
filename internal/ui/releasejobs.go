@@ -74,6 +74,7 @@ type ReleaseJobs struct {
 	OnWorkflowStarted func() // the release job started or followed a workflow run
 	OnLocalWork       func() // the release job's local work resumed after remote workflows passed
 	OnRemoteReady     func() // GitHub reported workflow runs for the release
+	OnLoaded          func() // a daemon answer was applied
 }
 
 // NewReleaseJobs builds the view for repo. runner is the tab's release job, which the daemon keeps
@@ -201,6 +202,19 @@ func (v *ReleaseJobs) Sync() {
 // Tag is the release shown, for resuming it.
 func (v *ReleaseJobs) Tag() string { return v.releaseTag }
 
+// Complete reports that GitHub shows every row of tag's release done.
+func (v *ReleaseJobs) Complete(tag string) bool {
+	if tag == "" || v.shown != tag || len(v.rows) == 0 {
+		return false
+	}
+	for _, row := range v.rows {
+		if !slices.Contains([]string{"success", "skipped", "neutral", "merged"}, row.Status) {
+			return false
+		}
+	}
+	return true
+}
+
 // PRURL is the release's preparation PR, when known.
 func (v *ReleaseJobs) PRURL() string { return v.prURL }
 
@@ -267,6 +281,9 @@ func (v *ReleaseJobs) load(state daemon.State) {
 			}
 			break
 		}
+	}
+	if v.OnLoaded != nil {
+		v.OnLoaded()
 	}
 }
 

@@ -52,6 +52,7 @@ type RufinReleaseTab struct {
 	button      *gtk.Button
 
 	refilled string // the job whose command last refilled the form
+	released string // the version of the form's release job, until GitHub shows it released
 	after    func() // starts the replacement once the stopped release ends
 }
 
@@ -154,6 +155,7 @@ func NewRufinReleaseTab(repo string) *RufinReleaseTab {
 	})
 	t.picker.OnChanged = t.updateButton
 	t.follower.OnChanged = t.scheduleChanged
+	t.out.jobs.OnLoaded = t.clearReleased
 	term := t.out.term
 	term.OnOutput = t.out.feed
 	term.OnStarted = func() { t.out.started(); t.updateButton() }
@@ -386,6 +388,7 @@ func (t *RufinReleaseTab) start(command []string, version string) {
 	term.Clear()
 	term.SetLabel("Running " + version)
 	term.Runner.Start(command, nil)
+	t.released = version
 	t.out.jobs.Follow(version)
 }
 
@@ -444,6 +447,10 @@ func (t *RufinReleaseTab) refill(command []string, running bool) {
 		if !releaseVersion.MatchString(arg) {
 			continue
 		}
+		// A release finished on GitHub after its job stopped has nothing left to resume.
+		if !running && t.out.jobs.Complete(arg) {
+			return
+		}
 		mode := "new"
 		switch {
 		case slices.Contains(command, "--resume"):
@@ -460,9 +467,24 @@ func (t *RufinReleaseTab) refill(command []string, running bool) {
 		if running {
 			t.out.term.SetLabel("Running " + arg)
 		}
+		t.released = arg
 		t.out.jobs.Follow(arg)
 		return
 	}
+}
+
+// clearReleased empties the form once GitHub shows its release done, whether its job finished or
+// stopped before the release was finished on GitHub.
+func (t *RufinReleaseTab) clearReleased() {
+	if t.released == "" || t.out.term.Runner.Running() || !t.out.jobs.Complete(t.released) {
+		return
+	}
+	t.released = ""
+	t.notes.Buffer().SetText("")
+	t.setMode("new")
+	t.version.SetText("")
+	t.out.jobs.tag = "" // Refresh asks for the newest release
+	t.Refresh()
 }
 
 func (t *RufinReleaseTab) finished(code int, record daemon.Record) {
