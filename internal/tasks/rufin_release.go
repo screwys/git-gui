@@ -352,10 +352,9 @@ func (r *rufinRelease) flathub() error {
 		return err
 	}
 	files := map[string]string{
-		"packaging/flatpak/app.rufin.rufin.json":                 "app.rufin.rufin.json",
-		"packaging/flatpak/cargo-sources.json":                   "cargo-sources.json",
-		"packaging/flatpak/libbs2b-automake-dist-xz.patch":       "libbs2b-automake-dist-xz.patch",
-		"packaging/flatpak/update-generated-sources.flathub.yml": ".github/workflows/update-generated-sources.yml",
+		"packaging/flatpak/app.rufin.rufin.json":           "app.rufin.rufin.json",
+		"packaging/flatpak/cargo-sources.json":             "cargo-sources.json",
+		"packaging/flatpak/libbs2b-automake-dist-xz.patch": "libbs2b-automake-dist-xz.patch",
 	}
 	for from, to := range files {
 		data, err := exec.Command("git", "-C", r.root, "show", r.version+":"+from).Output()
