@@ -64,9 +64,9 @@ type PublishTab struct {
 	term   *Terminal
 	checks *ChecksView
 	bottom *gtk.Notebook
-	queue  *gtk.Box
+	queue  *listGroup
 
-	branches, workspaces *gtk.Box
+	branches, workspaces *listGroup
 	runs                 map[string]*jobPage // the Run pages by checkout path
 
 	branch, base, title  *gtk.Entry
@@ -94,8 +94,8 @@ type PublishTab struct {
 // NewPublishTab builds the tab for the Rufin checkout at repo.
 func NewPublishTab(repo string) *PublishTab {
 	t := &PublishTab{repo: repo, files: NewFileList("Publish PR", true), diff: NewDiffView(repo),
-		term: NewTerminal(repo, "publish", "publish"), checks: NewChecksView(repo), queue: group("Queue"),
-		branches: group("Open Branches"), workspaces: group("Run the App"), runs: map[string]*jobPage{}}
+		term: NewTerminal(repo, "publish", "publish"), checks: NewChecksView(repo), queue: newListGroup("Queue"),
+		branches: newListGroup("Open Branches"), workspaces: newListGroup("Run the App"), runs: map[string]*jobPage{}}
 	left := gtk.NewBox(gtk.OrientationVertical, 8)
 	margins(left, 8)
 	left.Append(t.files.Root)
@@ -168,9 +168,9 @@ func NewPublishTab(repo string) *PublishTab {
 	options.Append(t.full)
 	options.Append(t.instant)
 	left.Append(options)
-	left.Append(t.queue)
-	left.Append(t.branches)
-	left.Append(t.workspaces)
+	left.Append(t.queue.Root)
+	left.Append(t.branches.Root)
+	left.Append(t.workspaces.Root)
 
 	right := gtk.NewBox(gtk.OrientationVertical, 6)
 	right.SetMarginStart(8)
@@ -264,9 +264,7 @@ func NewPublishTab(repo string) *PublishTab {
 // showQueue lists the checkout's queued publishes, each with what it waits for and a Cancel
 // button that takes it out of the queue; its edits stay here.
 func (t *PublishTab) showQueue(state daemon.State) {
-	for child := t.queue.LastChild(); child != nil && child != t.queue.FirstChild(); child = t.queue.LastChild() {
-		t.queue.Remove(child)
-	}
+	t.queue.clear()
 	cwd := t.repo
 	if real, err := filepath.EvalSymlinks(cwd); err == nil {
 		cwd = real
@@ -292,23 +290,57 @@ func (t *PublishTab) showQueue(state daemon.State) {
 		line := gtk.NewBox(gtk.OrientationHorizontal, 6)
 		line.Append(label)
 		line.Append(cancel)
-		t.queue.Append(line)
+		t.queue.rows.Append(line)
 		shown++
 	}
-	t.queue.SetVisible(shown > 0)
+	t.queue.Root.SetVisible(shown > 0)
 }
 
-// clearGroup removes a group's rows, keeping its title.
-func clearGroup(box *gtk.Box) {
-	for child := box.LastChild(); child != nil && child != box.FirstChild(); child = box.LastChild() {
-		box.Remove(child)
+// listGroup is a titled section whose rows are replaced as a whole.
+type listGroup struct {
+	Root, rows *gtk.Box
+}
+
+func newListGroup(title string) *listGroup {
+	g := &listGroup{Root: group(title), rows: gtk.NewBox(gtk.OrientationVertical, 4)}
+	g.Root.Append(g.rows)
+	return g
+}
+
+func (g *listGroup) clear() {
+	for child := g.rows.FirstChild(); child != nil; child = g.rows.FirstChild() {
+		g.rows.Remove(child)
 	}
+}
+
+// listRow is a row of a list group: its text, with details dimmed after it, and a button.
+func listRow(text, details, tooltip string, button *gtk.Button) *gtk.Box {
+	label := gtk.NewLabel(text)
+	label.SetXAlign(0)
+	label.SetEllipsize(3)
+	label.SetTooltipText(tooltip)
+	line := gtk.NewBox(gtk.OrientationHorizontal, 6)
+	line.Append(label)
+	if details != "" {
+		dim := gtk.NewLabel(details)
+		dim.AddCSSClass("dim")
+		dim.SetXAlign(0)
+		dim.SetEllipsize(3)
+		dim.SetTooltipText(tooltip)
+		line.Append(dim)
+	}
+	spacer := gtk.NewBox(gtk.OrientationHorizontal, 0)
+	spacer.SetHExpand(true)
+	button.AddCSSClass("flat")
+	line.Append(spacer)
+	line.Append(button)
+	return line
 }
 
 // showBranches lists the checkout's open branches, each with a button that targets it, and the
 // checkouts the app can run from: this one and each session workspace.
 func (t *PublishTab) showBranches() {
-	clearGroup(t.branches)
+	t.branches.clear()
 	open := publish.Branches(t.repo, t.baseBranch())
 	for _, b := range open {
 		state := "prepared, not pushed"
@@ -318,45 +350,32 @@ func (t *PublishTab) showBranches() {
 		case b.Pushed:
 			state = "published"
 		}
-		label := gtk.NewLabel(fmt.Sprintf("%s: %s, %d files", b.Name, state, len(b.Files)))
-		label.SetTooltipText(strings.Join(b.Files, "\n"))
-		label.SetXAlign(0)
-		label.SetHExpand(true)
-		label.SetWrap(true)
+		files := "1 file"
+		if len(b.Files) != 1 {
+			files = fmt.Sprintf("%d files", len(b.Files))
+		}
 		use := gtk.NewButtonWithLabel("Use")
-		use.AddCSSClass("flat")
 		use.SetTooltipText("Publish to this branch")
 		name := b.Name
 		use.ConnectClicked(func() {
 			t.branch.SetText(name)
 			t.Refresh()
 		})
-		line := gtk.NewBox(gtk.OrientationHorizontal, 6)
-		line.Append(label)
-		line.Append(use)
-		t.branches.Append(line)
+		t.branches.rows.Append(listRow(b.Name, state+" · "+files, strings.Join(b.Files, "\n"), use))
 	}
-	t.branches.SetVisible(len(open) > 0)
+	t.branches.Root.SetVisible(len(open) > 0)
 
-	clearGroup(t.workspaces)
+	t.workspaces.clear()
 	checkouts := [][2]string{{"Shared checkout", t.repo}}
 	for _, name := range publish.Workspaces(t.repo) {
 		checkouts = append(checkouts, [2]string{"Workspace " + name, publish.WorkspacePath(t.repo, name)})
 	}
 	for _, checkout := range checkouts {
-		label := gtk.NewLabel(checkout[0])
-		label.SetTooltipText(checkout[1])
-		label.SetXAlign(0)
-		label.SetHExpand(true)
 		run := gtk.NewButtonWithLabel("Run")
-		run.AddCSSClass("flat")
 		run.SetTooltipText("Build and start the devel app from here, as the r command does; a running one stops")
 		title, path := checkout[0], checkout[1]
 		run.ConnectClicked(func() { t.run(title, path) })
-		line := gtk.NewBox(gtk.OrientationHorizontal, 6)
-		line.Append(label)
-		line.Append(run)
-		t.workspaces.Append(line)
+		t.workspaces.rows.Append(listRow(title, "", path, run))
 	}
 }
 
