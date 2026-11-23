@@ -212,7 +212,22 @@ func (t *CommitTab) run() {
 	committing := len(checked) > 0 || amend
 	if committing {
 		if len(checked) > 0 {
-			steps = append(steps, shellJoin(append([]string{"git", "add", "--"}, checked...)))
+			// A deletion git already staged is in neither the index nor the tree, so git add
+			// rejects its path; git rm --cached stages a deletion either way.
+			var deleted, rest []string
+			for _, f := range pick(t.working, checked) {
+				if f.Status == "D" {
+					deleted = append(deleted, f.Path)
+				} else {
+					rest = append(rest, f.Path)
+				}
+			}
+			if len(deleted) > 0 {
+				steps = append(steps, shellJoin(append([]string{"git", "rm", "--cached", "--ignore-unmatch", "-q", "--"}, deleted...)))
+			}
+			if len(rest) > 0 {
+				steps = append(steps, shellJoin(append([]string{"git", "add", "--"}, rest...)))
+			}
 		} else {
 			steps = append(steps, "git add -A")
 		}
