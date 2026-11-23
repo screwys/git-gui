@@ -2,7 +2,11 @@ package ui
 
 import (
 	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +18,26 @@ import (
 func TestConsoleAutoScroll(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	// A private Broadway display keeps the test window off the user's desktop.
+	broadwayd, err := exec.LookPath("gtk4-broadwayd")
+	if err != nil {
+		t.Skip("gtk4-broadwayd unavailable")
+	}
+	n := 100 + os.Getpid()%800
+	display := ":" + strconv.Itoa(n)
+	server := exec.Command(broadwayd, "--address", "127.0.0.1", "--port", strconv.Itoa(20000+n), display)
+	if err := server.Start(); err != nil {
+		t.Skip("gtk4-broadwayd failed:", err)
+	}
+	defer server.Process.Kill()
+	socket := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "broadway"+strconv.Itoa(n)+".socket")
+	for start := time.Now(); time.Since(start) < 5*time.Second; time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+	}
+	t.Setenv("GDK_BACKEND", "broadway")
+	t.Setenv("BROADWAY_DISPLAY", display)
 	if !gtk.InitCheck() {
 		t.Skip("GTK display unavailable")
 	}
@@ -25,11 +49,15 @@ func TestConsoleAutoScroll(t *testing.T) {
 	defer window.Destroy()
 	settle := func() {
 		t.Helper()
-		// Allow layout, scroll animations and incremental line validation to finish.
-		until := time.Now().Add(400 * time.Millisecond)
-		for time.Now().Before(until) {
-			glib.MainContextDefault().Iteration(false)
-			time.Sleep(time.Millisecond)
+		// Wait for layout, scroll animations and incremental line validation to finish: follow
+		// runs below validation's idle priority, so a fixed wait can end before it.
+		quiet := time.Now()
+		for start := time.Now(); time.Since(quiet) < 200*time.Millisecond && time.Since(start) < 10*time.Second; {
+			if glib.MainContextDefault().Iteration(false) {
+				quiet = time.Now()
+			} else {
+				time.Sleep(time.Millisecond)
+			}
 		}
 	}
 	bottom := func() {
