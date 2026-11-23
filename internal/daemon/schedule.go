@@ -83,7 +83,7 @@ func (d *daemon) cancelSchedule(id string) error {
 			continue
 		}
 		if s.Branch != "" {
-			if err := publish.Dequeue(s.Job.Cwd, s.Branch); err != nil {
+			if err := publish.Dequeue(s.Job.Cwd, d.base, s.Branch); err != nil {
 				return err
 			}
 		}
@@ -139,7 +139,7 @@ func (d *daemon) advance(s *Schedule, prState string) {
 // advanceQueued starts a queued publish once no open PR or queued publish it waits for is left;
 // the publish itself queues again if GitHub still lists one open.
 func (d *daemon) advanceQueued(s *Schedule) {
-	queue := publish.Queue(s.Job.Cwd)
+	queue := publish.Queue(s.Job.Cwd, d.base)
 	own, ok := queue[s.Branch]
 	if !ok {
 		s.set("cancelled", "No longer queued")

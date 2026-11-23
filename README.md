@@ -8,8 +8,10 @@ service that runs the app's commands and watches my open pull requests and relea
 
 - Project tabs with file selection, diffs and an editor. Rufin, Igloo and nocblue are built in,
   and **+** adds any Git repository.
-- Rufin: publish PRs from one checkout that several sessions share, without switching it; cut
-  releases and follow every package to its store; sync `main`; build and install the Android app.
+- Rufin: publish PRs from one [jj](https://jj-vcs.github.io/jj/) checkout that several sessions
+  share, without switching it; give a session a workspace of its own when its work overlaps
+  another's; run the app from either; cut releases and follow every package to its store; sync
+  `master`; build and install the Android app.
 - Other projects: commit and push with a rebase onto the remote, tag and publish GitHub releases,
   and edit RPM, Brew and Nix package lists.
 - Commands keep running when the window closes, and the window reattaches to them later. History,
@@ -17,6 +19,9 @@ service that runs the app's commands and watches my open pull requests and relea
 - A publish whose edits build on another open PR's edits in the same files queues behind it: its
   checks run at once, and it is published once that PR merges, even with the window closed. Fixes
   to the earlier PR leave the queued edits out. A release can also wait for a PR to merge.
+- Session workspaces (`git-gui workspace`, also Claude Code's WorktreeCreate and WorktreeRemove
+  hooks) get copy-on-write copies of the build directory and the devel profile, so builds and
+  Store versions in one never touch another's.
 - A contributor's PR lands the same way: `git-gui publish --pr NUMBER` commits your rework onto
   their branch, fork included, so their PR is the one that merges.
 - Your open PRs, and the PRs of others you published onto, are watched: a PR that falls behind its base while auto-merge waits gets updated,
@@ -25,7 +30,7 @@ service that runs the app's commands and watches my open pull requests and relea
 
 ## Setup
 
-Requires Linux with a systemd user session, Go, the GTK 4 and libadwaita development files
+Requires Linux with a systemd user session, Go, jj (for Rufin), the GTK 4 and libadwaita development files
 (`gtk4-devel` and `libadwaita-devel` on Fedora), Git and the GitHub CLI.
 
 ```bash

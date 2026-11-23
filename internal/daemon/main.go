@@ -11,6 +11,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"github.com/screwys/git-gui/internal/publish"
 	"log"
 	"net/http"
 	"os"
@@ -84,6 +85,14 @@ type daemon struct {
 }
 
 func (d *daemon) pass(ctx context.Context) error {
+	// Each pass records the checkouts' edits in jj's operation log, so an edit a stash, reset or
+	// checkout throws away can be restored.
+	for _, checkout := range d.checkouts {
+		publish.Snapshot(checkout)
+		for _, name := range publish.Workspaces(checkout) {
+			publish.Snapshot(publish.WorkspacePath(checkout, name))
+		}
+	}
 	watchErr := d.watchPRs(ctx)
 	d.runSchedules(ctx)
 	d.pollReleases(ctx)

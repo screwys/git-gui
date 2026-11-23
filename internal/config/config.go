@@ -14,7 +14,7 @@ type Config struct {
 	RufinRepoPath       string              `json:"rufin_repo_path"`
 	IglooRepoPath       string              `json:"igloo_repo_path"`
 	NocblueRepoPath     string              `json:"nocblue_repo_path"`
-	PublishGenerate     string              `json:"publish_generate"` // run in the publish worktree before committing
+	PublishGenerate     string              `json:"publish_generate"` // run in the publish workspace before committing
 	PublishCheck        string              `json:"publish_check"`    // run before pushing, with the base ref as last argument
 	DefaultAutoMerge    bool                `json:"default_auto_merge"`
 	WrapDiff            bool                `json:"wrap_diff"`

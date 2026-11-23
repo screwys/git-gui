@@ -278,14 +278,17 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 		case err != nil:
 			log.Printf("%s: read state: %v", gone.key(), err)
 			leaving = append(leaving, gone)
-		case state == "MERGED":
-			if !d.scheduledAfter(gone.Repo, gone.Number) {
+		case state == "MERGED" || state == "CLOSED":
+			if state == "MERGED" && !d.scheduledAfter(gone.Repo, gone.Number) {
 				notify("normal", fmt.Sprintf("#%d merged", gone.Number), gone.Title)
 			}
-			if d.checkouts[gone.Repo] != "" {
+			// The branch leaves the checkout: a merged one's edits are on the base, a closed
+			// one's stay there uncommitted.
+			if checkout := d.checkouts[gone.Repo]; checkout != "" {
+				publish.Forget(checkout, gone.Branch, gone.Number)
 				merged[gone.Repo] = true
 			}
-		case state != "CLOSED":
+		default:
 			leaving = append(leaving, gone)
 		}
 	}
@@ -342,12 +345,18 @@ func (d *daemon) prState(ctx context.Context, repo string, number int) (string, 
 	return result.Repository.PullRequest.State, err
 }
 
-// sync brings the checkout up to its remote base once no publish holds it.
+// sync brings the shared checkout and every session workspace onto the remote base once no
+// publish holds them.
 func (d *daemon) sync(repo string) bool {
 	checkout := d.checkouts[repo]
 	synced, err := publish.Sync(checkout, d.base, false)
 	if err == nil && !synced {
 		return false
+	}
+	for _, name := range publish.Workspaces(checkout) {
+		if _, werr := publish.Sync(publish.WorkspacePath(checkout, name), d.base, true); werr != nil && err == nil {
+			err = fmt.Errorf("workspace %s: %w", name, werr)
+		}
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

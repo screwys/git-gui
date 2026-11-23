@@ -1,12 +1,12 @@
 package tasks
 
 import (
+	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,11 +20,11 @@ import (
 
 const publishUsage = `Usage: git-gui publish [OPTIONS] [TITLE [PATH...]]
 
-Publishes work in this checkout as a pull request without switching it. PATHs are committed with
-TITLE onto the topic branch in the publish worktree; with TITLE and no PATH, every uncommitted
-change is. The first TITLE names the PR, later ones only their commits. Without TITLE and PATH the
-branch's existing commits are published. Later paths for an open PR go out as their difference
-from it, and the published files here then match the PR.
+Publishes work in this jj checkout as a pull request without switching it. The edits of PATHs move
+into a new commit with TITLE on the topic branch; with TITLE and no PATH, every uncommitted change
+does. The branch stays a parent of the working copy until it merges, so the files here stay as they
+are. The first TITLE names the PR, later ones only their commits. Without TITLE and PATH the
+branch's existing commits are published. Later paths for an open PR go out as their new edits.
 
 --pr publishes onto an open PR someone else opened, a fork's included when it allows edits by
 maintainers. The checkout must already hold that PR's changes ("gh pr diff NUMBER | git apply"):
@@ -34,23 +34,24 @@ squash commit. Without TITLE the PR is merged with the base, checked and set to 
 is. A fork's PR is the branch "pr/NUMBER" here, which --branch also takes; "git-gui wait-pr
 NUMBER" follows it like one of your own.
 
-Paths whose edits build on edits another of your open PRs or a queued publish made in the same
-files are queued instead: the checks run now, and git-gui-daemon publishes the branch once those
-merge. Follow a queued branch with "git-gui wait-pr BRANCH". Queued edits stay out of other
-publishes of the same files.
+Paths whose edits build on edits another open branch of this checkout made in the same files are
+queued instead: their commit goes on top of that branch, the checks run now, and git-gui-daemon
+publishes the branch once the branches below merge. Follow a queued branch with "git-gui wait-pr
+BRANCH".
 
-The project's generate command runs before committing and its check command before pushing.
+The project's generate command runs before committing and its check command before pushing, both
+in the publish workspace on exactly the published commits.
 
 Options:
   --base BRANCH     Base branch (default: the repository's default branch)
-  --branch BRANCH   Topic branch (default: the current branch, or named after TITLE on the base)
+  --branch BRANCH   Topic branch (default: named after TITLE)
   --pr NUMBER       Publish onto this open PR's branch instead of a topic branch of your own
   --body TEXT       PR body; needs GIT_GUI_ALLOW_PR_BODY=1, only for text the user gave
   --body-file PATH  PR body read from PATH; the same rule applies
-  --run COMMAND     Run COMMAND in the publish worktree and publish what it changes
+  --run COMMAND     Run COMMAND in the publish workspace and publish what it changes
   --full            Run the pre-push hook (the full gate) instead of the check command
   --instant         No generation and no checks
-  --prepare-only    Commit in the publish worktree, on git-gui-publish, without pushing
+  --prepare-only    Commit onto the branch here, without checks or pushing
   --no-auto-merge   Leave auto-merge off
   --merge-commit    Merge with a merge commit instead of squashing
   --print-branch    Print the branch it would publish and stop
@@ -180,7 +181,7 @@ func enqueue(o publish.Options, branch string) int {
 	return 0
 }
 
-// Sync is "git-gui sync": bring the base branch here up to origin, merging local edits.
+// Sync is "git-gui sync": bring the checkout onto the remote base branch, carrying its edits.
 func Sync([]string) int {
 	if _, err := publish.Sync(".", git.DefaultBranch("."), true); err != nil {
 		fmt.Println(err)
@@ -189,8 +190,8 @@ func Sync([]string) int {
 	return 0
 }
 
-// Status is "git-gui status", the start of an agent session in a shared checkout: it syncs the
-// base branch, names PRs that need their session and the dirty files open PRs already carry.
+// Status is "git-gui status", the start of an agent session in a checkout: it syncs it, names
+// PRs that need their session and what the checkout's open branches already carry.
 func Status([]string) int {
 	c, err := publish.Open(".")
 	if err != nil {
@@ -198,7 +199,13 @@ func Status([]string) int {
 		return 0
 	}
 	root, base := c.Root, git.DefaultBranch(c.Root)
-	fmt.Println("\n# " + filepath.Base(root) + " checkout")
+	shared := root == c.Main
+	if shared {
+		fmt.Println("\n# " + filepath.Base(root) + " checkout")
+	} else {
+		fmt.Printf("\n# %s workspace %s\n", filepath.Base(c.Main), filepath.Base(root))
+		fmt.Println("This session has a workspace of its own: its files, build directory and devel profile are separate from the shared checkout's. Run the app from here.")
+	}
 	done := make(chan error, 1)
 	var synced bool
 	go func() {
@@ -210,14 +217,14 @@ func Status([]string) int {
 	case err := <-done:
 		switch {
 		case err != nil:
-			fmt.Println("git-gui sync failed; git status may list merged work:", err)
+			fmt.Println("git-gui sync failed; the checkout stays on an older "+base+":", err)
 		case !synced:
-			fmt.Println("A publish is running, so " + base + " was not synced; run git-gui sync before reading git status.")
+			fmt.Println("A publish is running, so the checkout was not synced; run git-gui sync before reading git status.")
 		}
 	case <-time.After(60 * time.Second):
 		fmt.Println("git-gui sync is still running; run it again before reading git status.")
 	}
-	fmt.Printf("%s is at %s; origin/%s is %s.\n", base, short(root, "HEAD"), base, short(root, "origin/"+base))
+	fmt.Printf("The checkout stands on %s; origin/%s is %s.\n", short(root, "HEAD"), base, short(root, "origin/"+base))
 
 	state := client.State()
 	slug := git.RemoteSlug(root)
@@ -237,69 +244,31 @@ func Status([]string) int {
 		}
 	}
 
-	var dirty []string
-	for _, list := range [][]string{{"diff", "--name-only", "-z", "HEAD"}, {"ls-files", "-z", "--others", "--exclude-standard"}} {
-		for _, path := range strings.Split(gitLine(root, list...), "\x00") {
-			if path != "" && !slices.Contains(dirty, path) {
-				dirty = append(dirty, path)
-			}
-		}
-	}
-	if len(dirty) == 0 {
-		fmt.Println("The checkout is clean.")
-		return 0
-	}
-	published := map[string]int{}
-	for _, pr := range state.PRs {
-		tracking := publish.Tracking(pr.Branch)
-		if pr.Repo != slug || gitLine(root, "rev-parse", "-q", "--verify", tracking) == "" {
-			continue
-		}
-		for _, path := range dirty {
-			if published[path] != 0 {
-				continue
-			}
-			theirs := gitLine(root, "rev-parse", "-q", "--verify", tracking+":"+path)
-			if _, err := os.Stat(filepath.Join(root, path)); err == nil {
-				if theirs != "" && gitLine(root, "hash-object", "--", path) == theirs {
-					published[path] = pr.Number
-				}
-			} else if theirs == "" && gitLine(root, "rev-parse", "-q", "--verify", "HEAD:"+path) != "" {
-				published[path] = pr.Number
-			}
-		}
-	}
-	queue := publish.Queue(root)
-	queuedIn := map[string]string{}
-	for _, branch := range slices.Sorted(maps.Keys(queue)) {
-		for _, path := range queue[branch].Files {
-			if published[path] == 0 && queuedIn[path] == "" && slices.Contains(dirty, path) {
-				queuedIn[path] = branch
-			}
-		}
-	}
-	byPR := map[int][]string{}
-	byQueue := map[string][]string{}
-	others := 0
-	for _, path := range dirty {
+	for _, b := range publish.Branches(root, base) {
+		files := strings.Join(b.Files, ", ")
 		switch {
-		case published[path] != 0:
-			byPR[published[path]] = append(byPR[published[path]], path)
-		case queuedIn[path] != "":
-			byQueue[queuedIn[path]] = append(byQueue[queuedIn[path]], path)
+		case b.Queued():
+			fmt.Printf("Queued as %s behind %s, published by git-gui-daemon (not foreign work): %s\n", b.Name, strings.Join(b.Behind, ", "), files)
+		case b.Pushed:
+			number := ""
+			for _, pr := range state.PRs {
+				if pr.Repo == slug && pr.Branch == b.Name {
+					number = fmt.Sprintf(" #%d", pr.Number)
+				}
+			}
+			fmt.Printf("Published as %s%s, awaiting merge (not foreign work): %s\n", b.Name, number, files)
 		default:
-			others++
+			fmt.Printf("Prepared as %s, not pushed (git-gui publish --branch %s pushes it): %s\n", b.Name, b.Name, files)
 		}
 	}
-	for _, n := range slices.Sorted(maps.Keys(byPR)) {
-		fmt.Printf("Published in #%d, awaiting merge (not foreign work): %s\n", n, strings.Join(byPR[n], ", "))
-	}
-	for _, branch := range slices.Sorted(maps.Keys(byQueue)) {
-		fmt.Printf("Queued as %s behind %s, published by git-gui-daemon (not foreign work): %s\n", branch,
-			strings.Join(queue[branch].Behind, ", "), strings.Join(byQueue[branch], ", "))
-	}
-	if others > 0 {
-		fmt.Printf("Other sessions' work in progress (%d files). Publish every file your task touches whole, theirs included; never stop over them.\n", others)
+	dirty := strings.Fields(gitLine(root, "diff", "--name-only"))
+	switch {
+	case len(dirty) == 0:
+		fmt.Println("No uncommitted edits.")
+	case shared:
+		fmt.Printf("Other sessions' work in progress (%d files). Publish every file your task touches whole, theirs included; never stop over them.\n", len(dirty))
+	default:
+		fmt.Printf("Uncommitted edits in this workspace: %d files.\n", len(dirty))
 	}
 	return 0
 }
@@ -312,3 +281,94 @@ func gitLine(root string, args ...string) string {
 }
 
 func short(root, rev string) string { return gitLine(root, "rev-parse", "--short", rev) }
+
+const workspaceUsage = `Usage: git-gui workspace add NAME | remove NAME | list | hook
+
+Session workspaces of the jj checkout here, under .claude/worktrees: each has its own files, a
+copy-on-write copy of the build directory and of the devel profile, and its own working-copy
+change on the base branch. "add" prints the workspace's path last. "remove" keeps its unpublished
+changes in the repository. "hook" answers Claude Code's WorktreeCreate and WorktreeRemove hooks
+from the event on standard input.
+`
+
+// Workspace is "git-gui workspace".
+func Workspace(args []string) int {
+	if len(args) == 0 {
+		fmt.Print(workspaceUsage)
+		return 2
+	}
+	// A hook's event names the checkout it runs for.
+	var event struct {
+		HookEventName string `json:"hook_event_name"`
+		Name          string `json:"name"`
+		Cwd           string `json:"cwd"`
+		WorktreePath  string `json:"worktree_path"`
+	}
+	if args[0] == "hook" {
+		if err := json.NewDecoder(os.Stdin).Decode(&event); err != nil {
+			fmt.Fprintln(os.Stderr, "workspace hook: reading the event:", err)
+			return 1
+		}
+		if event.Cwd != "" {
+			_ = os.Chdir(event.Cwd)
+		}
+	}
+	c, err := publish.Open(".")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	base := git.DefaultBranch(c.Main)
+	add := func(name string) int {
+		if !workspaceName.MatchString(name) || name == "default" || name == "publish" {
+			fmt.Fprintln(os.Stderr, "workspace names are letters, digits, '.', '_' and '-':", name)
+			return 2
+		}
+		path := publish.WorkspacePath(c.Main, name)
+		// Messages go to standard error: the hook reads the path from standard output.
+		stdout := os.Stdout
+		os.Stdout = os.Stderr
+		err := publish.AddWorkspace(c.Main, name, path, "remote_bookmarks(exact:"+strconv.Quote(base)+", remote=exact:\"origin\")", true)
+		os.Stdout = stdout
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Println(path)
+		return 0
+	}
+	remove := func(name string) int {
+		if err := publish.RemoveWorkspace(c.Main, name); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+	switch {
+	case args[0] == "add" && len(args) == 2:
+		return add(args[1])
+	case args[0] == "remove" && len(args) == 2:
+		return remove(filepath.Base(args[1]))
+	case args[0] == "list":
+		for _, name := range publish.Workspaces(c.Main) {
+			fmt.Println(name, publish.WorkspacePath(c.Main, name))
+		}
+		return 0
+	case args[0] == "hook":
+		switch event.HookEventName {
+		case "WorktreeCreate":
+			return add(nonName.ReplaceAllString(event.Name, "-"))
+		case "WorktreeRemove":
+			return remove(filepath.Base(event.WorktreePath))
+		}
+		fmt.Fprintln(os.Stderr, "workspace hook: unexpected event", event.HookEventName)
+		return 1
+	}
+	fmt.Print(workspaceUsage)
+	return 2
+}
+
+var (
+	workspaceName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	nonName       = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+)

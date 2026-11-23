@@ -54,7 +54,8 @@ type pendingPublish struct {
 }
 
 // PublishTab publishes a branch of the shared checkout as a pull request with git-gui publish,
-// shows the branch's PR and its checks, and lists the publishes queued behind other work.
+// shows the branch's PR and its checks, lists the checkout's open branches and the publishes
+// queued behind other work, and runs the app from the checkout or a session workspace.
 type PublishTab struct {
 	Root   *gtk.Paned
 	repo   string
@@ -64,6 +65,9 @@ type PublishTab struct {
 	checks *ChecksView
 	bottom *gtk.Notebook
 	queue  *gtk.Box
+
+	branches, workspaces *gtk.Box
+	runs                 map[string]*jobPage // the Run pages by checkout path
 
 	branch, base, title  *gtk.Entry
 	body                 *gtk.TextView
@@ -90,7 +94,8 @@ type PublishTab struct {
 // NewPublishTab builds the tab for the Rufin checkout at repo.
 func NewPublishTab(repo string) *PublishTab {
 	t := &PublishTab{repo: repo, files: NewFileList("Publish PR", true), diff: NewDiffView(repo),
-		term: NewTerminal(repo, "publish", "publish"), checks: NewChecksView(repo), queue: group("Queue")}
+		term: NewTerminal(repo, "publish", "publish"), checks: NewChecksView(repo), queue: group("Queue"),
+		branches: group("Open Branches"), workspaces: group("Run the App"), runs: map[string]*jobPage{}}
 	left := gtk.NewBox(gtk.OrientationVertical, 8)
 	margins(left, 8)
 	left.Append(t.files.Root)
@@ -164,6 +169,8 @@ func NewPublishTab(repo string) *PublishTab {
 	options.Append(t.instant)
 	left.Append(options)
 	left.Append(t.queue)
+	left.Append(t.branches)
+	left.Append(t.workspaces)
 
 	right := gtk.NewBox(gtk.OrientationVertical, 6)
 	right.SetMarginStart(8)
@@ -291,6 +298,83 @@ func (t *PublishTab) showQueue(state daemon.State) {
 	t.queue.SetVisible(shown > 0)
 }
 
+// clearGroup removes a group's rows, keeping its title.
+func clearGroup(box *gtk.Box) {
+	for child := box.LastChild(); child != nil && child != box.FirstChild(); child = box.LastChild() {
+		box.Remove(child)
+	}
+}
+
+// showBranches lists the checkout's open branches, each with a button that targets it, and the
+// checkouts the app can run from: this one and each session workspace.
+func (t *PublishTab) showBranches() {
+	clearGroup(t.branches)
+	open := publish.Branches(t.repo, t.baseBranch())
+	for _, b := range open {
+		state := "prepared, not pushed"
+		switch {
+		case b.Queued():
+			state = "queued behind " + strings.Join(b.Behind, ", ")
+		case b.Pushed:
+			state = "published"
+		}
+		label := gtk.NewLabel(fmt.Sprintf("%s: %s, %d files", b.Name, state, len(b.Files)))
+		label.SetTooltipText(strings.Join(b.Files, "\n"))
+		label.SetXAlign(0)
+		label.SetHExpand(true)
+		label.SetWrap(true)
+		use := gtk.NewButtonWithLabel("Use")
+		use.AddCSSClass("flat")
+		use.SetTooltipText("Publish to this branch")
+		name := b.Name
+		use.ConnectClicked(func() {
+			t.branch.SetText(name)
+			t.Refresh()
+		})
+		line := gtk.NewBox(gtk.OrientationHorizontal, 6)
+		line.Append(label)
+		line.Append(use)
+		t.branches.Append(line)
+	}
+	t.branches.SetVisible(len(open) > 0)
+
+	clearGroup(t.workspaces)
+	checkouts := [][2]string{{"Shared checkout", t.repo}}
+	for _, name := range publish.Workspaces(t.repo) {
+		checkouts = append(checkouts, [2]string{"Workspace " + name, publish.WorkspacePath(t.repo, name)})
+	}
+	for _, checkout := range checkouts {
+		label := gtk.NewLabel(checkout[0])
+		label.SetTooltipText(checkout[1])
+		label.SetXAlign(0)
+		label.SetHExpand(true)
+		run := gtk.NewButtonWithLabel("Run")
+		run.AddCSSClass("flat")
+		run.SetTooltipText("Build and start the devel app from here, as the r command does; a running one stops")
+		title, path := checkout[0], checkout[1]
+		run.ConnectClicked(func() { t.run(title, path) })
+		line := gtk.NewBox(gtk.OrientationHorizontal, 6)
+		line.Append(label)
+		line.Append(run)
+		t.workspaces.Append(line)
+	}
+}
+
+// run starts the devel app from a checkout on a Run page of its own.
+func (t *PublishTab) run(title, path string) {
+	page, ok := t.runs[path]
+	if !ok {
+		page = newJobPage(path, "run", "", "Run from "+strings.ToLower(title[:1])+title[1:])
+		page.show = func() { t.term.Root.SetCurrentPage(t.term.Root.PageNum(page.Root)) }
+		t.term.Root.AppendPage(page.Root, gtk.NewLabel("Run "+title))
+		t.runs[path] = page
+		page.Runner.Attach()
+	}
+	t.bottom.SetCurrentPage(1)
+	page.show()
+	page.Runner.Start([]string{"fish", "-c", "r"}, nil)
+}
+
 // whenEdited calls done when the user finishes editing entry, by Enter or by leaving it, with
 // text that differs from last.
 func whenEdited(entry *gtk.Entry, last *string, done func()) {
@@ -365,6 +449,7 @@ func (t *PublishTab) RefreshFiles() {
 		t.branchError.SetVisible(true)
 	}
 	t.files.SetFiles(t.shown, paths(working))
+	t.showBranches()
 	if t.left == "" {
 		t.files.Title.SetText(fmt.Sprintf("Uncommitted (%d)", len(t.shown)))
 	}

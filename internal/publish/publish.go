@@ -1,11 +1,10 @@
-// Package publish publishes work from one shared checkout as pull requests without switching it.
-// The chosen files are committed onto the topic branch in a separate worktree, where the
-// project's generate and check commands run on exactly what is published; the published
-// versions then come back to the checkout.
+// Package publish publishes work from a jj checkout as pull requests without switching it. The
+// chosen files' edits move from the working copy into the branch's own change, which stays a
+// parent of the working copy until it merges; the project's generate and check commands run on
+// exactly that change in a separate publish workspace.
 package publish
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +20,7 @@ import (
 	"github.com/screwys/git-gui/internal/git"
 )
 
-// Options is one publish. Generate and Check are shell commands run in the publish worktree;
+// Options is one publish. Generate and Check are shell commands run in the publish workspace;
 // Check gets the base ref as its last argument.
 type Options struct {
 	Base, Branch, Title string
@@ -29,7 +28,7 @@ type Options struct {
 	Paths               []string // with Title and no paths: every uncommitted change
 	Body                string
 	BodySet             bool
-	Run                 string // a command whose changes in the worktree are published
+	Run                 string // a command whose changes in the publish workspace are published
 	Generate, Check     string
 	Full, Instant       bool
 	PrepareOnly         bool
@@ -49,11 +48,9 @@ type Result struct {
 // AllowBodyEnv must be 1 for a publish that sets the PR body: bodies are the user's own text.
 const AllowBodyEnv = "GIT_GUI_ALLOW_PR_BODY"
 
-const worktreeBranch = "git-gui-publish"
-
-// prRefs marks the PRs someone else opened that were published onto from here, each at the head
-// last pushed. A fork's PR is the branch "pr/N" here, and its ref is also where its head is fetched.
-const prRefs = "refs/git-gui/pr/"
+// pullRefs hold the heads of PRs someone else opened that were published onto from here; jj reads
+// one as the branch "N@pull". A fork's PR is the bookmark "pr/N" here.
+const pullRefs = "refs/remotes/pull/"
 
 var (
 	nonSlug    = regexp.MustCompile(`[^a-z0-9]+`)
@@ -72,21 +69,12 @@ func forkNumber(branch string) int {
 	return n
 }
 
-// Tracking is the ref of a branch's last known commit on GitHub: origin's branch, or for a
-// contributor's fork PR its head.
-func Tracking(branch string) string {
-	if n := forkNumber(branch); n != 0 {
-		return prRefs + strconv.Itoa(n)
-	}
-	return "origin/" + branch
-}
-
 // Adopted lists the PRs someone else opened that were published onto from the checkout.
 func Adopted(root string) []int {
 	var numbers []int
-	listed, _ := gitOut(root, nil, "for-each-ref", "--format=%(refname)", prRefs)
+	listed, _ := gitOut(root, nil, "for-each-ref", "--format=%(refname)", pullRefs)
 	for _, ref := range strings.Fields(listed) {
-		if n, _ := strconv.Atoi(strings.TrimPrefix(ref, prRefs)); n > 0 {
+		if n, _ := strconv.Atoi(strings.TrimPrefix(ref, pullRefs)); n > 0 {
 			numbers = append(numbers, n)
 		}
 	}
@@ -102,22 +90,24 @@ type pull struct {
 	AutoMergeRequest                       *struct{}
 }
 
-// Checkout is the shared checkout's state: its root, Git directory and lock.
+// Checkout is one jj workspace of the repository: the shared checkout or a session's own.
 type Checkout struct {
-	Root, Common string
+	Root   string // this workspace's root
+	Common string // the Git directory every workspace shares: the lock and the publish workspace
+	Main   string // the shared checkout's root
 }
 
 // Open finds the checkout containing dir.
 func Open(dir string) (Checkout, error) {
-	root, err := gitOut(dir, nil, "rev-parse", "--show-toplevel")
+	root, err := jjOut(dir, "workspace", "root")
 	if err != nil {
-		return Checkout{}, err
+		return Checkout{}, fmt.Errorf("not a jj checkout: %w", err)
 	}
 	common, err := gitOut(root, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	return Checkout{root, common}, err
+	return Checkout{root, common, filepath.Dir(common)}, err
 }
 
-// Lock holds the checkout's publish lock until the returned function runs. Without wait it
+// Lock holds the repository's publish lock until the returned function runs. Without wait it
 // reports false when another publish holds it.
 func (c Checkout) Lock(wait bool) (func(), bool) {
 	file, err := os.OpenFile(filepath.Join(c.Common, "git-gui-publish.lock"), os.O_CREATE|os.O_RDWR, 0o600)
@@ -135,7 +125,7 @@ func (c Checkout) Lock(wait bool) (func(), bool) {
 	return func() { file.Close() }, true
 }
 
-// Worktree is the publish worktree's path.
+// Worktree is the publish workspace's path.
 func (c Checkout) Worktree() string { return filepath.Join(c.Common, "git-gui", "publish") }
 
 // BranchFor names the topic branch from the title before its first colon.
@@ -155,21 +145,16 @@ func BranchFor(title string) string {
 	return slug
 }
 
-// ResolveBranch is the branch a publish targets: the given one, the current branch, or one named
-// after the title on the base branch.
+// ResolveBranch is the branch a publish targets: the given one, or one named after the title.
 func ResolveBranch(root string, o Options) (string, error) {
 	if o.Branch != "" {
 		return o.Branch, checkRefName(o.Branch)
 	}
-	current, _ := gitOut(root, nil, "branch", "--show-current")
-	if current == "" || current == o.Base {
-		if o.Title == "" {
-			return "", fmt.Errorf("a title is needed to publish from %s", o.Base)
-		}
-		branch := BranchFor(o.Title)
-		return branch, checkRefName(branch)
+	if o.Title == "" {
+		return "", errors.New("a title or --branch is needed to publish")
 	}
-	return current, nil
+	branch := BranchFor(o.Title)
+	return branch, checkRefName(branch)
 }
 
 func checkRefName(branch string) error {
@@ -191,7 +176,7 @@ func Publish(dir string, o Options) (Result, error) {
 	unlock, _ := c.Lock(true)
 	defer unlock()
 	root := c.Root
-	if err := gitRun(root, nil, "fetch", "--prune", "origin"); err != nil {
+	if err := c.fetch(); err != nil {
 		return Result{}, err
 	}
 	if err := c.sync(o.Base); err != nil {
@@ -205,6 +190,7 @@ func Publish(dir string, o Options) (Result, error) {
 	// A PR number, or the branch standing for a fork's PR, publishes onto that PR's branch.
 	var pr pull
 	fork, pushed := false, false
+	head := "" // the branch's last known head on GitHub
 	if o.PR == 0 {
 		o.PR = forkNumber(o.Branch)
 	}
@@ -223,7 +209,7 @@ func Publish(dir string, o Options) (Result, error) {
 			}
 			o.Branch = ForkBranch(o.PR)
 			// The ref the head is fetched into marks an adopted PR, which only a push makes it.
-			ref := Tracking(o.Branch)
+			ref := pullRefs + strconv.Itoa(o.PR)
 			if !hasRef(root, ref) {
 				defer func() {
 					if !pushed {
@@ -231,16 +217,17 @@ func Publish(dir string, o Options) (Result, error) {
 					}
 				}()
 			}
-			if err := gitRun(root, nil, "fetch", "origin", fmt.Sprintf("+refs/pull/%d/head:%s", o.PR, ref)); err != nil {
+			if err := gitRun(root, nil, "fetch", "-q", "origin", fmt.Sprintf("+refs/pull/%d/head:%s", o.PR, ref)); err != nil {
 				return Result{}, err
 			}
+			head = remote(strconv.Itoa(o.PR), "pull")
 			fork = true
 		}
 	}
+	trunk := trunkOf(o.Base)
 
 	if o.Title != "" && o.Paths == nil {
-		o.Paths, err = dirty(root)
-		if err != nil {
+		if o.Paths, err = files(root, "@"); err != nil {
 			return Result{}, err
 		}
 	}
@@ -249,59 +236,27 @@ func Publish(dir string, o Options) (Result, error) {
 		return Result{}, err
 	}
 	fmt.Println("Publishing branch:", branch)
-	current, _ := gitOut(root, nil, "branch", "--show-current")
-	tracking := Tracking(branch)
-	remoteBranch := hasRef(root, tracking)
-	// The checkout holds someone else's PR as it should merge: its files go out as they are here.
-	if o.PR != 0 && remoteBranch && o.Paths != nil {
-		listed, err := gitOut(root, nil, "diff", "--no-renames", "--name-only", "-z", "origin/"+o.Base+"..."+tracking)
-		if err != nil {
-			return Result{}, err
-		}
-		for _, f := range splitZ(listed) {
-			if !slices.Contains(o.Paths, f) {
-				o.Paths = append(o.Paths, f)
+	if head == "" && exists(root, remote(branch, "origin")) {
+		head = remote(branch, "origin")
+		if !exists(root, bookmark(branch)) {
+			if err := jjRun(root, "bookmark", "track", branch, "--remote", "origin"); err != nil {
+				return Result{}, err
 			}
 		}
 	}
-
-	// Paths whose edits build on another open PR's or queued publish's edits in the same files
-	// queue behind them; a publish of a queued branch without paths publishes its queue commit
-	// once what it waits for merged.
-	queue := Queue(root)
-	own, isQueued := queue[branch]
-	final := isQueued && len(o.Paths) == 0 && o.Run == ""
-	var behind, subtract []carrier
-	switch {
-	case final:
-		all, err := carriers(root, slug, o.Base, branch, queue)
+	// A bookmark is this branch only when a publish recorded it; another one of the same name, such
+	// as an old local branch, is replaced.
+	local := exists(root, bookmark(branch)) && (hasRef(root, publishedRefs+branch) || head != "")
+	// The checkout holds someone else's PR as it should merge: its files go out as they are here.
+	if o.PR != 0 && head != "" && len(o.Paths) > 0 {
+		theirs, err := files(root, fmt.Sprintf("::%s ~ ::%s", head, trunk))
 		if err != nil {
 			return Result{}, err
 		}
-		for _, c := range all {
-			if slices.Contains(own.Behind, c.branch) {
-				behind = append(behind, c)
-			}
-		}
-		if len(behind) > 0 {
-			return queued(branch, behind), nil
-		}
-		if o.Title == "" {
-			o.Title, _ = gitOut(root, nil, "log", "-1", "--format=%s", own.Commit)
-		}
-	case len(o.Paths) > 0 && !o.PrepareOnly:
-		for _, f := range own.Files {
+		for _, f := range theirs {
 			if !slices.Contains(o.Paths, f) {
 				o.Paths = append(o.Paths, f)
 			}
-		}
-		all, err := carriers(root, slug, o.Base, branch, queue)
-		if err != nil {
-			return Result{}, err
-		}
-		behind, subtract, o.Paths = plan(root, branch, o.Paths, all)
-		if len(o.Paths) == 0 {
-			return Result{}, errors.New("the requested paths hold only other open PRs' edits")
 		}
 	}
 
@@ -313,8 +268,9 @@ func Publish(dir string, o Options) (Result, error) {
 	if prTitle == "" {
 		prTitle = o.Title
 	}
-	if prTitle == "" {
-		prTitle, _ = gitOut(root, nil, "log", "-1", "--format=%s")
+	if prTitle == "" && local {
+		prTitle, _ = jjOut(root, "log", "--no-graph", "-r", "roots(::"+bookmark(branch)+" ~ ::"+trunk+")", "-T", `description.first_line() ++ "\n"`)
+		prTitle, _, _ = strings.Cut(prTitle, "\n")
 	}
 	if o.PR == 0 {
 		_ = gitRun(root, nil, "config", "--local", "branch."+branch+".rufin-pr-title", prTitle)
@@ -324,188 +280,211 @@ func Publish(dir string, o Options) (Result, error) {
 	} else if body, err := gitOut(root, nil, "config", "--local", "--get", "branch."+branch+".rufin-pr-body"); err == nil {
 		o.Body, o.BodySet = body, true
 	}
-	title := o.Title
-	if title == "" {
-		title = prTitle
-	}
 
-	// Paths go out as their difference from what the branch already has here: an open PR's files
-	// were written back, so later paths carry only the new edits.
-	var patch []byte
-	var snapshot string
-	start := "origin/" + o.Base
+	// The change to publish: a new one holding the paths' edits, or the branch as it stands.
+	base, err := c.base()
+	if err != nil {
+		return Result{}, err
+	}
+	var change string
+	created := len(o.Paths) > 0 || o.Run != ""
 	switch {
-	case final:
-		if remoteBranch {
-			start = tracking
+	case created:
+		if o.Title == "" {
+			return Result{}, errors.New("a title is needed to commit the requested changes")
 		}
-		if patch, err = gitBytes(root, "diff", "--binary", own.Commit+"^", own.Commit); err != nil {
+		parents := []string{base}
+		switch {
+		case o.PR != 0:
+			parents = []string{head}
+			if !exists(root, trunk+" & ::"+head) {
+				parents = append(parents, trunk)
+			}
+		case local:
+			parents = []string{bookmark(branch)}
+		case head != "":
+			parents = []string{head}
+		}
+		// Paths whose edits build on another of this checkout's open changes go on top of it.
+		if o.PR == 0 && len(o.Paths) > 0 {
+			below, err := ids(root, fmt.Sprintf("heads(((%s..@) ~ @ ~ ::(%s)) & files(%s))", trunk,
+				strings.Join(parents, " | "), strings.Join(fileset(o.Paths), " | ")))
+			if err != nil {
+				return Result{}, err
+			}
+			if len(below) > 0 && parents[0] == base {
+				parents = below
+			} else {
+				parents = append(parents, below...)
+			}
+		}
+		if change, err = newChange(root, o.Title, parents...); err != nil {
 			return Result{}, err
 		}
-	case len(o.Paths) > 0 || o.Run != "":
-		patchBase := "HEAD"
-		switch {
-		case len(behind) > 0:
-			remote := ""
-			if remoteBranch {
-				remote = tracking
-			}
-			if patchBase, err = queueBase(root, remote, behind); err != nil {
-				return Result{}, err
-			}
-			start = patchBase
-		case current == branch:
-			start = "HEAD"
-		case remoteBranch:
-			patchBase, start = tracking, tracking
-		}
-		if len(o.Paths) > 0 {
-			if snapshot, err = snapshotTree(root, patchBase, o.Paths); err != nil {
-				return Result{}, err
-			}
-			if patch, err = gitBytes(root, "diff", "--binary", patchBase, snapshot); err != nil {
-				return Result{}, err
-			}
-			if len(patch) == 0 && o.Run == "" {
-				return Result{}, errors.New("no changes found for the requested paths")
+	case local:
+		change, err = jjOut(root, "log", "--no-graph", "-r", bookmark(branch), "-T", "change_id")
+	case head != "" && o.PR != 0:
+		// Someone else's PR as it is: merge the base into it when it lacks the base's commits.
+		change = head
+		if !exists(root, trunk+" & ::"+head) {
+			change, err = newChange(root, fmt.Sprintf("Merge branch '%s' into %s", o.Base, pr.HeadRefName), head, trunk)
+			if err == nil && exists(root, change+" & conflicts()") {
+				_ = jjRun(root, "abandon", change)
+				return Result{}, fmt.Errorf("could not merge origin/%s into %s; merge it by hand and publish again", o.Base, branch)
 			}
 		}
-	case hasRef(root, "refs/heads/"+branch):
-		start = "refs/heads/" + branch
-	case remoteBranch:
-		start = tracking
 	default:
 		return Result{}, fmt.Errorf("branch %s does not exist; give paths to create it", branch)
 	}
-	startCommit, err := gitOut(root, nil, "rev-parse", "--verify", start+"^{commit}")
 	if err != nil {
 		return Result{}, err
 	}
-	work, err := c.enterWorktree(startCommit)
-	if err != nil {
-		return Result{}, err
-	}
-	env := CheckEnv(root)
 
-	// A queue commit stays on its base; the final publish merges the base branch.
-	if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", "origin/"+o.Base, "HEAD"); err != nil && len(behind) == 0 {
-		// A merge keeps the branch's commits and signatures as they are. Where someone else's PR
-		// conflicts with the base its side stands: the patch then puts the checkout's version there.
-		// The message names the PR's branch, as GitHub's own branch update does, not the worktree's.
-		target := branch
-		if fork {
-			target = pr.HeadRefName
+	// The paths' edits move into the change, which becomes a parent of the working copy, so the
+	// files here stay as they are.
+	before, _ := commitID(root, "@")
+	inCheckout := false
+	if created && len(o.Paths) > 0 {
+		if o.PR != 0 {
+			// Someone else's PR goes out with its files exactly as they are here.
+			if err := jjRun(root, append([]string{"restore", "--from", "@", "--into", change}, fileset(o.Paths)...)...); err != nil {
+				_ = jjRun(root, "abandon", change)
+				return Result{}, err
+			}
+			err = c.addParent(change)
+		} else if err = c.addParent(change); err == nil {
+			err = jjRun(root, append([]string{"squash", "--from", "@", "--into", change}, fileset(o.Paths)...)...)
 		}
-		merge := []string{"merge", "-q", "-m", fmt.Sprintf("Merge branch '%s' into %s", o.Base, target)}
-		if o.PR != 0 && len(patch) > 0 {
-			merge = append(merge, "-X", "ours")
+		if err == nil && exists(root, change+" & conflicts()") {
+			err = fmt.Errorf("the requested paths do not apply onto %s; sync them and retry", branch)
 		}
-		if err := gitRun(work, nil, append(merge, "origin/"+o.Base)...); err != nil {
-			_ = gitRun(work, nil, "merge", "--abort")
-			return Result{}, fmt.Errorf("could not merge origin/%s into %s; merge it by hand and publish again", o.Base, branch)
+		if err != nil {
+			_ = jjRun(root, "abandon", "--restore-descendants", change)
+			return Result{}, err
+		}
+		inCheckout = true
+		if exists(root, change+" & empty()") && o.Run == "" {
+			_ = jjRun(root, "abandon", change)
+			if !local {
+				return Result{}, errors.New("no changes found for the requested paths")
+			}
+			// A publish that stopped after moving these edits: the branch already holds them.
+			created = false
+			if change, err = jjOut(root, "log", "--no-graph", "-r", bookmark(branch), "-T", "change_id"); err != nil {
+				return Result{}, err
+			}
 		}
 	}
-	runStart, _ := gitOut(work, nil, "rev-parse", "HEAD")
-	if len(patch) > 0 {
-		apply := exec.Command("git", "apply", "--3way", "--binary")
-		apply.Dir, apply.Stdin, apply.Stdout, apply.Stderr = work, bytes.NewReader(patch), os.Stdout, os.Stderr
-		if apply.Run() != nil {
-			return Result{}, fmt.Errorf("the requested paths do not apply onto %s; sync them and retry", branch)
-		}
+	if !created {
+		inCheckout = exists(root, change+" & ::@")
 	}
-	// Queued publishes' edits in these files are theirs: take them back out.
-	var subtracted []string
-	for _, c := range subtract {
-		files := slices.DeleteFunc(slices.Clone(c.files), func(f string) bool { return !slices.Contains(o.Paths, f) })
-		reverse, err := gitBytes(root, append([]string{"diff", "--binary", c.commit + "^", c.commit, "--"}, files...)...)
-		if err != nil || len(reverse) == 0 {
-			continue
-		}
-		apply := exec.Command("git", "apply", "-R", "--3way", "--binary")
-		apply.Dir, apply.Stdin, apply.Stdout, apply.Stderr = work, bytes.NewReader(reverse), os.Stdout, os.Stderr
-		if apply.Run() != nil {
-			return Result{}, fmt.Errorf("these edits change the same lines in %s as %s, queued behind other work; cancel its queued publish in Git GUI to publish both here", strings.Join(files, ", "), c.branch)
-		}
-		subtracted = append(subtracted, files...)
+	// The branch names the change from here on, so a publish that stops is resumed by running it
+	// again.
+	if err := jjRun(root, "bookmark", "set", branch, "-r", change, "--allow-backwards"); err != nil {
+		return Result{}, err
 	}
-	if len(patch) > 0 {
-		_ = gitRun(work, nil, "reset", "-q")
+	c.record(branch)
+
+	work, err := c.enterPublish(change)
+	if err != nil {
+		return Result{}, err
 	}
 	if o.Run != "" {
-		if err := shell(work, env, o.Run); err != nil {
+		if err := shell(work, nil, o.Run); err != nil {
 			return Result{}, err
 		}
 	}
 	if !o.Instant && o.Generate != "" {
-		if err := shell(work, env, o.Generate); err != nil {
+		if err := shell(work, nil, o.Generate); err != nil {
 			return Result{}, err
 		}
 	}
-	changed, _ := gitOut(work, nil, "status", "--porcelain")
-	fromWork := len(o.Paths) > 0 || o.Run != "" || final
-	switch {
-	case changed != "" && fromWork && o.Title != "":
-		_ = gitRun(work, nil, "add", "-A")
-		if err := gitRun(work, nil, "commit", "-q", "-m", o.Title); err != nil {
+	// What the commands changed joins the change; one that was already published gets a commit of
+	// its own.
+	if _, err := jjOut(work, "util", "snapshot"); err != nil {
+		return Result{}, err
+	}
+	if !exists(work, "@ & empty()") {
+		if created {
+			if err = jjRun(root, "squash", "--from", "publish@", "--into", change); err == nil {
+				_, err = c.enterPublish(change)
+			}
+		} else if err = jjRun(work, "describe", "-m", "generated: refresh formatting and generated files"); err == nil {
+			// The publish workspace moves off the new commit before the checkout builds on it.
+			if change, err = jjOut(work, "log", "--no-graph", "-r", "@", "-T", "change_id"); err == nil {
+				if _, err = c.enterPublish(change); err == nil && inCheckout {
+					err = c.addParent(change)
+				}
+			}
+		}
+		if err != nil {
 			return Result{}, err
 		}
-	case changed != "" && fromWork:
-		return Result{}, errors.New("a title is needed to commit the requested changes")
-	case changed != "":
-		_ = gitRun(work, nil, "add", "-A")
-		if err := gitRun(work, nil, "commit", "-q", "-m", "generated: refresh formatting and generated files"); err != nil {
-			return Result{}, err
+		if inCheckout {
+			c.keepEdits(before)
 		}
 	}
-	if count, _ := gitOut(work, nil, "rev-list", "--count", "origin/"+o.Base+"..HEAD"); count == "0" {
+	if !exists(root, fmt.Sprintf("::%s ~ ::%s", change, trunk)) {
 		return Result{}, fmt.Errorf("no commits to publish on %s", branch)
 	}
-	runEnd, _ := gitOut(work, nil, "rev-parse", "HEAD")
+	if err := jjRun(root, "bookmark", "set", branch, "-r", change, "--allow-backwards"); err != nil {
+		return Result{}, err
+	}
+	c.record(branch)
 	result := Result{Branch: branch, Worktree: work}
 	if o.PrepareOnly {
-		fmt.Println("Prepared PR worktree:", work)
+		fmt.Println("Prepared branch", branch, "in", work)
 		return result, nil
 	}
-	if len(behind) > 0 {
-		if runEnd == runStart {
-			return result, errors.New("no changes found for the requested paths")
+
+	// Work on top of other open branches waits for them to merge; the checks run now.
+	below, err := names(root, fmt.Sprintf("(::%s ~ ::%s ~ %s) & bookmarks()", change, trunk, change))
+	if err != nil {
+		return result, err
+	}
+	if len(below) > 0 {
+		checkBase := "origin/" + o.Base
+		if heads, _ := commitID(root, fmt.Sprintf("heads(::%s & bookmarks() ~ %s)", change, change)); !strings.Contains(heads, "\n") && heads != "" {
+			checkBase = heads
 		}
-		// The checks look at the queued commit alone; CI checks it on the base branch.
-		if err := runChecks(work, runStart, branch, o, env); err != nil {
+		if err := runChecks(work, checkBase, branch, "", o); err != nil {
 			return result, err
 		}
-		if err := gitRun(root, nil, "update-ref", queueRefs+branch, runEnd); err != nil {
-			return result, err
-		}
-		writeBack(root, snapshot, runStart, runEnd, subtracted)
-		return queued(branch, behind), nil
+		return queued(branch, below), nil
 	}
 
-	if remoteBranch {
-		if _, err := gitOut(work, nil, "merge-base", "--is-ancestor", tracking, "HEAD"); err != nil {
-			return result, fmt.Errorf("%s has commits this branch lacks; merge them and publish again", tracking)
+	old := ""
+	if head != "" {
+		if !exists(root, head+" & ::"+change) {
+			return result, fmt.Errorf("%s has commits this branch lacks; merge them and publish again", branch)
 		}
+		old, _ = commitID(root, head)
 	}
-	// A queue commit's checks already ran; what merging changed is CI's.
-	if !final {
-		if err := runChecks(work, "origin/"+o.Base, branch, o, env); err != nil {
-			return result, err
-		}
+	if err := runChecks(work, "origin/"+o.Base, branch, old, o); err != nil {
+		return result, err
 	}
 	if !fork {
-		err = gitRun(work, nil, "push", "--no-verify", "origin", "HEAD:refs/heads/"+branch)
+		err = jjRun(root, "git", "push", "--remote", "origin", "-b", "exact:"+branch)
 	} else {
 		// The fork is reached the way origin is, under its own owner and name.
-		url, _ := gitOut(root, nil, "remote", "get-url", "--push", "origin")
-		url = strings.Replace(url, slug, pr.HeadRepositoryOwner.Login+"/"+pr.HeadRepository.Name, 1)
-		err = gitRun(work, nil, "push", "--no-verify", url, "HEAD:refs/heads/"+pr.HeadRefName)
+		if err = jjRun(root, "sign", "-r", fmt.Sprintf("::%s ~ ::%s", change, head)); err == nil {
+			var sha string
+			sha, err = commitID(root, change)
+			url, _ := gitOut(root, nil, "remote", "get-url", "--push", "origin")
+			url = strings.Replace(url, slug, pr.HeadRepositoryOwner.Login+"/"+pr.HeadRepository.Name, 1)
+			if err == nil {
+				err = gitRun(root, nil, "push", "--no-verify", url, sha+":refs/heads/"+pr.HeadRefName)
+			}
+		}
 	}
 	if err != nil {
 		return result, err
 	}
 	pushed = true
+	c.record(branch)
 	if o.PR != 0 {
-		_ = gitRun(root, nil, "update-ref", prRefs+strconv.Itoa(o.PR), runEnd)
+		sha, _ := commitID(root, change)
+		_ = gitRun(root, nil, "update-ref", pullRefs+strconv.Itoa(o.PR), sha)
 	}
 
 	number := o.PR
@@ -544,32 +523,101 @@ func Publish(dir string, o Options) (Result, error) {
 			fmt.Println("Auto-merge not enabled:", err)
 		}
 	}
-
-	if !branchCheckedOut(root, branch) {
-		_ = gitRun(root, nil, "update-ref", "refs/heads/"+branch, runEnd)
-	}
-	if snapshot != "" {
-		writeBack(root, snapshot, runStart, runEnd, subtracted)
-	}
-	if isQueued {
-		_ = Dequeue(root, branch)
-	}
 	fmt.Printf("Published PR #%d: %s\n", number, result.URL)
 	return result, nil
 }
 
-func queued(branch string, behind []carrier) Result {
-	names := make([]string, len(behind))
-	for i, c := range behind {
-		names[i] = c.String()
+func queued(branch string, behind []string) Result {
+	fmt.Printf("Queued %s behind %s: git-gui-daemon publishes it once they merge.\n", branch, strings.Join(behind, ", "))
+	return Result{Branch: branch, Queued: behind}
+}
+
+// fetch brings the remote branches up to date. A branch deleted on GitHub, as a merge deletes its
+// head, loses its bookmark here too.
+func (c Checkout) fetch() error {
+	_, err := jjOut(c.Root, "git", "fetch", "--remote", "origin")
+	return err
+}
+
+// base is the base commit the working copy stands on: its first parent.
+func (c Checkout) base() (string, error) {
+	parents, err := jjOut(c.Root, "log", "--no-graph", "-r", "@", "-T", `parents.map(|p| p.change_id()).join(" ")`)
+	if err != nil {
+		return "", err
 	}
-	fmt.Printf("Queued %s behind %s: git-gui-daemon publishes it once they merge.\n", branch, strings.Join(names, ", "))
-	return Result{Branch: branch, Queued: names}
+	first, _, _ := strings.Cut(parents, " ")
+	return first, nil
+}
+
+// addParent makes change a parent of the working copy, after its base and in place of any parent
+// it builds on. An empty change, or one holding the working copy's files as they are, leaves the
+// files here alone.
+func (c Checkout) addParent(change string) error {
+	base, err := c.base()
+	if err != nil {
+		return err
+	}
+	others, err := ids(c.Root, fmt.Sprintf("heads((parents(@) ~ %s) | %s)", base, change))
+	if err != nil {
+		return err
+	}
+	args := []string{"rebase", "-r", "@", "-o", base}
+	for _, other := range others {
+		args = append(args, "-o", other)
+	}
+	return jjRun(c.Root, args...)
+}
+
+// keepEdits gives back the working copy's own version of every file that formatting or
+// generation changed underneath an edit made here: that edit stays, and the next publish of the
+// file carries it.
+func (c Checkout) keepEdits(before string) {
+	if !exists(c.Root, "@ & conflicts()") {
+		return
+	}
+	listed, _ := jjOut(c.Root, "resolve", "--list", "-r", "@")
+	var paths []string
+	for _, line := range strings.Split(listed, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			paths = append(paths, fields[0])
+		}
+	}
+	if len(paths) > 0 {
+		_ = jjRun(c.Root, append([]string{"restore", "--from", before, "--into", "@"}, fileset(paths)...)...)
+	}
+}
+
+// enterPublish puts the publish workspace on an empty change on top of change.
+func (c Checkout) enterPublish(change string) (string, error) {
+	path := c.Worktree()
+	if _, err := os.Stat(filepath.Join(path, ".jj")); err != nil {
+		return path, AddWorkspace(c.Main, "publish", path, change, false)
+	}
+	// Rewriting the change from the checkout leaves this workspace stale; it holds no edits.
+	_, _ = jjOut(path, "workspace", "update-stale")
+	return path, jjRun(path, "new", change)
+}
+
+// record keeps the branch's head for sync: once the branch's bookmark is gone, sync takes its
+// commits out of the checkout.
+func (c Checkout) record(branch string) {
+	if sha, err := commitID(c.Root, bookmark(branch)); err == nil {
+		_ = gitRun(c.Root, nil, "update-ref", publishedRefs+branch, sha)
+	}
+}
+
+// names lists the local bookmarks on a revset's commits.
+func names(dir, revset string) ([]string, error) {
+	out, err := jjOut(dir, "log", "--no-graph", "-r", revset, "-T", `local_bookmarks.map(|b| b.name()).join("\n") ++ "\n"`)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
 }
 
 // runChecks runs the check command on the commits since base, or with Full the pre-push hook,
-// the full gate.
-func runChecks(work, base, branch string, o Options, env []string) error {
+// the full gate. old is the branch's head on GitHub, if it has one.
+func runChecks(work, base, branch, old string, o Options) error {
 	var check *exec.Cmd
 	switch {
 	case o.Instant:
@@ -577,14 +625,13 @@ func runChecks(work, base, branch string, o Options, env []string) error {
 	case o.Full:
 		remote, _ := gitOut(work, nil, "remote", "get-url", "origin")
 		head, _ := gitOut(work, nil, "rev-parse", "HEAD")
-		old, err := gitOut(work, nil, "rev-parse", "-q", "--verify", Tracking(branch))
-		if err != nil {
+		if old == "" {
 			old = strings.Repeat("0", len(head))
 		}
-		check = Capped(exec.Command("git", "hook", "run", "--ignore-missing", "pre-push", "--", "origin", remote), work, env)
+		check = Capped(exec.Command("git", "hook", "run", "--ignore-missing", "pre-push", "--", "origin", remote), work, nil)
 		check.Stdin = strings.NewReader(fmt.Sprintf("refs/heads/%s %s refs/heads/%s %s\n", branch, head, branch, old))
 	case o.Check != "":
-		check = Capped(exec.Command("sh", "-c", o.Check+` "$0"`, base), work, env)
+		check = Capped(exec.Command("sh", "-c", o.Check+` "$0"`, base), work, nil)
 	default:
 		return nil
 	}
@@ -594,220 +641,10 @@ func runChecks(work, base, branch string, o Options, env []string) error {
 	return nil
 }
 
-// Sync brings the checkout's base branch up to origin, merging local edits into the files the
-// new commits touch. Without wait it does nothing while a publish runs.
-func Sync(dir, base string, wait bool) (bool, error) {
-	c, err := Open(dir)
-	if err != nil {
-		return false, err
-	}
-	unlock, locked := c.Lock(wait)
-	defer unlock()
-	if !locked {
-		return false, nil
-	}
-	if err := gitRun(c.Root, nil, "fetch", "--prune", "origin"); err != nil {
-		return false, err
-	}
-	return true, c.sync(base)
-}
-
-// sync moves the base branch here to origin. Every file the incoming commits touch takes the merged
-// version, with a local edit merged in from the version it was made on; nothing changes when any
-// of them conflicts.
-func (c Checkout) sync(base string) error {
-	root, target := c.Root, "origin/"+base
-	if current, _ := gitOut(root, nil, "branch", "--show-current"); current != base {
-		return fmt.Errorf("not on %s; not syncing", base)
-	}
-	head, _ := gitOut(root, nil, "rev-parse", "HEAD")
-	if want, _ := gitOut(root, nil, "rev-parse", target); head == want {
-		return nil
-	}
-	if _, err := gitOut(root, nil, "merge-base", "--is-ancestor", "HEAD", target); err != nil {
-		return fmt.Errorf("%s has commits that %s does not; not syncing", base, target)
-	}
-	listed, err := gitOut(root, nil, "diff", "--no-renames", "--name-only", "-z", "HEAD", target)
-	if err != nil {
-		return err
-	}
-	type write struct {
-		path string
-		data []byte
-		exec bool
-	}
-	var writes []write
-	var removals, conflicts []string
-	for _, path := range splitZ(listed) {
-		local := hashFile(root, path)
-		ours := blob(root, "HEAD", path)
-		theirs := blob(root, target, path)
-		switch {
-		case local == theirs:
-			continue
-		case local == ours && theirs == "":
-			removals = append(removals, path)
-			continue
-		}
-		var merged []byte
-		switch {
-		case local == ours:
-			merged, _ = gitBytes(root, "cat-file", "blob", theirs)
-		case local != "" && theirs != "":
-			if merged, err = mergeLocal(root, path, target, theirs); err != nil {
-				conflicts = append(conflicts, path)
-				continue
-			}
-		default:
-			conflicts = append(conflicts, path)
-			continue
-		}
-		mode, _ := gitOut(root, nil, "ls-tree", target, "--", path)
-		writes = append(writes, write{path, merged, strings.HasPrefix(mode, "100755")})
-	}
-	if len(conflicts) > 0 {
-		return fmt.Errorf("local edits conflict with %s: %s; %s not synced", target, strings.Join(conflicts, ", "), base)
-	}
-	for _, w := range writes {
-		full := filepath.Join(root, w.path)
-		_ = os.MkdirAll(filepath.Dir(full), 0o755)
-		if err := os.WriteFile(full, w.data, 0o644); err != nil {
-			return err
-		}
-		if w.exec {
-			_ = os.Chmod(full, 0o755)
-		}
-	}
-	for _, path := range removals {
-		_ = os.Remove(filepath.Join(root, path))
-	}
-	return gitRun(root, nil, "reset", "-q", "--mixed", target)
-}
-
-// mergeLocal merges target's version of path into the local copy, from the version the local
-// copy differs from least: the one it was edited from, such as a copy a PR published from here.
-func mergeLocal(root, path, target, theirs string) ([]byte, error) {
-	dir, err := os.MkdirTemp("", "git-gui-sync-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(dir)
-	full := filepath.Join(root, path)
-	commits, _ := gitOut(root, nil, "rev-list", "HEAD.."+target, "--", path)
-	best, bestSize := "", -1
-	for _, commit := range append([]string{"HEAD"}, strings.Fields(commits)...) {
-		candidate := blob(root, commit, path)
-		if candidate == "" {
-			continue
-		}
-		data, _ := gitBytes(root, "cat-file", "blob", candidate)
-		file := filepath.Join(dir, "candidate")
-		_ = os.WriteFile(file, data, 0o600)
-		stat, _ := exec.Command("git", "diff", "--no-index", "--numstat", "--", file, full).Output()
-		fields, size := strings.Fields(string(stat)), 0
-		for _, field := range fields[:min(2, len(fields))] {
-			n, _ := strconv.Atoi(field)
-			size += n
-		}
-		if bestSize < 0 || size < bestSize {
-			best, bestSize = candidate, size
-		}
-	}
-	baseFile, theirsFile := filepath.Join(dir, "base"), filepath.Join(dir, "theirs")
-	baseData, _ := gitBytes(root, "cat-file", "blob", best)
-	theirsData, _ := gitBytes(root, "cat-file", "blob", theirs)
-	_ = os.WriteFile(baseFile, baseData, 0o600)
-	_ = os.WriteFile(theirsFile, theirsData, 0o600)
-	return exec.Command("git", "merge-file", "-q", "-p", full, baseFile, theirsFile).Output()
-}
-
-// enterWorktree points the publish worktree at start, clean.
-func (c Checkout) enterWorktree(start string) (string, error) {
-	path := c.Worktree()
-	if _, err := os.Stat(path); err != nil {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return "", err
-		}
-		_ = gitRun(c.Root, nil, "worktree", "prune")
-		return path, gitRun(c.Root, nil, "worktree", "add", "-q", "-B", worktreeBranch, path, start)
-	}
-	if err := gitRun(path, nil, "switch", "-q", "-f", "-C", worktreeBranch, start); err != nil {
-		return "", err
-	}
-	return path, gitRun(path, nil, "clean", "-fdq")
-}
-
-// snapshotTree is base's tree with the paths as they are in the checkout, built in a scratch index.
-func snapshotTree(root, base string, paths []string) (string, error) {
-	dir, err := os.MkdirTemp("", "git-gui-index-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(dir)
-	env := []string{"GIT_INDEX_FILE=" + filepath.Join(dir, "index")}
-	if err := gitRun(root, env, "read-tree", base); err != nil {
-		return "", err
-	}
-	if err := gitRun(root, env, append([]string{"add", "-A", "--"}, paths...)...); err != nil {
-		return "", err
-	}
-	return gitOut(root, env, "write-tree")
-}
-
-// writeBack puts the published versions of files formatting or generation changed back here. A
-// file edited here since the snapshot keeps its edit, and so does one that still holds a queued
-// publish's edits; the next sync merges them.
-func writeBack(root, snapshot, from, to string, keep []string) {
-	listed, _ := gitOut(root, nil, "diff", "--no-renames", "--name-only", "-z", from, to)
-	for _, path := range splitZ(listed) {
-		if slices.Contains(keep, path) || hashFile(root, path) != blob(root, snapshot, path) {
-			continue
-		}
-		full := filepath.Join(root, path)
-		published := blob(root, to, path)
-		if published == "" {
-			_ = os.Remove(full)
-			continue
-		}
-		data, err := gitBytes(root, "cat-file", "blob", published)
-		if err == nil {
-			_ = os.MkdirAll(filepath.Dir(full), 0o755)
-			_ = os.WriteFile(full, data, 0o644)
-		}
-	}
-}
-
-// dirty lists every modified, deleted and untracked path.
-func dirty(root string) ([]string, error) {
-	changed, err := gitOut(root, nil, "diff", "--no-renames", "--name-only", "-z", "HEAD")
-	if err != nil {
-		return nil, err
-	}
-	untracked, err := gitOut(root, nil, "ls-files", "--others", "--exclude-standard", "-z")
-	paths := append(splitZ(changed), splitZ(untracked)...)
-	if paths == nil {
-		paths = []string{}
-	}
-	return paths, err
-}
-
 func openPR(root, slug, branch string) int {
 	out, _ := ghOut(root, "pr", "list", "--repo", slug, "--head", branch, "--state", "open", "--json", "number", "--jq", ".[0].number // empty")
 	n, _ := strconv.Atoi(out)
 	return n
-}
-
-func branchCheckedOut(root, branch string) bool {
-	list, _ := gitOut(root, nil, "worktree", "list", "--porcelain")
-	return strings.Contains(list+"\n", "branch refs/heads/"+branch+"\n")
-}
-
-// CheckEnv lets a Cargo project's commands in the publish worktree share the checkout's builds.
-func CheckEnv(root string) []string {
-	if _, err := os.Stat(filepath.Join(root, "Cargo.toml")); err == nil && os.Getenv("CARGO_TARGET_DIR") == "" {
-		return []string{"CARGO_TARGET_DIR=" + filepath.Join(root, "target")}
-	}
-	return nil
 }
 
 // Capped runs cmd in dir inside a user scope with memory and CPU limits, so heavy checks slow
@@ -833,40 +670,15 @@ func shell(dir string, env []string, command string) error {
 	return nil
 }
 
-func hashFile(root, path string) string {
-	if info, err := os.Stat(filepath.Join(root, path)); err != nil || info.IsDir() {
-		return ""
-	}
-	hash, _ := gitOut(root, nil, "hash-object", "--", path)
-	return hash
-}
-
-func blob(root, rev, path string) string {
-	hash, _ := gitOut(root, nil, "rev-parse", "-q", "--verify", rev+":"+path)
-	return hash
-}
-
 func hasRef(root, ref string) bool {
 	_, err := gitOut(root, nil, "rev-parse", "-q", "--verify", ref)
 	return err == nil
-}
-
-func splitZ(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, "\x00") {
-		if part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
 }
 
 func gitOut(dir string, env []string, args ...string) (string, error) {
 	out, err := gitCmd(dir, env, args...).Output()
 	return strings.TrimSuffix(string(out), "\n"), err
 }
-
-func gitBytes(dir string, args ...string) ([]byte, error) { return gitCmd(dir, nil, args...).Output() }
 
 func gitRun(dir string, env []string, args ...string) error {
 	cmd := gitCmd(dir, env, args...)

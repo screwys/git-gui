@@ -44,6 +44,8 @@ func main() {
 			os.Exit(tasks.Sync(os.Args[2:]))
 		case "status":
 			os.Exit(tasks.Status(os.Args[2:]))
+		case "workspace":
+			os.Exit(tasks.Workspace(os.Args[2:]))
 		case "rufin-release":
 			os.Exit(tasks.RufinRelease(os.Args[2:]))
 		case "install":
