@@ -77,7 +77,8 @@ while testing against real repositories.
 - `refs/git-gui/published/<branch>` keeps each branch's head. `sync` (`sync.go`) fetches, then
   takes out every branch whose bookmark is gone: a merged one by rebasing what was built on it
   straight onto the base and abandoning it, a closed one with `--restore-descendants`; then it
-  rebases `@` alone onto the base, leaving pushed branches where they are. Its operations carry a
+  rebases `@` alone onto the base, leaving pushed branches where they are, and puts the shared
+  checkout's detached HEAD back on `master` (Claude Code shows no diff without a branch). Its operations carry a
   tag in `operation.username`, so a sync that would leave a conflict reverts exactly its own
   operations with `jj op revert`, after an untagged snapshot. The daemon deletes the bookmark of a
   PR that merged or closed (`publish.Forget`), and a merge's `--delete-branch` makes the fetch

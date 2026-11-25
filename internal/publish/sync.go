@@ -81,7 +81,23 @@ func (c Checkout) sync(base string) error {
 	if exists(root, bookmark(base)) {
 		_, _ = jjOut(root, "bookmark", "set", base, "-r", trunk, "--allow-backwards")
 	}
+	c.attachHead(base)
 	return nil
+}
+
+// attachHead puts the shared checkout's Git HEAD back on the base branch, which jj detaches when
+// the working copy moves onto a new base: Claude Code takes a session's diff base from the
+// checkout's branch and shows no changes without one. A workspace leaves it, since the branch is
+// the shared checkout's.
+func (c Checkout) attachHead(base string) {
+	if c.Root != c.Main {
+		return
+	}
+	head, _ := gitOut(c.Root, nil, "rev-parse", "-q", "--verify", "HEAD")
+	branch, _ := gitOut(c.Root, nil, "rev-parse", "-q", "--verify", "refs/heads/"+base)
+	if head != "" && head == branch {
+		_ = gitRun(c.Root, nil, "symbolic-ref", "HEAD", "refs/heads/"+base)
+	}
 }
 
 // mutate runs a jj command tagged as this sync's, so a failed sync reverts exactly its own
