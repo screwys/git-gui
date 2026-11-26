@@ -586,7 +586,11 @@ func (t *PublishTab) discover(branch string) {
 					return
 				}
 				// The base branch's latest PR is shown for its checks; it is not this branch's PR, so
-				// it does not name the PR or fill the body.
+				// it does not name the PR or fill the body. GitHub's search lists a new PR seconds
+				// late, so a PR the publish just opened stays over an older one found.
+				if onBase && pr.Number < t.checks.Number {
+					return
+				}
 				if !onBase {
 					t.setPRLabel(pr.Title)
 					if _, _, hasBody := git.Draft(t.repo, branch); !hasBody && !t.body.Buffer().Modified() {
