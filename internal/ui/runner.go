@@ -192,6 +192,14 @@ func (r *Runner) startTimer() {
 	})
 }
 
+// Detach stops following the slot, as when its page closes; its job keeps running.
+func (r *Runner) Detach() {
+	if r.timer != 0 {
+		glib.SourceRemove(r.timer)
+		r.timer = 0
+	}
+}
+
 // poll advances output and status once; false ends polling.
 func (r *Runner) poll() bool {
 	hadChild := r.Record.Child != nil

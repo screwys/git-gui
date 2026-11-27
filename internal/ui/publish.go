@@ -382,8 +382,16 @@ func (t *PublishTab) showBranches() {
 
 	t.workspaces.clear()
 	checkouts := [][2]string{{"Shared checkout", t.repo}}
+	live := map[string]bool{t.repo: true}
 	for _, name := range publish.Workspaces(t.repo) {
-		checkouts = append(checkouts, [2]string{"Workspace " + name, publish.WorkspacePath(t.repo, name)})
+		path := publish.WorkspacePath(t.repo, name)
+		checkouts = append(checkouts, [2]string{"Workspace " + name, path})
+		live[path] = true
+	}
+	for path := range t.runs {
+		if !live[path] {
+			t.closeRun(path) // its workspace was removed
+		}
 	}
 	for _, checkout := range checkouts {
 		run := gtk.NewButtonWithLabel("Run")
@@ -415,7 +423,14 @@ func (t *PublishTab) run(title, path string) {
 		}
 		page = newJobPage(path, key, "", "Run from "+strings.ToLower(title[:1])+title[1:], other)
 		page.show = func() { t.term.Root.SetCurrentPage(t.term.Root.PageNum(page.Root)) }
-		t.term.Root.AppendPage(page.Root, gtk.NewLabel("Run "+title))
+		tab := gtk.NewBox(gtk.OrientationHorizontal, 4)
+		tab.Append(gtk.NewLabel("Run " + title))
+		closeTab := gtk.NewButtonFromIconName("window-close-symbolic")
+		closeTab.AddCSSClass("flat")
+		closeTab.SetTooltipText("Close this tab; a running app keeps running")
+		closeTab.ConnectClicked(func() { t.closeRun(path) })
+		tab.Append(closeTab)
+		t.term.Root.AppendPage(page.Root, tab)
 		t.runs[path] = page
 		page.Runner.Attach()
 	}
@@ -432,6 +447,17 @@ func (t *PublishTab) run(title, path string) {
 		page.Runner.Switch(next)
 	}
 	page.Runner.Start([]string{"fish", "-c", "r"}, nil)
+}
+
+// closeRun removes a checkout's Run page.
+func (t *PublishTab) closeRun(path string) {
+	page, ok := t.runs[path]
+	if !ok {
+		return
+	}
+	page.Runner.Detach()
+	t.term.Root.RemovePage(t.term.Root.PageNum(page.Root))
+	delete(t.runs, path)
 }
 
 func slotRunning(path, key string) bool {

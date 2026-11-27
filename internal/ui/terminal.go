@@ -48,6 +48,8 @@ func NewShellTerminal(repo string) *Terminal { return newTerminal(repo, commands
 
 func newTerminal(repo, shellKey string) *Terminal {
 	t := &Terminal{Root: gtk.NewNotebook(), shell: NewRunner(repo, shellKey, ""), shellOut: newConsole()}
+	// Run pages add tabs; scrolling keeps them from widening the window.
+	t.Root.SetScrollable(true)
 	t.Root.AppendPage(t.shellPage(), gtk.NewLabel("Terminal"))
 	s := t.shell
 	shellPage := func() int { return t.Root.NPages() - 1 }
