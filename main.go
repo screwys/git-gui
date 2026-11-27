@@ -42,6 +42,8 @@ func main() {
 			os.Exit(tasks.Publish(os.Args[2:]))
 		case "sync":
 			os.Exit(tasks.Sync(os.Args[2:]))
+		case "unpark":
+			os.Exit(tasks.Unpark(os.Args[2:]))
 		case "status":
 			os.Exit(tasks.Status(os.Args[2:]))
 		case "workspace":

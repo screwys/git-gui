@@ -23,12 +23,17 @@ func Branches(root, base string) []Branch {
 	listed, _ := names(root, fmt.Sprintf("(%s..@) & bookmarks()", trunk))
 	var out []Branch
 	for _, name := range listed {
-		behind, _ := names(root, fmt.Sprintf("(::%s ~ ::%s ~ %s) & bookmarks()", bookmark(name), trunk, bookmark(name)))
-		changed, _ := files(root, own(name, behind, trunk))
-		pushed := forkNumber(name) != 0 || exists(root, remote(name, "origin"))
-		out = append(out, Branch{Name: name, Behind: behind, Files: changed, Pushed: pushed})
+		out = append(out, branchOf(root, name, trunk))
 	}
 	return out
+}
+
+// branchOf describes the branch name: the branches it builds on and the files of its own commits.
+func branchOf(root, name, trunk string) Branch {
+	behind, _ := names(root, fmt.Sprintf("(::%s ~ ::%s ~ %s) & bookmarks()", bookmark(name), trunk, bookmark(name)))
+	changed, _ := files(root, own(name, behind, trunk))
+	pushed := forkNumber(name) != 0 || exists(root, remote(name, "origin"))
+	return Branch{Name: name, Behind: behind, Files: changed, Pushed: pushed}
 }
 
 // Queue lists the checkout's queued publishes by branch.

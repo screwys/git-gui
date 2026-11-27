@@ -31,7 +31,7 @@ type Options struct {
 	Run                 string // a command whose changes in the publish workspace are published
 	Generate, Check     string
 	Full, Instant       bool
-	PrepareOnly         bool
+	Park                bool // commit onto the branch and take it out of the checkout, unpublished
 	AutoMerge           bool
 	MergeCommit         bool
 }
@@ -172,6 +172,9 @@ func Publish(dir string, o Options) (Result, error) {
 	}
 	if o.BodySet && os.Getenv(AllowBodyEnv) != "1" {
 		return Result{}, fmt.Errorf("refusing a PR body; set %s=1 only for text the user gave", AllowBodyEnv)
+	}
+	if o.Park && (o.PR != 0 || forkNumber(o.Branch) != 0 || o.Run != "") {
+		return Result{}, errors.New("--park takes neither --pr nor --run")
 	}
 	unlock, _ := c.Lock(true)
 	defer unlock()
@@ -384,6 +387,13 @@ func Publish(dir string, o Options) (Result, error) {
 		return Result{}, err
 	}
 	c.record(branch)
+	if o.Park {
+		if err := c.park(branch, change); err != nil {
+			return Result{}, err
+		}
+		fmt.Printf("Parked %s: its edits left this checkout. \"git-gui unpark %s\" brings them back, \"git-gui publish --branch %s\" publishes it.\n", branch, branch, branch)
+		return Result{Branch: branch}, nil
+	}
 
 	work, err := c.enterPublish(change)
 	if err != nil {
@@ -432,10 +442,6 @@ func Publish(dir string, o Options) (Result, error) {
 	}
 	c.record(branch)
 	result := Result{Branch: branch, Worktree: work}
-	if o.PrepareOnly {
-		fmt.Println("Prepared branch", branch, "in", work)
-		return result, nil
-	}
 
 	// Work on top of other open branches waits for them to merge; the checks run now.
 	below, err := names(root, fmt.Sprintf("(::%s ~ ::%s ~ %s) & bookmarks()", change, trunk, change))
@@ -565,7 +571,8 @@ func (c Checkout) addParent(change string) error {
 	for _, other := range others {
 		args = append(args, "-o", other)
 	}
-	return jjRun(c.Root, args...)
+	_, err = jjOut(c.Root, args...)
+	return err
 }
 
 // keepEdits gives back the working copy's own version of every file that formatting or
@@ -575,14 +582,7 @@ func (c Checkout) keepEdits(before string) {
 	if !exists(c.Root, "@ & conflicts()") {
 		return
 	}
-	listed, _ := jjOut(c.Root, "resolve", "--list", "-r", "@")
-	var paths []string
-	for _, line := range strings.Split(listed, "\n") {
-		if fields := strings.Fields(line); len(fields) > 0 {
-			paths = append(paths, fields[0])
-		}
-	}
-	if len(paths) > 0 {
+	if paths := conflictPaths(c.Root, "@"); len(paths) > 0 {
 		_ = jjRun(c.Root, append([]string{"restore", "--from", before, "--into", "@"}, fileset(paths)...)...)
 	}
 }

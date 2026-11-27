@@ -34,6 +34,10 @@ squash commit. Without TITLE the PR is merged with the base, checked and set to 
 is. A fork's PR is the branch "pr/NUMBER" here, which --branch also takes; "git-gui wait-pr
 NUMBER" follows it like one of your own.
 
+--park sets work aside: the commit goes onto the branch, which then leaves the checkout, so the
+files here lose its edits until "git-gui unpark BRANCH" brings them back. Without TITLE and PATH it
+parks the branch as it stands. "git-gui publish --branch BRANCH" publishes a parked branch.
+
 Paths whose edits build on edits another open branch of this checkout made in the same files are
 queued instead: their commit goes on top of that branch, the checks run now, and git-gui-daemon
 publishes the branch once the branches below merge. Follow a queued branch with "git-gui wait-pr
@@ -51,7 +55,7 @@ Options:
   --run COMMAND     Run COMMAND in the publish workspace and publish what it changes
   --full            Run the pre-push hook (the full gate) instead of the check command
   --instant         No generation and no checks
-  --prepare-only    Commit onto the branch here, without checks or pushing
+  --park            Commit onto the branch and take it out of the checkout, unpublished
   --no-auto-merge   Leave auto-merge off
   --merge-commit    Merge with a merge commit instead of squashing
   --print-branch    Print the branch it would publish and stop
@@ -101,8 +105,8 @@ func Publish(args []string) int {
 			o.Full = true
 		case "--instant":
 			o.Instant = true
-		case "--prepare-only":
-			o.PrepareOnly = true
+		case "--park":
+			o.Park = true
 		case "--no-auto-merge":
 			o.AutoMerge = false
 		case "--merge-commit":
@@ -190,6 +194,20 @@ func Sync([]string) int {
 	return 0
 }
 
+// Unpark is "git-gui unpark BRANCH": a parked branch's edits come back into this checkout.
+func Unpark(args []string) int {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
+		fmt.Println("Usage: git-gui unpark BRANCH\n\nBrings the edits of a branch parked with \"git-gui publish --park\" back into this checkout.")
+		return 2
+	}
+	if err := publish.Unpark(".", args[0]); err != nil {
+		fmt.Println(err)
+		return 1
+	}
+	fmt.Println("Unparked", args[0]+": its edits are back in this checkout, on the branch.")
+	return 0
+}
+
 // Status is "git-gui status", the start of an agent session in a checkout: it syncs it, names
 // PRs that need their session and what the checkout's open branches already carry.
 func Status([]string) int {
@@ -260,6 +278,9 @@ func Status([]string) int {
 		default:
 			fmt.Printf("Prepared as %s, not pushed (git-gui publish --branch %s pushes it): %s\n", b.Name, b.Name, files)
 		}
+	}
+	for _, b := range publish.Parked(root, base) {
+		fmt.Printf("Parked as %s, out of the checkout (git-gui unpark %s brings it back): %s\n", b.Name, b.Name, strings.Join(b.Files, ", "))
 	}
 	dirty := strings.Fields(gitLine(root, "diff", "--name-only"))
 	switch {

@@ -61,13 +61,7 @@ func (c Checkout) sync(base string) error {
 	}
 	if err == nil {
 		if conflicted, _ := ids(root, fmt.Sprintf("(%s..@) & conflicts()", trunk)); len(conflicted) > 0 {
-			listed, _ := jjOut(root, "resolve", "--list", "-r", conflicted[len(conflicted)-1])
-			var paths []string
-			for _, line := range strings.Split(listed, "\n") {
-				if fields := strings.Fields(line); len(fields) > 0 {
-					paths = append(paths, fields[0])
-				}
-			}
+			paths := conflictPaths(root, conflicted[len(conflicted)-1])
 			err = fmt.Errorf("local edits conflict with origin/%s: %s; %s not synced", base, strings.Join(paths, ", "), base)
 		}
 	}

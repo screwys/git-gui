@@ -74,6 +74,12 @@ while testing against real repositories.
   below them; the daemon's schedule reruns `git-gui publish --branch <branch>` once none of those
   is open. Cancelling abandons the branch's own commits with `--restore-descendants`, so the edits
   stay here.
+- `--park` (`park.go`) sets the bookmark and then takes the change out of `@`'s parents before
+  generation, so the files here lose its edits; it refuses when uncommitted edits or another
+  branch here build on it. A parked branch is a recorded, unpushed bookmark outside every
+  checkout; sync leaves it on its old base. `git-gui unpark` adds it back as a parent and undoes
+  that when the files conflict. Both rebase quietly: jj's conflict hints would send an agent to
+  `jj new`.
 - `refs/git-gui/published/<branch>` keeps each branch's head. `sync` (`sync.go`) fetches, then
   takes out every branch whose bookmark is gone: a merged one by rebasing what was built on it
   straight onto the base and abandoning it, a closed one with `--restore-descendants`; then it

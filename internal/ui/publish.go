@@ -350,10 +350,6 @@ func (t *PublishTab) showBranches() {
 		case b.Pushed:
 			state = "published"
 		}
-		files := "1 file"
-		if len(b.Files) != 1 {
-			files = fmt.Sprintf("%d files", len(b.Files))
-		}
 		use := gtk.NewButtonWithLabel("Use")
 		use.SetTooltipText("Publish to this branch")
 		name := b.Name
@@ -361,9 +357,28 @@ func (t *PublishTab) showBranches() {
 			t.branch.SetText(name)
 			t.Refresh()
 		})
-		t.branches.rows.Append(listRow(b.Name, state+" · "+files, strings.Join(b.Files, "\n"), use))
+		t.branches.rows.Append(listRow(b.Name, state+" · "+fileCount(b.Files), strings.Join(b.Files, "\n"), use))
 	}
-	t.branches.Root.SetVisible(len(open) > 0)
+	parked := publish.Parked(t.repo, t.baseBranch())
+	for _, b := range parked {
+		unpark := gtk.NewButtonWithLabel("Unpark")
+		unpark.SetTooltipText("Bring its edits back into the shared checkout")
+		name := b.Name
+		unpark.ConnectClicked(func() {
+			unpark.SetSensitive(false)
+			go func() {
+				err := publish.Unpark(t.repo, name)
+				glib.IdleAdd(func() {
+					if err != nil {
+						alert(t.Root, "Unpark Failed", err.Error())
+					}
+					t.Refresh()
+				})
+			}()
+		})
+		t.branches.rows.Append(listRow(b.Name, "parked · "+fileCount(b.Files), strings.Join(b.Files, "\n"), unpark))
+	}
+	t.branches.Root.SetVisible(len(open)+len(parked) > 0)
 
 	t.workspaces.clear()
 	checkouts := [][2]string{{"Shared checkout", t.repo}}
@@ -377,6 +392,13 @@ func (t *PublishTab) showBranches() {
 		run.ConnectClicked(func() { t.run(title, path) })
 		t.workspaces.rows.Append(listRow(title, "", path, run))
 	}
+}
+
+func fileCount(files []string) string {
+	if len(files) == 1 {
+		return "1 file"
+	}
+	return fmt.Sprintf("%d files", len(files))
 }
 
 // run starts the devel app from a checkout on a Run page of its own.
