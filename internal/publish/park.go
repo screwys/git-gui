@@ -84,11 +84,17 @@ func Parked(root, base string) []Branch {
 	if err != nil {
 		return nil
 	}
+	// Only branches a publish recorded can be parked, so the rest of the bookmarks are skipped.
+	refs, _ := gitOut(root, nil, "for-each-ref", "--format=%(refname)", publishedRefs)
+	recorded := []string{"none()"}
+	for _, ref := range strings.Fields(refs) {
+		recorded = append(recorded, bookmark(strings.TrimPrefix(ref, publishedRefs)))
+	}
 	trunk := trunkOf(base)
-	listed, _ := names(root, fmt.Sprintf("bookmarks() ~ ::%s ~ ::(@ | %s)", trunk, c.otherCopies()))
+	listed, _ := names(root, fmt.Sprintf("(%s) ~ ::%s ~ ::(@ | %s)", strings.Join(recorded, " | "), trunk, c.otherCopies()))
 	var out []Branch
 	for _, name := range listed {
-		if b := branchOf(root, name, trunk); !b.Pushed && hasRef(root, publishedRefs+name) {
+		if b := branchOf(root, name, trunk); !b.Pushed {
 			out = append(out, b)
 		}
 	}
