@@ -20,17 +20,9 @@ import (
 // WorkspaceDir holds the session workspaces, relative to the shared checkout.
 const WorkspaceDir = ".claude/worktrees"
 
-// profileBases are the XDG base folders a devel profile spreads over, with their defaults, and
-// the name the workspace's .local/profile gives each.
-var profileBases = []struct{ env, fallback, name string }{
-	{"XDG_CONFIG_HOME", ".config", "config"},
-	{"XDG_DATA_HOME", ".local/share", "data"},
-	{"XDG_CACHE_HOME", ".cache", "cache"},
-	{"XDG_STATE_HOME", ".local/state", "state"},
-}
-
-// profileName is the devel app's folder under each base.
-const profileName = "rufin.devel"
+// profileScript is the project's own script that copies its devel profile to the folder it is
+// given, relative to the shared checkout: where that profile lives is the project's knowledge.
+const profileScript = ".local/scripts/devel_profile.py"
 
 // ownLocal are the .local folders each workspace keeps for itself; the rest link to the shared
 // checkout's.
@@ -71,18 +63,12 @@ func AddWorkspace(main, name, path, revision string, profile bool) error {
 	if !profile {
 		return nil
 	}
-	home, _ := os.UserHomeDir()
-	for _, b := range profileBases {
-		base := os.Getenv(b.env)
-		if base == "" {
-			base = filepath.Join(home, b.fallback)
-		}
-		destination := filepath.Join(path, ".local", "profile", b.name, profileName)
-		if err := copyTree(filepath.Join(base, profileName), destination); err != nil {
-			_ = os.MkdirAll(destination, 0o755)
-		}
+	// The folder exists either way: without it the workspace would run on the shared profile.
+	destination := filepath.Join(path, ".local", "profile")
+	if out, err := exec.Command("python3", filepath.Join(main, profileScript), destination).CombinedOutput(); err != nil {
+		fmt.Fprintln(os.Stderr, "The devel profile was not copied, so the workspace starts with an empty one:", strings.TrimSpace(string(out)), err)
 	}
-	return nil
+	return os.MkdirAll(destination, 0o755)
 }
 
 // RemoveWorkspace removes a session workspace and its files. Its unpublished changes stay in the
