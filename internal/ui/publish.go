@@ -387,7 +387,7 @@ func (t *PublishTab) showBranches() {
 	}
 	for _, checkout := range checkouts {
 		run := gtk.NewButtonWithLabel("Run")
-		run.SetTooltipText("Build and start the devel app from here, as the r command does; a running one stops")
+		run.SetTooltipText("Build the devel app from here and replace the running one once it builds, as the r command does")
 		title, path := checkout[0], checkout[1]
 		run.ConnectClicked(func() { t.run(title, path) })
 		t.workspaces.rows.Append(listRow(title, "", path, run))
@@ -401,11 +401,19 @@ func fileCount(files []string) string {
 	return fmt.Sprintf("%d files", len(files))
 }
 
+// runKeys are the two slots a checkout's Run alternates between: r builds while the running
+// app's job holds the other slot, and replaces that app once the build succeeds.
+var runKeys = [2]string{"run", "run-next"}
+
 // run starts the devel app from a checkout on a Run page of its own.
 func (t *PublishTab) run(title, path string) {
 	page, ok := t.runs[path]
 	if !ok {
-		page = newJobPage(path, "run", "", "Run from "+strings.ToLower(title[:1])+title[1:])
+		key, other := runKeys[0], runKeys[1]
+		if slotRunning(path, other) {
+			key, other = other, key
+		}
+		page = newJobPage(path, key, "", "Run from "+strings.ToLower(title[:1])+title[1:], other)
 		page.show = func() { t.term.Root.SetCurrentPage(t.term.Root.PageNum(page.Root)) }
 		t.term.Root.AppendPage(page.Root, gtk.NewLabel("Run "+title))
 		t.runs[path] = page
@@ -413,7 +421,26 @@ func (t *PublishTab) run(title, path string) {
 	}
 	t.bottom.SetCurrentPage(1)
 	page.show()
+	if page.Runner.Running() {
+		next := runKeys[0]
+		if page.Runner.Key == next {
+			next = runKeys[1]
+		}
+		if slotRunning(path, next) {
+			return // a restart is already building
+		}
+		page.Runner.Switch(next)
+	}
 	page.Runner.Start([]string{"fish", "-c", "r"}, nil)
+}
+
+func slotRunning(path, key string) bool {
+	for _, e := range client.Records(path, key) {
+		if client.Running(e.Record) {
+			return true
+		}
+	}
+	return false
 }
 
 // whenEdited calls done when the user finishes editing entry, by Enter or by leaving it, with

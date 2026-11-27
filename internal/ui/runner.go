@@ -109,6 +109,11 @@ func (r *Runner) Reload() {
 	}
 }
 
+// Switch follows another slot; a job running in the current one keeps running unfollowed.
+func (r *Runner) Switch(key string) {
+	r.Key, r.running, r.paused, r.stopRequested = key, false, false, false
+}
+
 // Start runs a command in this slot through the daemon.
 func (r *Runner) Start(command []string, extra map[string]string) {
 	if r.running || client.FindOutside(r.Program) != nil {
