@@ -1,8 +1,6 @@
 # Git GUI
 
-A Linux desktop app for committing, publishing pull requests and cutting releases in my
-repositories. It is one Go binary: a GTK 4 and libadwaita window, plus `git-gui daemon`, a user
-service that runs the app's commands and watches my open pull requests and releases.
+A GTK4 command center GUI + daemon for git operations, extremely personal as is but you can likely bend it to your tastes. Main use case is being able to do git operations including releases from GUI, including basic file editing and actually watching CI; while also handling a lot of manual work for merges automatically. The daemon notifies about failed CIs.  Overall this is mainly for Rufin, since `master` is protected it updates PR branches automatically, watches CI, starts releases (the automation itself is inside Rufin repo) and it also helps for my other projects when I need to watch CI, put work on the main branch directly so it gives agents a systematic way to push and watch CIs without creating PRs.
 
 ## Features
 
