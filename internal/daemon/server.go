@@ -11,7 +11,7 @@ import (
 
 // Request is one call from git-gui. Each connection carries one request and one response.
 type Request struct {
-	Op       string    `json:"op"` // start, signal, schedule, cancel or follow_release
+	Op       string    `json:"op"` // start, signal, schedule, cancel, follow_release or follow_push
 	Job      *JobSpec  `json:"job,omitempty"`
 	JobPath  string    `json:"job_path,omitempty"`
 	Action   string    `json:"action,omitempty"` // stop, pause or resume
@@ -23,6 +23,9 @@ type Request struct {
 	Kind string `json:"kind,omitempty"`
 	Tag  string `json:"tag,omitempty"`
 	Pid  int    `json:"pid,omitempty"`
+	// follow_push: commit Head pushed to Branch of the checkout Cwd.
+	Branch string `json:"branch,omitempty"`
+	Head   string `json:"head,omitempty"`
 }
 
 type Response struct {
@@ -100,6 +103,8 @@ func (d *daemon) apply(req Request, resp *Response) error {
 		return d.cancelSchedule(req.ID)
 	case "follow_release":
 		return d.followRelease(req)
+	case "follow_push":
+		return d.followPush(req)
 	}
 	return fmt.Errorf("unknown op %q", req.Op)
 }

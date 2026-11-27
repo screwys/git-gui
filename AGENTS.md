@@ -122,6 +122,10 @@ while testing against real repositories.
 - Branch updates use `PUT /repos/{repo}/pulls/{n}/update-branch` with `expected_head_sha`, only for
   PRs with auto-merge, no failing checks and `mergeStateStatus == BEHIND`, also while checks run.
   A failing PR gets main merged in by its fix push instead.
+- `git-gui wait-push`, which agents run in the background after pushing straight to a branch
+  (nocblue), sends `follow_push`; the daemon queries that commit's checks every pass (10 s) in a
+  second query until they finish, keeps it in `pushes[]` (one per repo and branch, a newer push
+  replaces it) and notifies on failure or once all passed. Nothing else follows pushes.
 - Notifications: failing and conflicting PRs once per head commit (keys persisted), checks passing,
   merges (unless a schedule announces it), schedule outcomes, release workflow conclusions and
   finished jobs. Failures are critical, the rest normal.
@@ -135,7 +139,7 @@ while testing against real repositories.
   and the window is gone.
 - `daemon.json` is a contract with its readers (the window and Rufin's session startup report).
   Keep `updated`, `prs[].repo`, `number`, `title`, `url`, `branch`, `head`, `status`, `failed`
-  and `checks`, `schedules[]` and `releases` stable. `git-gui wait-pr`, which agents run in the
+  and `checks`, `schedules[]`, `releases` and `pushes[]` stable. `git-gui wait-pr`, which agents run in the
   background after publishing, waits on `prs[]` and exits on failing, conflict, merged or closed;
   given a queued branch it follows `schedules[]` and the publish job's record until the PR opens. A PR's `status` is one of `running`, `passing`,
   `behind`, `updating`, `failing` or `conflict`.

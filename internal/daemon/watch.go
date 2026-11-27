@@ -28,12 +28,14 @@ const prFragment = `fragment pr on PullRequest {
   number title url state isDraft isCrossRepository headRefName headRefOid mergeStateStatus
   autoMergeRequest { enabledAt }
   repository { nameWithOwner }
-  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
-    __typename
-    ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
-    ... on StatusContext { context state targetUrl startedAt: createdAt }
-  } } } } } }
+  commits(last: 1) { nodes { commit { ...checks } } }
 }`
+
+const checksFragment = `fragment checks on Commit { statusCheckRollup { contexts(first: 100) { nodes {
+  __typename
+  ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
+  ... on StatusContext { context state targetUrl startedAt: createdAt }
+} } } }`
 
 const stateQuery = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) { pullRequest(number: $number) { state } }
@@ -94,6 +96,30 @@ func (n CheckNode) Check() Check {
 	return c
 }
 
+// checkRollup is a commit's checks as the checks fragment reads them.
+type checkRollup struct {
+	Contexts struct{ Nodes []CheckNode }
+}
+
+// read lists the checks, the names of the failed ones and whether any still runs.
+func (r *checkRollup) read() (checks []Check, failed []string, running bool) {
+	checks, failed = []Check{}, []string{}
+	if r == nil {
+		return checks, failed, false
+	}
+	for _, raw := range r.Contexts.Nodes {
+		check := raw.Check()
+		checks = append(checks, check)
+		switch {
+		case check.Status != "COMPLETED":
+			running = true
+		case slices.Contains(failedOutcomes, check.Conclusion) && !slices.Contains(failed, check.Name):
+			failed = append(failed, check.Name)
+		}
+	}
+	return checks, failed, running
+}
+
 // branchUpdate is the daemon's own merge of the base into a PR: from the head it replaced to the
 // merge commit, known once GitHub lists it. Its checks passing again is not news.
 type branchUpdate struct{ from, head string }
@@ -114,11 +140,7 @@ type prNode struct {
 	Repository        struct{ NameWithOwner string }
 	Commits           struct {
 		Nodes []struct {
-			Commit struct {
-				StatusCheckRollup *struct {
-					Contexts struct{ Nodes []CheckNode }
-				}
-			}
+			Commit struct{ StatusCheckRollup *checkRollup }
 		}
 	}
 }
@@ -156,7 +178,7 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 		}
 	}
 	var result map[string]json.RawMessage
-	if err := d.graphql(ctx, "query {\n"+query+"\n}\n"+prFragment, nil, &result); err != nil {
+	if err := d.graphql(ctx, "query {\n"+query+"\n}\n"+prFragment+"\n"+checksFragment, nil, &result); err != nil {
 		return err
 	}
 	var mine struct{ Nodes []prNode }
@@ -196,19 +218,7 @@ func (d *daemon) watchPRs(ctx context.Context) error {
 		open[pr.key()] = true
 		running := false
 		for _, commit := range node.Commits.Nodes {
-			if commit.Commit.StatusCheckRollup == nil {
-				continue
-			}
-			for _, raw := range commit.Commit.StatusCheckRollup.Contexts.Nodes {
-				check := raw.Check()
-				pr.Checks = append(pr.Checks, check)
-				switch {
-				case check.Status != "COMPLETED":
-					running = true
-				case slices.Contains(failedOutcomes, check.Conclusion) && !slices.Contains(pr.Failed, check.Name):
-					pr.Failed = append(pr.Failed, check.Name)
-				}
-			}
+			pr.Checks, pr.Failed, running = commit.Commit.StatusCheckRollup.read()
 		}
 		switch {
 		case node.MergeStateStatus == "DIRTY":

@@ -30,6 +30,8 @@ service that runs the app's commands and watches my open pull requests and relea
 - Your open PRs, and the PRs of others you published onto, are watched: a PR that falls behind its base while auto-merge waits gets updated,
   and you get notifications for failed checks, conflicts, passing checks, merges, release workflow
   results and finished commands.
+- `git-gui wait-push` follows the checks of a commit pushed straight to a branch: it notifies you
+  and exits once they fail or pass.
 
 ## Setup
 

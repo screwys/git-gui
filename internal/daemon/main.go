@@ -3,7 +3,8 @@
 // It runs commands under detached supervisors, so they outlive the window and the daemon.
 // It watches the user's open pull requests: a passing PR whose branch is behind its base gets
 // updated, failed checks and conflicts raise notifications, and a Rufin merge syncs the Rufin
-// checkout. It holds commands scheduled to run after a PR merges, and publishes queued behind
+// checkout. It follows the checks of commits pushed straight to a branch when git-gui wait-push
+// asks. It holds commands scheduled to run after a PR merges, and publishes queued behind
 // other work once that merged. git-gui talks to it over a Unix socket and reads its state
 // file, $XDG_STATE_HOME/git-gui/daemon.json.
 package daemon
@@ -11,13 +12,15 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"github.com/screwys/git-gui/internal/publish"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/screwys/git-gui/internal/publish"
 )
 
 // Supervise runs one job's command; the daemon starts it as "<binary> supervise <job.json>".
@@ -49,7 +52,7 @@ func Run() {
 			log.Print(err)
 		}
 		interval := 30 * time.Second
-		if d.activeSchedules() {
+		if d.activeSchedules() || d.followingPushes() {
 			interval = 10 * time.Second
 		}
 		select {
@@ -68,6 +71,7 @@ type State struct {
 	Notified    []string    `json:"notified"`
 	Schedules   []*Schedule `json:"schedules"`
 	Releases    []*Release  `json:"releases"` // what each project's release jobs view follows
+	Pushes      []*Push     `json:"pushes"`   // pushed commits git-gui wait-push follows
 }
 
 type daemon struct {
@@ -93,7 +97,7 @@ func (d *daemon) pass(ctx context.Context) error {
 			publish.Snapshot(publish.WorkspacePath(checkout, name))
 		}
 	}
-	watchErr := d.watchPRs(ctx)
+	watchErr := errors.Join(d.watchPRs(ctx), d.watchPushes(ctx))
 	d.runSchedules(ctx)
 	d.pollReleases(ctx)
 	d.mu.Lock()

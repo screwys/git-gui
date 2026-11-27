@@ -5,7 +5,8 @@
 // watches pull requests and releases. "supervise" is started by the daemon,
 // "push" is the last step of a Commit & Push job, and "release" tags and publishes a release of a
 // project. "publish", "sync" and "status" publish from a shared checkout, "rufin-release" releases
-// Rufin, and "wait-pr" waits for the daemon's verdict on a PR.
+// Rufin, "wait-pr" waits for the daemon's verdict on a PR and "wait-push" on a commit pushed
+// straight to a branch.
 package main
 
 import (
@@ -38,6 +39,8 @@ func main() {
 			os.Exit(tasks.Push(os.Args[2:]))
 		case "wait-pr":
 			os.Exit(tasks.WaitPR(os.Args[2:]))
+		case "wait-push":
+			os.Exit(tasks.WaitPush(os.Args[2:]))
 		case "publish":
 			os.Exit(tasks.Publish(os.Args[2:]))
 		case "sync":
