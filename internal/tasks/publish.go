@@ -180,10 +180,12 @@ func enqueue(o publish.Options, branch string) int {
 
 // Sync is "git-gui sync": bring the checkout onto the remote base branch, carrying its edits.
 func Sync([]string) int {
-	if _, err := publish.Sync(".", git.DefaultBranch("."), true); err != nil {
+	base := git.DefaultBranch(".")
+	if _, err := publish.Sync(".", base, true); err != nil {
 		fmt.Println(err)
 		return 1
 	}
+	fmt.Println("Synced onto origin/" + base + ".")
 	return 0
 }
 

@@ -97,7 +97,8 @@ func (c Checkout) attachHead(base string) {
 // mutate runs a jj command tagged as this sync's, so a failed sync reverts exactly its own
 // operations and none of other workspaces' meanwhile.
 func (c Checkout) mutate(tag string, args ...string) error {
-	return jjRun(c.Root, append([]string{"--config", "operation.username=" + tag}, args...)...)
+	_, err := jjOut(c.Root, append([]string{"--config", "operation.username=" + tag}, args...)...)
+	return err
 }
 
 func (c Checkout) revert(start, tag string) {
@@ -109,7 +110,7 @@ func (c Checkout) revert(start, tag string) {
 			return
 		}
 		if whose == "ours" {
-			_ = jjRun(c.Root, "op", "revert", id)
+			_, _ = jjOut(c.Root, "op", "revert", id)
 		}
 	}
 }
