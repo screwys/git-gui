@@ -62,7 +62,8 @@ while testing against real repositories.
 - `git-gui publish` makes the branch's next commit on the base, the branch, or the open branches
   whose edits the paths build on, adds it as a parent of `@`, and moves the paths' edits into it
   with `jj squash`, so the files here never change. The bookmark is set at once, so rerunning a
-  stopped publish continues it. Generate and check run in the `publish` workspace at
+  stopped publish continues it. A branch that was never pushed and no longer takes the edits (it
+  fell behind the base) is dequeued and made again on the base, in one commit with them. Generate and check run in the `publish` workspace at
   `<git-common-dir>/git-gui/publish`, on an empty child of the commit; what generation changes is
   squashed in from the checkout (`publish@`), and `keepEdits` gives back the checkout's version
   of a file whose edit made there conflicts with it. `--run` without paths leaves the commit out
