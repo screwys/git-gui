@@ -242,7 +242,7 @@ func Status([]string) int {
 	case <-time.After(60 * time.Second):
 		fmt.Println("git-gui sync is still running; run it again before reading git status.")
 	}
-	fmt.Printf("The checkout stands on %s; origin/%s is %s.\n", short(root, "HEAD"), base, short(root, "origin/"+base))
+	fmt.Println("jj snapshots this checkout every 30 seconds: `jj op log` finds a lost edit, `jj --at-op <op> file show -r @ <path> > <path>` writes it back.")
 
 	state := client.State()
 	slug := git.RemoteSlug(root)
@@ -300,8 +300,6 @@ func gitLine(root string, args ...string) string {
 	out, _ := cmd.Output()
 	return strings.TrimSuffix(string(out), "\n")
 }
-
-func short(root, rev string) string { return gitLine(root, "rev-parse", "--short", rev) }
 
 const workspaceUsage = `Usage: git-gui workspace add NAME | remove NAME | list | hook
 
