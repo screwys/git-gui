@@ -358,11 +358,39 @@ func Publish(dir string, o Options) (Result, error) {
 		} else if err = c.addParent(change); err == nil {
 			err = jjRun(root, append([]string{"squash", "--from", "@", "--into", change}, fileset(o.Paths)...)...)
 		}
-		if err == nil && exists(root, change+" & conflicts()") {
+		conflicts := err == nil && exists(root, change+" & conflicts()")
+		if conflicts {
 			err = fmt.Errorf("the requested paths do not apply onto %s; sync them and retry", branch)
 		}
 		if err != nil {
 			_ = jjRun(root, "abandon", "--restore-descendants", change)
+		}
+		// A branch that was never pushed and fell behind the base holds nothing anyone else has:
+		// its commits are made again on the base, in one with these edits.
+		if conflicts && o.PR == 0 && local && head == "" {
+			stale, _ := files(root, fmt.Sprintf("::%s ~ ::%s", bookmark(branch), trunk))
+			if Dequeue(root, o.Base, branch) == nil {
+				fmt.Printf("%s was never pushed and is behind %s: its commits are made again with these edits.\n", branch, o.Base)
+				for _, f := range stale {
+					if !slices.Contains(o.Paths, f) {
+						o.Paths = append(o.Paths, f)
+					}
+				}
+				local = false
+				if change, err = newChange(root, o.Title, base); err == nil {
+					if err = c.addParent(change); err == nil {
+						err = jjRun(root, append([]string{"squash", "--from", "@", "--into", change}, fileset(o.Paths)...)...)
+					}
+					if err == nil && exists(root, change+" & conflicts()") {
+						err = fmt.Errorf("the requested paths do not apply onto %s; sync them and retry", o.Base)
+					}
+					if err != nil {
+						_ = jjRun(root, "abandon", "--restore-descendants", change)
+					}
+				}
+			}
+		}
+		if err != nil {
 			return Result{}, err
 		}
 		inCheckout = true
