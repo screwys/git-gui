@@ -359,10 +359,10 @@ func (t *PublishTab) showBranches() {
 		})
 		t.branches.rows.Append(listRow(b.Name, state+" · "+fileCount(b.Files), strings.Join(b.Files, "\n"), use))
 	}
-	parked := publish.Parked(t.repo, t.baseBranch())
+	parked := publish.Parked(t.repo)
 	for _, b := range parked {
 		unpark := gtk.NewButtonWithLabel("Unpark")
-		unpark.SetTooltipText("Bring its edits back into the shared checkout")
+		unpark.SetTooltipText("Put its edits back into the shared checkout, uncommitted")
 		name := b.Name
 		unpark.ConnectClicked(func() {
 			unpark.SetSensitive(false)

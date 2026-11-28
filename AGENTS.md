@@ -62,8 +62,7 @@ while testing against real repositories.
 - `git-gui publish` makes the branch's next commit on the base, the branch, or the open branches
   whose edits the paths build on, adds it as a parent of `@`, and moves the paths' edits into it
   with `jj squash`, so the files here never change. The bookmark is set at once, so rerunning a
-  stopped publish continues it. A branch that was never pushed and no longer takes the edits (it
-  fell behind the base) is dequeued and made again on the base, in one commit with them. Generate and check run in the `publish` workspace at
+  stopped publish continues it. Generate and check run in the `publish` workspace at
   `<git-common-dir>/git-gui/publish`, on an empty child of the commit; what generation changes is
   squashed in from the checkout (`publish@`), and `keepEdits` gives back the checkout's version
   of a file whose edit made there conflicts with it. `--run` without paths leaves the commit out
@@ -75,12 +74,10 @@ while testing against real repositories.
   below them; the daemon's schedule reruns `git-gui publish --branch <branch>` once none of those
   is open. Cancelling abandons the branch's own commits with `--restore-descendants`, so the edits
   stay here.
-- `--park` (`park.go`) sets the bookmark and then takes the change out of `@`'s parents before
-  generation, so the files here lose its edits; it refuses when uncommitted edits or another
-  branch here build on it. A parked branch is a recorded, unpushed bookmark outside every
-  checkout; sync leaves it on its old base. `git-gui unpark` adds it back as a parent and undoes
-  that when the files conflict. Both rebase quietly: jj's conflict hints would send an agent to
-  `jj new`.
+- `git-gui park NAME` (`park.go`) is a stash: it squashes the paths' edits from `@` into a change
+  on `@`'s parents under the bookmark `park/NAME`. `unpark` rebases that change onto `@`, rebases
+  it back when that conflicts, and otherwise squashes it into `@`. Both run jj quietly: its
+  conflict hints would send an agent to `jj new`.
 - `refs/git-gui/published/<branch>` keeps each branch's head. `sync` (`sync.go`) fetches, then
   takes out every branch whose bookmark is gone: a merged one by rebasing what was built on it
   straight onto the base and abandoning it, a closed one with `--restore-descendants`; then it

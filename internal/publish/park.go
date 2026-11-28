@@ -6,96 +6,101 @@ import (
 	"strings"
 )
 
-// A parked branch is a branch of finished commits taken out of the checkout: the files here lose
-// its edits, so builds, other sessions' publishes and the diff leave it alone until it is unparked
-// or published. Its bookmark and published ref keep it; sync leaves it where it is.
+// Parking stashes uncommitted edits: they move into a change of their own beside the working copy,
+// under the bookmark park/NAME, and the files here lose them. Unpark puts them back as uncommitted
+// edits on top of whatever the files hold by then.
+const parkPrefix = "park/"
 
-// park takes the branch's change out of the working copy's parents.
-func (c Checkout) park(branch, change string) error {
-	if !exists(c.Root, change+" & ::@") {
-		return nil
-	}
-	if above, _ := names(c.Root, fmt.Sprintf("(%s:: ~ %s ~ @) & ::@", change, change)); len(above) > 0 {
-		return fmt.Errorf("%s builds on %s; park or publish it first", strings.Join(above, ", "), branch)
-	}
-	if err := c.dropParent(change); err != nil {
-		return err
-	}
-	if exists(c.Root, "@ & conflicts()") {
-		paths := conflictPaths(c.Root, "@")
-		_ = c.addParent(change)
-		return fmt.Errorf("edits here build on %s's in %s; park them with it (git-gui publish --park --branch %s PATH...)", branch, strings.Join(paths, ", "), branch)
-	}
-	return nil
-}
-
-// dropParent rebases the working copy onto its parents without the change and what builds on it.
-func (c Checkout) dropParent(change string) error {
-	base, err := c.base()
-	if err != nil {
-		return err
-	}
-	others, err := ids(c.Root, fmt.Sprintf("heads(::@ ~ ::%s ~ @ ~ %s::)", base, change))
-	if err != nil {
-		return err
-	}
-	args := []string{"rebase", "-r", "@", "-o", base}
-	for _, other := range others {
-		args = append(args, "-o", other)
-	}
-	_, err = jjOut(c.Root, args...)
-	return err
-}
-
-// Unpark brings a parked branch's edits back into the checkout in dir, so work on it continues
-// here. Nothing changes when they conflict with the files here.
-func Unpark(dir, branch string) error {
+// Park takes the paths' uncommitted edits, or every uncommitted edit without paths, out of the
+// checkout in dir and keeps them as name.
+func Park(dir, name string, paths []string) error {
 	c, err := Open(dir)
 	if err != nil {
 		return err
 	}
 	unlock, _ := c.Lock(true)
 	defer unlock()
-	if !exists(c.Root, bookmark(branch)) {
-		return fmt.Errorf("no branch %s", branch)
+	root, stash := c.Root, bookmark(parkPrefix+name)
+	if exists(root, stash) {
+		return fmt.Errorf("%s is already parked; unpark it or pick another name", name)
 	}
-	if exists(c.Root, bookmark(branch)+" & ::@") {
-		return errors.New(branch + " is already in this checkout")
+	if len(paths) == 0 {
+		if paths, err = files(root, "@"); err != nil {
+			return err
+		}
 	}
-	change, err := jjOut(c.Root, "log", "--no-graph", "-r", bookmark(branch), "-T", "change_id")
+	if len(paths) == 0 {
+		return errors.New("no uncommitted edits to park")
+	}
+	parents, err := ids(root, "parents(@)")
 	if err != nil {
 		return err
 	}
-	if err := c.addParent(change); err != nil {
+	change, err := newChange(root, "park: "+name, parents...)
+	if err != nil {
 		return err
 	}
-	if exists(c.Root, "@ & conflicts()") {
-		paths := conflictPaths(c.Root, "@")
-		_ = c.dropParent(change)
-		return fmt.Errorf("%s conflicts with the files here in %s; nothing changed", branch, strings.Join(paths, ", "))
+	_, err = jjOut(root, append([]string{"squash", "--from", "@", "--into", change}, fileset(paths)...)...)
+	if err == nil && exists(root, change+" & empty()") {
+		err = errors.New("no uncommitted edits in those paths")
+	}
+	if err == nil {
+		_, err = jjOut(root, "bookmark", "set", parkPrefix+name, "-r", change)
+	}
+	if err != nil {
+		_, _ = jjOut(root, "squash", "-u", "--from", change, "--into", "@")
+		return err
 	}
 	return nil
 }
 
-// Parked lists the checkout's parked branches: recorded by a publish, never pushed and in no
-// checkout.
-func Parked(root, base string) []Branch {
-	c, err := Open(root)
+// Unpark puts the edits parked as name back into the checkout in dir, uncommitted. Nothing changes
+// when they conflict with the files here.
+func Unpark(dir, name string) error {
+	c, err := Open(dir)
 	if err != nil {
-		return nil
+		return err
 	}
-	// Only branches a publish recorded can be parked, so the rest of the bookmarks are skipped.
-	refs, _ := gitOut(root, nil, "for-each-ref", "--format=%(refname)", publishedRefs)
-	recorded := []string{"none()"}
-	for _, ref := range strings.Fields(refs) {
-		recorded = append(recorded, bookmark(strings.TrimPrefix(ref, publishedRefs)))
+	unlock, _ := c.Lock(true)
+	defer unlock()
+	root, stash := c.Root, bookmark(parkPrefix+name)
+	if !exists(root, stash) {
+		return fmt.Errorf("nothing is parked as %s", name)
 	}
-	trunk := trunkOf(base)
-	listed, _ := names(root, fmt.Sprintf("(%s) ~ ::%s ~ ::(@ | %s)", strings.Join(recorded, " | "), trunk, c.otherCopies()))
+	parents, err := ids(root, "parents("+stash+")")
+	if err != nil {
+		return err
+	}
+	// On top of the files here, the parked change holds what unparking leaves in them.
+	if _, err := jjOut(root, "rebase", "-r", stash, "-o", "@"); err != nil {
+		return err
+	}
+	if exists(root, stash+" & conflicts()") {
+		paths := conflictPaths(root, stash)
+		back := []string{"rebase", "-r", stash}
+		for _, p := range parents {
+			back = append(back, "-o", p)
+		}
+		_, _ = jjOut(root, back...)
+		return fmt.Errorf("%s conflicts with the files here in %s; nothing changed", name, strings.Join(paths, ", "))
+	}
+	change, err := jjOut(root, "log", "--no-graph", "-r", stash, "-T", "change_id")
+	if err != nil {
+		return err
+	}
+	_, _ = jjOut(root, "bookmark", "delete", "exact:"+parkPrefix+name)
+	_, err = jjOut(root, "squash", "-u", "--from", change, "--into", "@")
+	return err
+}
+
+// Parked lists the parked edits by name, with their files.
+func Parked(root string) []Branch {
+	listed, _ := names(root, "bookmarks(glob:"+quote(parkPrefix+"*")+")")
 	var out []Branch
-	for _, name := range listed {
-		if b := branchOf(root, name, trunk); !b.Pushed {
-			out = append(out, b)
+	for _, b := range listed {
+		if name, ok := strings.CutPrefix(b, parkPrefix); ok {
+			changed, _ := files(root, bookmark(b))
+			out = append(out, Branch{Name: name, Files: changed})
 		}
 	}
 	return out

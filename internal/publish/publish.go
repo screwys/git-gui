@@ -31,7 +31,6 @@ type Options struct {
 	Run                 string // a command whose changes in the publish workspace are published
 	Generate, Check     string
 	Full, Instant       bool
-	Park                bool // commit onto the branch and take it out of the checkout, unpublished
 	AutoMerge           bool
 	MergeCommit         bool
 }
@@ -172,9 +171,6 @@ func Publish(dir string, o Options) (Result, error) {
 	}
 	if o.BodySet && os.Getenv(AllowBodyEnv) != "1" {
 		return Result{}, fmt.Errorf("refusing a PR body; set %s=1 only for text the user gave", AllowBodyEnv)
-	}
-	if o.Park && (o.PR != 0 || forkNumber(o.Branch) != 0 || o.Run != "") {
-		return Result{}, errors.New("--park takes neither --pr nor --run")
 	}
 	unlock, _ := c.Lock(true)
 	defer unlock()
@@ -356,39 +352,13 @@ func Publish(dir string, o Options) (Result, error) {
 			}
 			err = c.addParent(change)
 		} else if err = c.addParent(change); err == nil {
-			err = jjRun(root, append([]string{"squash", "--from", "@", "--into", change}, fileset(o.Paths)...)...)
+			_, err = jjOut(root, append([]string{"squash", "--from", "@", "--into", change}, fileset(o.Paths)...)...)
 		}
-		conflicts := err == nil && exists(root, change+" & conflicts()")
-		if conflicts {
+		if err == nil && exists(root, change+" & conflicts()") {
 			err = fmt.Errorf("the requested paths do not apply onto %s; sync them and retry", branch)
 		}
 		if err != nil {
-			_ = jjRun(root, "abandon", "--restore-descendants", change)
-		}
-		// A branch that was never pushed and fell behind the base holds nothing anyone else has:
-		// its commits are made again on the base, in one with these edits.
-		if conflicts && o.PR == 0 && local && head == "" {
-			stale, _ := files(root, fmt.Sprintf("::%s ~ ::%s", bookmark(branch), trunk))
-			if Dequeue(root, o.Base, branch) == nil {
-				fmt.Printf("%s was never pushed and is behind %s: its commits are made again with these edits.\n", branch, o.Base)
-				for _, f := range stale {
-					if !slices.Contains(o.Paths, f) {
-						o.Paths = append(o.Paths, f)
-					}
-				}
-				local = false
-				if change, err = newChange(root, o.Title, base); err == nil {
-					if err = c.addParent(change); err == nil {
-						err = jjRun(root, append([]string{"squash", "--from", "@", "--into", change}, fileset(o.Paths)...)...)
-					}
-					if err == nil && exists(root, change+" & conflicts()") {
-						err = fmt.Errorf("the requested paths do not apply onto %s; sync them and retry", o.Base)
-					}
-					if err != nil {
-						_ = jjRun(root, "abandon", "--restore-descendants", change)
-					}
-				}
-			}
+			_, _ = jjOut(root, "abandon", "--restore-descendants", change)
 		}
 		if err != nil {
 			return Result{}, err
@@ -415,14 +385,6 @@ func Publish(dir string, o Options) (Result, error) {
 		return Result{}, err
 	}
 	c.record(branch)
-	if o.Park {
-		if err := c.park(branch, change); err != nil {
-			return Result{}, err
-		}
-		fmt.Printf("Parked %s: its edits left this checkout. \"git-gui unpark %s\" brings them back, \"git-gui publish --branch %s\" publishes it.\n", branch, branch, branch)
-		return Result{Branch: branch}, nil
-	}
-
 	work, err := c.enterPublish(change)
 	if err != nil {
 		return Result{}, err

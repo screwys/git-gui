@@ -17,9 +17,9 @@ A GTK4 command center GUI + daemon for git operations, extremely personal as is 
 - A publish whose edits build on another open PR's edits in the same files queues behind it: its
   checks run at once, and it is published once that PR merges, even with the window closed. Fixes
   to the earlier PR leave the queued edits out. A release can also wait for a PR to merge.
-- Work set aside for later is parked (`git-gui publish --park`): it goes onto its branch and
-  leaves the checkout, so builds and other publishes no longer see it, until Unpark or
-  `git-gui unpark` brings it back.
+- Uncommitted work set aside for later is parked (`git-gui park NAME [PATH...]`), like a stash:
+  it leaves the checkout, so builds and other publishes no longer see it, until Unpark or
+  `git-gui unpark NAME` puts it back uncommitted.
 - Session workspaces (`git-gui workspace`, also Claude Code's WorktreeCreate and WorktreeRemove
   hooks) get copy-on-write copies of the build directory and the devel profile, so builds and
   Store versions in one never touch another's.
